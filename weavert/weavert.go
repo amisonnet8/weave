@@ -6,18 +6,64 @@
 // instructions can't express directly.
 package weavert
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"unicode/utf8"
+)
 
 // Print implements the `print` builtin (weave_spec.md §11): write v to
-// stdout followed by a newline. This exists instead of a bare
-// ?fmt.Println call because Go's own formatting of a nil `any` reads as
-// "<nil>", not Weave's "nil".
+// stdout followed by a newline, using the same rendering as the
+// `string` builtin (ToString) — see its doc comment for why that isn't
+// just a bare ?fmt.Println call.
 func Print(v any) {
+	fmt.Println(ToString(v))
+}
+
+// ToString implements the `string` builtin (weave_spec.md §11):
+// convert any Weave value to its string form. This exists instead of a
+// bare ?fmt.Sprintf("%v", ...) call because Go's own formatting of a
+// nil `any` reads as "<nil>", not Weave's "nil" (confirmed empirically
+// in Step 2 — see CLAUDE.md's Step 2 "確定した設計判断"); numbers,
+// bools, and strings otherwise already render the way Go's own %v does
+// (also confirmed empirically), so those cases are spelled out mainly
+// for clarity rather than to override anything.
+func ToString(v any) string {
 	if v == nil {
-		fmt.Println("nil")
-		return
+		return "nil"
 	}
-	fmt.Println(v)
+	switch x := v.(type) {
+	case string:
+		return x
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64)
+	default:
+		// Objects and closures have no format weave_spec.md defines —
+		// Go's own %v is a reasonable, unspecified-but-harmless fallback.
+		return fmt.Sprintf("%v", x)
+	}
+}
+
+// Len implements the `len` builtin (weave_spec.md §11): an object's own
+// property count, or a string's character (rune, not byte) count. Also
+// reused internally by for-in's iteration (ObjKeys's own []string
+// result) — see internal/codegen's genForStmt.
+func Len(v any) any {
+	switch x := v.(type) {
+	case Object:
+		return float64(len(x))
+	case string:
+		return float64(utf8.RuneCountInString(x))
+	case []string:
+		return float64(len(x))
+	default:
+		panic(fmt.Sprintf("weave: len() requires an object or a string, got %T", v))
+	}
 }
 
 // ExitCode converts a Weave value into the Go int the `!main` wrapper

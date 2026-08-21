@@ -160,6 +160,13 @@ func (w *freeVarWalker) stmt(stmt ast.Stmt) {
 	case *ast.WhileStmt:
 		w.expr(s.Cond)
 		w.block(s.Body)
+	case *ast.ForStmt:
+		w.expr(s.Obj)
+		w.bound = append(w.bound, map[string]bool{s.Key: true, s.Value: true})
+		for _, stmt := range s.Body {
+			w.stmt(stmt)
+		}
+		w.bound = w.bound[:len(w.bound)-1]
 	case *ast.PropAssignStmt:
 		w.expr(s.Obj)
 		w.expr(s.Value)

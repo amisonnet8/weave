@@ -1,6 +1,9 @@
 package weavert
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Every Weave object is represented as a Go map[string]any, boxed into
 // `any` like every other Weave value (weave_spec.md §4; §14's own
@@ -92,4 +95,43 @@ func ObjHas(obj any, key any) any {
 func ObjRemove(obj any, key any) any {
 	delete(objOf(obj), keyOf(key))
 	return nil
+}
+
+// ObjKeys returns obj's own property names for `for k, v in obj`
+// (weave_spec.md §7's "オブジェクトの自分自身が持つプロパティを列挙する
+// (プロトタイプは辿らない)" — matching ObjHas/ObjRemove's own-only
+// scope, not ObjGet's chain walk). protoKey itself is excluded: it's a
+// reserved linkage property (§4.2), not one of the object's ordinary
+// properties, and enumerating it would leak an implementation detail
+// into user-visible iteration — weave_spec.md doesn't address this
+// directly, so this is a deliberate reading (see CLAUDE.md's Step 8
+// "確定した設計判断").
+//
+// Go map iteration order is randomized by design, which weave_spec.md
+// never promises an order to begin with — but sorting here makes
+// iteration deterministic and thus testable, which costs nothing
+// observable to a spec that makes no ordering claim either way.
+//
+// The []string return (rather than `any`) is deliberately not a
+// general Weave value: nothing outside genForStmt's own codegen ever
+// sees it, so it skips the `any`-boxing every real Weave value needs.
+func ObjKeys(obj any) any {
+	o := objOf(obj)
+	keys := make([]string, 0, len(o))
+	for k := range o {
+		if k == protoKey {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// KeyAt indexes into an ObjKeys result — an internal genForStmt
+// iteration helper, not a Weave builtin (Weave has no general indexing
+// syntax; weave_spec.md §3's "array" is just list()'s numeric-keyed
+// object sugar).
+func KeyAt(keys any, i any) any {
+	return keys.([]string)[int(i.(float64))]
 }

@@ -154,3 +154,35 @@ func TestObjSet_NeverWritesToPrototype(t *testing.T) {
 		t.Error("expected child to now have its own x")
 	}
 }
+
+func TestObjKeys_ExcludesProtoKeyAndSortsForDeterminism(t *testing.T) {
+	base := NewObject()
+	child := NewObject()
+	ObjSet(child, protoKey, base)
+	ObjSet(child, "b", 2.0)
+	ObjSet(child, "a", 1.0)
+
+	got := ObjKeys(child).([]string)
+	want := []string{"a", "b"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("ObjKeys = %v, want %v (__proto__ excluded, sorted)", got, want)
+	}
+}
+
+func TestObjKeys_EmptyObject(t *testing.T) {
+	got := ObjKeys(NewObject()).([]string)
+	if len(got) != 0 {
+		t.Errorf("ObjKeys(empty) = %v, want none", got)
+	}
+}
+
+func TestKeyAt(t *testing.T) {
+	keys := ObjKeys(func() any {
+		o := NewObject()
+		ObjSet(o, "x", 1.0)
+		return o
+	}())
+	if got := KeyAt(keys, 0.0); got != "x" {
+		t.Errorf("KeyAt(keys, 0) = %v, want x", got)
+	}
+}

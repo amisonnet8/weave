@@ -423,3 +423,69 @@ func TestCheck_HasAndRemoveAreBuiltins(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 }
+
+func TestCheck_ForInDeclaresKeyAndValue(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
+			&ast.ForStmt{
+				Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"},
+				Body: []ast.Stmt{
+					&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{&ast.Ident{Name: "k"}}}},
+					&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{&ast.Ident{Name: "v"}}}},
+				},
+			},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_ForInKeyNotVisibleOutside(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
+			&ast.ForStmt{Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"}},
+			&ast.ReturnStmt{Value: &ast.Ident{Name: "k"}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: k is the for-loop's own key variable, not visible after the loop")
+	}
+}
+
+func TestCheck_BreakInsideForIsValid(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
+			&ast.ForStmt{
+				Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"},
+				Body: []ast.Stmt{&ast.BreakStmt{}},
+			},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_ListLenStringAreBuiltins(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "list"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "len"}, Args: []ast.Expr{&ast.StringLit{Value: "hi"}}}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "string"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}

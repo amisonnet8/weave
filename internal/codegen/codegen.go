@@ -34,6 +34,9 @@ var builtinNames = map[string]bool{
 	"print":  true,
 	"has":    true,
 	"remove": true,
+	"list":   true,
+	"len":    true,
+	"string": true,
 }
 
 // codegenCtx is shared by every funcGen created during one Generate()
@@ -173,6 +176,8 @@ func genStmt(fg *funcGen, stmt ast.Stmt) error {
 		return genIfStmt(fg, s)
 	case *ast.WhileStmt:
 		return genWhileStmt(fg, s)
+	case *ast.ForStmt:
+		return genForStmt(fg, s)
 	case *ast.BreakStmt:
 		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", fg.breakStack[len(fg.breakStack)-1])
 		return nil
@@ -310,9 +315,47 @@ func genBuiltinCall(fg *funcGen, name string, call *ast.CallExpr) (string, error
 		return genTwoArgObjBuiltin(fg, call, "weavert.ObjHas")
 	case "remove":
 		return genTwoArgObjBuiltin(fg, call, "weavert.ObjRemove")
+	case "list":
+		return genListCall(fg, call)
+	case "len":
+		return genOneArgBuiltin(fg, call, "weavert.Len")
+	case "string":
+		return genOneArgBuiltin(fg, call, "weavert.ToString")
 	default:
 		return "", fmt.Errorf("line %d: builtin %q not yet implemented", call.Line, name)
 	}
+}
+
+// genOneArgBuiltin lowers a single-argument builtin call (len(...)/
+// string(...), weave_spec.md §11) to the given weavert function.
+func genOneArgBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error) {
+	if len(call.Args) != 1 {
+		return "", fmt.Errorf("line %d: %s(...) takes exactly one argument, got %d", call.Line, fn, len(call.Args))
+	}
+	val, err := genExpr(fg, call.Args[0])
+	if err != nil {
+		return "", err
+	}
+	tmp := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?%s\t%s\n", tmp, fn, val)
+	return tmp, nil
+}
+
+// genListCall lowers `list(a, b, c)` (weave_spec.md §3, §11) to an
+// object with sequential numeric-string keys ("0", "1", ...) — the same
+// NewObject+ObjSet shape genObjectLit uses, since a Weave "array" is
+// nothing but that sugar (§3: "連番の数値キーを持つ普通のオブジェクト").
+func genListCall(fg *funcGen, call *ast.CallExpr) (string, error) {
+	obj := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.NewObject\n", obj)
+	for i, arg := range call.Args {
+		val, err := genExpr(fg, arg)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&fg.body, "\tCALL\t:\t?weavert.ObjSet\t%s\t%s\t%s\n", obj, quoteKey(strconv.Itoa(i)), val)
+	}
+	return obj, nil
 }
 
 // genTwoArgObjBuiltin lowers has(obj, name)/remove(obj, name)

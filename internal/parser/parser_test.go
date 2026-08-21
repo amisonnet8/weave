@@ -418,3 +418,30 @@ func TestParse_MethodCallOnPropExpr(t *testing.T) {
 		t.Errorf("callee: got %T, want *ast.PropExpr", call.Callee)
 	}
 }
+
+func TestParse_ForIn(t *testing.T) {
+	file, err := Parse("func main(): int {\n\tfor k, v in obj {\n\t\tprint(k)\n\t}\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	f, ok := file.Main.Body[0].(*ast.ForStmt)
+	if !ok {
+		t.Fatalf("statement 0: got %T, want *ast.ForStmt", file.Main.Body[0])
+	}
+	if f.Key != "k" || f.Value != "v" {
+		t.Errorf("Key=%q Value=%q, want k/v", f.Key, f.Value)
+	}
+	obj, ok := f.Obj.(*ast.Ident)
+	if !ok || obj.Name != "obj" {
+		t.Errorf("Obj = %#v, want Ident(obj)", f.Obj)
+	}
+	if len(f.Body) != 1 {
+		t.Errorf("got %d body statements, want 1", len(f.Body))
+	}
+}
+
+func TestParse_ForInMissingCommaIsAnError(t *testing.T) {
+	if _, err := Parse("func main(): int {\n\tfor k v in obj {\n\t}\n\treturn 0\n}\n"); err == nil {
+		t.Fatal("expected an error for a missing ',' between k and v")
+	}
+}

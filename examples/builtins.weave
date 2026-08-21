@@ -1,0 +1,57 @@
+func main(): int {
+	// weave_spec.md §3 explains how list(...) builds a numeric-keyed
+	// object but never shows how to read an element back — Weave's only
+	// property-access syntax is `.identifier` (§4.1), and identifiers
+	// can't start with a digit, so `.0` isn't valid syntax at all. In
+	// practice a list's elements are consumed via `for k, v in ...`
+	// (see CLAUDE.md's Step 8 "確定した設計判断").
+	nums = list(10, 20, 30)
+	print(len(nums))
+
+	print(string(42))
+	print(string(1.5))
+	print(string(true))
+	print(string(nil))
+	print(string("already a string"))
+
+	point = { x: 1, y: 2, z: 3 }
+	print(len(point))
+
+	total = 0
+	for k, v in point {
+		total = total + v
+	}
+	print(total)
+
+	sum = 0
+	for i, v in nums {
+		if v == 20 {
+			continue
+		}
+		if v == 30 {
+			break
+		}
+		sum = sum + v
+	}
+	print(sum)
+
+	base = { describe: fn(self) { return "a " + self.kind } }
+	dog = { __proto__: base, kind: "dog" }
+	keys_seen = 0
+	for k, v in dog {
+		keys_seen = keys_seen + 1
+	}
+	print(keys_seen)
+	print(dog.describe())
+
+	add = fn(a) fn(b) { return a + b }
+	add5 = add(5)
+	pairs = { first: 1, second: 2 }
+	acc = 0
+	for k, v in pairs {
+		acc = add5(acc + v)
+	}
+	print(acc)
+
+	return len(nums)
+}

@@ -132,6 +132,8 @@ func (p *parser) parseStmt() (ast.Stmt, error) {
 		return p.parseIfStmt()
 	case lexer.KwWhile:
 		return p.parseWhileStmt()
+	case lexer.KwFor:
+		return p.parseForStmt()
 	case lexer.KwBreak:
 		return &ast.BreakStmt{Line: p.advance().Line}, nil
 	case lexer.KwContinue:
@@ -205,6 +207,34 @@ func (p *parser) parseWhileStmt() (ast.Stmt, error) {
 		return nil, err
 	}
 	return &ast.WhileStmt{Cond: cond, Body: body, Line: kw.Line}, nil
+}
+
+// parseForStmt parses `for k, v in obj {...}` (weave_spec.md §7).
+func (p *parser) parseForStmt() (ast.Stmt, error) {
+	kw := p.advance() // 'for'
+	key, err := p.expect(lexer.Ident, "loop key variable")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(lexer.Comma, "','"); err != nil {
+		return nil, err
+	}
+	val, err := p.expect(lexer.Ident, "loop value variable")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(lexer.KwIn, "'in'"); err != nil {
+		return nil, err
+	}
+	obj, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ForStmt{Key: key.Literal, Value: val.Literal, Obj: obj, Body: body, Line: kw.Line}, nil
 }
 
 // parseSimpleStmt parses a bare expression statement (e.g. a call like

@@ -18,6 +18,9 @@ var builtinNames = map[string]bool{
 	"print":  true,
 	"has":    true,
 	"remove": true,
+	"list":   true,
+	"len":    true,
+	"string": true,
 }
 
 // reservedName reports whether name is off-limits for a user assignment
@@ -201,6 +204,8 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 		err := c.checkBlock(s.Body, sc)
 		c.loopDepth--
 		return err
+	case *ast.ForStmt:
+		return c.checkForStmt(s, sc)
 	case *ast.BreakStmt:
 		if c.loopDepth == 0 {
 			return fmt.Errorf("line %d: `break` outside of a loop (weave_spec.md §7)", s.Line)
@@ -290,4 +295,35 @@ func (c *checker) checkFuncLit(lit *ast.FuncLit, sc *scope) error {
 	}
 	c.loopDepth = savedLoopDepth
 	return nil
+}
+
+// checkForStmt checks `for k, v in obj {...}` (weave_spec.md §7): obj is
+// checked in sc (the enclosing scope), while Key/Value are declared
+// fresh in a child scope covering the body only — mirroring
+// checkFuncLit's param scoping, but with two names instead of one and
+// without resetting loopDepth (break/continue are valid inside a `for`,
+// same as a `while`, §7).
+func (c *checker) checkForStmt(s *ast.ForStmt, sc *scope) error {
+	if err := c.checkExpr(s.Obj, sc); err != nil {
+		return err
+	}
+	if why, ok := reservedName(s.Key); ok {
+		return fmt.Errorf("line %d: %q is a reserved name (%s)", s.Line, s.Key, why)
+	}
+	if why, ok := reservedName(s.Value); ok {
+		return fmt.Errorf("line %d: %q is a reserved name (%s)", s.Line, s.Value, why)
+	}
+	inner := newScope(sc)
+	inner.declared[s.Key] = true
+	inner.declared[s.Value] = true
+
+	c.loopDepth++
+	var err error
+	for _, stmt := range s.Body {
+		if err = c.checkStmt(stmt, inner); err != nil {
+			break
+		}
+	}
+	c.loopDepth--
+	return err
 }

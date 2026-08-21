@@ -89,6 +89,17 @@ type PropAssignStmt struct {
 	Line  int
 }
 
+// ForStmt is `for k, v in obj {...}` (weave_spec.md §7): enumerates
+// obj's own properties — never a prototype's, matching `has`/`remove`'s
+// own-only scope (§7's own comment: "プロトタイプは辿らない").
+type ForStmt struct {
+	Key   string
+	Value string
+	Obj   Expr
+	Body  []Stmt
+	Line  int
+}
+
 func (*ExprStmt) stmtNode()       {}
 func (*ReturnStmt) stmtNode()     {}
 func (*AssignStmt) stmtNode()     {}
@@ -96,6 +107,7 @@ func (*IfStmt) stmtNode()         {}
 func (*WhileStmt) stmtNode()      {}
 func (*BreakStmt) stmtNode()      {}
 func (*ContinueStmt) stmtNode()   {}
+func (*ForStmt) stmtNode()        {}
 func (*PropAssignStmt) stmtNode() {}
 
 // Expr is a Weave expression.

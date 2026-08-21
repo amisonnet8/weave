@@ -686,3 +686,92 @@ func TestGenerate_FuncLitAlwaysEndsWithRetNil(t *testing.T) {
 		t.Errorf("expected the closure to end with an implicit RET nil, got:\n%s", closureBody)
 	}
 }
+
+func TestGenerate_ListCallBuildsNumericKeyedObject(t *testing.T) {
+	fg := newFuncGen(&codegenCtx{})
+	got, err := genListCall(fg, &ast.CallExpr{
+		Args: []ast.Expr{&ast.NumberLit{Value: 10}, &ast.NumberLit{Value: 20}},
+	})
+	if err != nil {
+		t.Fatalf("genListCall: %v", err)
+	}
+	body := fg.body.String()
+	if !strings.Contains(body, "CALL\t"+got+"\t:\t?weavert.NewObject\n") {
+		t.Errorf("expected NewObject, got:\n%s", body)
+	}
+	if !strings.Contains(body, "?weavert.ObjSet\t"+got+"\t\"0\"\t10.0\n") {
+		t.Errorf("expected key \"0\" -> 10.0, got:\n%s", body)
+	}
+	if !strings.Contains(body, "?weavert.ObjSet\t"+got+"\t\"1\"\t20.0\n") {
+		t.Errorf("expected key \"1\" -> 20.0, got:\n%s", body)
+	}
+}
+
+func TestGenerate_LenAndStringBuiltins(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "len"}, Args: []ast.Expr{&ast.StringLit{Value: "hi"}}}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "string"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.Len\t\"hi\"\n") {
+		t.Errorf("expected len(...) to lower to weavert.Len, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.ToString\t1.0\n") {
+		t.Errorf("expected string(...) to lower to weavert.ToString, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_ForInLabelsBalanceAndUseKeyValueVars(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ForStmt{
+				Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"},
+				Body: []ast.Stmt{&ast.ExprStmt{X: &ast.CallExpr{
+					Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{&ast.Ident{Name: "v"}},
+				}}},
+			},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	labelsBalance(t, ir)
+	if !strings.Contains(ir, "?weavert.ObjKeys\t%o\n") {
+		t.Errorf("expected ObjKeys(o), got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.KeyAt\t") {
+		t.Errorf("expected KeyAt for the key variable, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "VAR\t%k\t^any\n") || !strings.Contains(ir, "VAR\t%v\t^any\n") {
+		t.Errorf("expected k and v to be declared, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_ForInContinueLabelAlwaysReferenced(t *testing.T) {
+	// A for-in body with no `continue` at all must still reference its
+	// continueLabel via an explicit GOTO — Go treats a label reachable
+	// only by fallthrough as unused (the exact bug examples/builtins.weave
+	// caught — see CLAUDE.md's Step 8 "確定した設計判断").
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ForStmt{Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	labelsBalance(t, ir)
+}
