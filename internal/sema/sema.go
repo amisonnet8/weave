@@ -7,17 +7,29 @@ import (
 	"github.com/amisonnet8/weave/internal/ast"
 )
 
+// builtinNames are call targets resolved as ordinary Go-native calls
+// rather than Weave function values (weave_spec.md §11; lexer.go's doc
+// comment on structural vs. builtin keywords). A CallExpr's Callee is
+// only checked as an ordinary expression (i.e. required to resolve to a
+// declared variable) when it ISN'T one of these — kept in sync manually
+// with codegen.go's own copy (CLAUDE.md's "確定した設計判断" tracks
+// this alongside the other manually-synced name lists).
+var builtinNames = map[string]bool{
+	"print": true,
+}
+
 // reservedName reports whether name is off-limits for a user assignment
-// because it would collide with a name codegen generates for itself.
+// or function parameter because it would collide with a name codegen
+// generates for itself.
 //
 //   - "weave_main" is the internal bridge name for the compiled `main`
 //     (weave_spec.md §12; kept in sync manually with codegen.go's
 //     weaveMainFunc — see CLAUDE.md's "確定した設計判断").
 //   - Any name starting with "__" is reserved wholesale for codegen's
 //     own compiler-generated temporaries (e.g. the `__exitcode` exit
-//     code conversion, and the `__t0`, `__t1`, ... operator/condition
-//     evaluation temps — see codegen.go's funcGen.newTemp). A prefix
-//     rule scales better than enumerating every generated name
+//     code conversion, and the `__t0`, `__t1`, ... operator/condition/
+//     closure evaluation temps — see codegen.go's funcGen.newTemp). A
+//     prefix rule scales better than enumerating every generated name
 //     individually, since the temp count grows with expression
 //     complexity and isn't a fixed set.
 func reservedName(name string) (string, bool) {
@@ -46,6 +58,12 @@ func reservedName(name string) (string, bool) {
 // (block-local) binding when the name isn't visible anywhere yet — see
 // declareIfNew. This is recorded as a resolved design question in
 // CLAUDE.md's Step 4 "確定した設計判断".
+//
+// A function literal's body (Step 5) is just another scope in this same
+// chain, parented at wherever the literal appears lexically — which is
+// exactly what lets it read (and, since assignment reuses the nearest
+// visible binding, mutate its own copy of) the enclosing function's
+// variables: weave_spec.md §10's closure capture.
 type scope struct {
 	parent   *scope
 	declared map[string]bool
@@ -78,6 +96,17 @@ func (sc *scope) declareIfNew(name string) {
 // checker carries state that spans a single Check call but isn't scoped
 // to one block — currently just loop nesting, for validating break/
 // continue (weave_spec.md §7: valid only inside a loop).
+//
+// loopDepth is reset to 0 while checking a function literal's body
+// (checkFuncLit) and restored afterward: a `while` enclosing a `fn(...)`
+// lexically does NOT make `break`/`continue` valid inside that literal
+// — a function body is its own boundary for loop-control statements,
+// same as in most languages with nested functions. Nothing in
+// weave_spec.md states this explicitly, but the alternative (a
+// closure's `break` reaching through to a loop in some *other*
+// function's stack frame entirely, once the closure escapes and is
+// called later) doesn't correspond to anything coherent at runtime, so
+// it's treated as settled rather than left as an open design question.
 type checker struct {
 	loopDepth int
 }
@@ -92,8 +121,9 @@ type checker struct {
 //
 // Per CLAUDE.md's "意味検証の責任分担", this stays narrower than
 // Seed/Cascade's sema overall — most value-type errors are a runtime
-// concern here (see weavert.ExitCode, weavert.CheckBool) — but name/
-// scope rules like these are exactly what sema is still responsible for.
+// concern here (see weavert.ExitCode, weavert.CheckBool, weavert.Call)
+// — but name/scope rules like these are exactly what sema is still
+// responsible for.
 func Check(file *ast.File) error {
 	if file.Main == nil {
 		return fmt.Errorf("missing entry point: expected `func main(): int { ... }`")
@@ -131,7 +161,7 @@ func (c *checker) checkBlock(stmts []ast.Stmt, parent *scope) error {
 func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 	switch s := stmt.(type) {
 	case *ast.AssignStmt:
-		if err := checkExpr(s.Value, sc); err != nil {
+		if err := c.checkExpr(s.Value, sc); err != nil {
 			return err
 		}
 		if why, ok := reservedName(s.Name); ok {
@@ -140,15 +170,15 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 		sc.declareIfNew(s.Name)
 		return nil
 	case *ast.ExprStmt:
-		return checkExpr(s.X, sc)
+		return c.checkExpr(s.X, sc)
 	case *ast.ReturnStmt:
 		if s.Value == nil {
 			return nil
 		}
-		return checkExpr(s.Value, sc)
+		return c.checkExpr(s.Value, sc)
 	case *ast.IfStmt:
 		for _, clause := range s.Clauses {
-			if err := checkExpr(clause.Cond, sc); err != nil {
+			if err := c.checkExpr(clause.Cond, sc); err != nil {
 				return err
 			}
 			if err := c.checkBlock(clause.Body, sc); err != nil {
@@ -162,7 +192,7 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 		}
 		return nil
 	case *ast.WhileStmt:
-		if err := checkExpr(s.Cond, sc); err != nil {
+		if err := c.checkExpr(s.Cond, sc); err != nil {
 			return err
 		}
 		c.loopDepth++
@@ -184,12 +214,11 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 	}
 }
 
-// checkExpr validates identifier references. A CallExpr's own Callee is
-// deliberately not checked here: through Step 4 it is always a builtin
-// name (e.g. `print`), a reserved word rather than a variable (see
-// lexer.go's doc comment on structural vs. builtin keywords) — codegen
-// separately rejects any callee it doesn't recognize.
-func checkExpr(expr ast.Expr, sc *scope) error {
+// checkExpr validates identifier references. A builtin CallExpr's own
+// Callee is deliberately not checked as a variable reference (see
+// builtinNames) — codegen separately rejects any non-FuncLit-value
+// callee it doesn't recognize as either a builtin or a general call.
+func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 	switch e := expr.(type) {
 	case *ast.Ident:
 		if !sc.has(e.Name) {
@@ -199,20 +228,50 @@ func checkExpr(expr ast.Expr, sc *scope) error {
 	case *ast.NumberLit, *ast.StringLit, *ast.BoolLit, *ast.NilLit:
 		return nil
 	case *ast.CallExpr:
+		if callee, ok := e.Callee.(*ast.Ident); !ok || !builtinNames[callee.Name] {
+			if err := c.checkExpr(e.Callee, sc); err != nil {
+				return err
+			}
+		}
 		for _, arg := range e.Args {
-			if err := checkExpr(arg, sc); err != nil {
+			if err := c.checkExpr(arg, sc); err != nil {
 				return err
 			}
 		}
 		return nil
 	case *ast.BinaryExpr:
-		if err := checkExpr(e.X, sc); err != nil {
+		if err := c.checkExpr(e.X, sc); err != nil {
 			return err
 		}
-		return checkExpr(e.Y, sc)
+		return c.checkExpr(e.Y, sc)
 	case *ast.UnaryExpr:
-		return checkExpr(e.X, sc)
+		return c.checkExpr(e.X, sc)
+	case *ast.FuncLit:
+		return c.checkFuncLit(e, sc)
 	default:
 		return fmt.Errorf("sema: unsupported expression %T", expr)
 	}
+}
+
+// checkFuncLit checks a function literal's body in a fresh scope
+// (parented at sc, enabling closure capture — see scope's doc comment)
+// with its parameter declared and loop-control state reset (see
+// checker.loopDepth's doc comment).
+func (c *checker) checkFuncLit(lit *ast.FuncLit, sc *scope) error {
+	if why, ok := reservedName(lit.Param); ok {
+		return fmt.Errorf("line %d: %q is a reserved name (%s)", lit.Line, lit.Param, why)
+	}
+	inner := newScope(sc)
+	inner.declared[lit.Param] = true
+
+	savedLoopDepth := c.loopDepth
+	c.loopDepth = 0
+	for _, stmt := range lit.Body {
+		if err := c.checkStmt(stmt, inner); err != nil {
+			c.loopDepth = savedLoopDepth
+			return err
+		}
+	}
+	c.loopDepth = savedLoopDepth
+	return nil
 }

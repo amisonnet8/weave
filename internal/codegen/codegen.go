@@ -26,6 +26,23 @@ const (
 	exitCodeTemp = "__exitcode"
 )
 
+// builtinNames are call targets resolved as ordinary Go-native calls
+// (via a dedicated genXxxCall function) rather than Weave function
+// values applied through weavert.Call — kept in sync manually with
+// sema.go's own copy (CLAUDE.md's "確定した設計判断").
+var builtinNames = map[string]bool{
+	"print": true,
+}
+
+// codegenCtx is shared by every funcGen created during one Generate()
+// call — main's own funcGen and every nested closure's (see
+// genFuncLit) — so closure FUNCs get globally unique names and all end
+// up collected in one place to emit alongside weave_main/main.
+type codegenCtx struct {
+	closureCount int
+	closureFuncs []string // accumulated `FUNC ... ENDFUNC` blocks, compilation order
+}
+
 // funcGen accumulates one AMIVM FUNC body's VAR declarations (hoisted to
 // the top, in first-declared order) and its SET/CALL/GOTO/LABEL/IF/RET
 // instructions (left in source order).
@@ -43,6 +60,8 @@ const (
 // same function, which is required by Go's "goto cannot jump over a
 // variable declaration" rule (seed_implementation_notes.md §1).
 type funcGen struct {
+	ctx           *codegenCtx
+	isMain        bool // true only for weave_main's own funcGen — see genReturnStmt
 	decls         []string
 	declared      map[string]bool
 	body          strings.Builder
@@ -52,8 +71,8 @@ type funcGen struct {
 	continueStack []string // target label for `continue`, innermost last
 }
 
-func newFuncGen() *funcGen {
-	return &funcGen{declared: map[string]bool{}}
+func newFuncGen(ctx *codegenCtx) *funcGen {
+	return &funcGen{ctx: ctx, declared: map[string]bool{}}
 }
 
 // declare emits a hoisted `VAR %name irType` line the first time name is
@@ -92,12 +111,25 @@ func (fg *funcGen) newLabel(prefix string) string {
 
 // Generate lowers a checked *ast.File into AMIVM-IR text.
 func Generate(file *ast.File) (string, error) {
-	fg := newFuncGen()
+	ctx := &codegenCtx{}
+	fg := newFuncGen(ctx)
+	fg.isMain = true
 	if err := genBlock(fg, file.Main.Body); err != nil {
 		return "", err
 	}
 
 	var b strings.Builder
+	// envType (closure.go) is declared once, program-wide, only if any
+	// closure literal actually needed it.
+	if ctx.closureCount > 0 {
+		fmt.Fprintf(&b, "SLTYPE\t^%s\t^any\n", envType)
+	}
+	// Every closure literal compiled while generating weave_main (or,
+	// transitively, another closure) added its own top-level FUNC here
+	// — see genFuncLit's doc comment on why it can't be nested inline.
+	for _, cf := range ctx.closureFuncs {
+		b.WriteString(cf)
+	}
 	fmt.Fprintf(&b, "FUNC\t!%s\t:\t^int\n", weaveMainFunc)
 	for _, d := range fg.decls {
 		b.WriteString(d)
@@ -249,42 +281,93 @@ func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 func genExprStmt(fg *funcGen, s *ast.ExprStmt) error {
 	call, ok := s.X.(*ast.CallExpr)
 	if !ok {
-		return fmt.Errorf("line %d: only call expressions are supported as statements (Step 1-2 scope)", exprLine(s.X))
+		return fmt.Errorf("line %d: only call expressions are supported as statements", exprLine(s.X))
 	}
-	callee, ok := call.Callee.(*ast.Ident)
-	if !ok {
-		return fmt.Errorf("line %d: unsupported call target (Step 1-2 scope)", call.Line)
+	_, err := genCallExpr(fg, call)
+	return err
+}
+
+// genCallExpr lowers a call expression to the AMIVM value token holding
+// its result, dispatching between a fixed-arity Go-native builtin
+// (genBuiltinCall) and a general call to a Weave function value
+// (genGeneralCall) — see builtinNames.
+func genCallExpr(fg *funcGen, call *ast.CallExpr) (string, error) {
+	if callee, ok := call.Callee.(*ast.Ident); ok && builtinNames[callee.Name] {
+		return genBuiltinCall(fg, callee.Name, call)
 	}
-	switch callee.Name {
+	return genGeneralCall(fg, call)
+}
+
+func genBuiltinCall(fg *funcGen, name string, call *ast.CallExpr) (string, error) {
+	switch name {
 	case "print":
 		return genPrintCall(fg, call)
 	default:
-		return fmt.Errorf("line %d: builtin %q not yet implemented", call.Line, callee.Name)
+		return "", fmt.Errorf("line %d: builtin %q not yet implemented", call.Line, name)
 	}
 }
 
 // genPrintCall lowers print(x) to a ?weavert.Print call, which owns the
 // nil→"nil" rendering Go's own fmt.Println doesn't provide (Go's zero
 // value for `any` prints as "<nil>"; weave_spec.md §2's nil should read
-// as "nil" — see weavert/weavert.go).
-func genPrintCall(fg *funcGen, call *ast.CallExpr) error {
+// as "nil" — see weavert/weavert.go). print returns nil (weave_spec.md
+// §11's signature `(value) -> nil`).
+func genPrintCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 	if len(call.Args) != 1 {
-		return fmt.Errorf("line %d: print(...) with %d arguments not yet implemented (Step 1-2 support a single argument)", call.Line, len(call.Args))
+		return "", fmt.Errorf("line %d: print(...) takes exactly one argument, got %d", call.Line, len(call.Args))
 	}
 	val, err := genExpr(fg, call.Args[0])
 	if err != nil {
-		return err
+		return "", err
 	}
 	fmt.Fprintf(&fg.body, "\tCALL\t:\t?weavert.Print\t%s\n", val)
-	return nil
+	return "nil", nil
 }
 
-// genReturnStmt lowers `return <expr>` in main through weavert.ExitCode
-// (a runtime type assertion + conversion to Go int — see its doc
-// comment) into a hoisted ^int temp, then RETs that temp. main's
-// declared return type is the one place Weave's dynamic value model
-// touches a native Go type instead of `any`.
+// genGeneralCall lowers a call to a general (non-builtin) callee —
+// always a Weave function value — via weavert.Call. Multiple arguments
+// (`f(a, b, c)`) are curry-sugar for `f(a)(b)(c)` (weave_spec.md §5):
+// applied one at a time, threading each intermediate result (itself
+// possibly another partially-applied closure) into the next
+// weavert.Call.
+func genGeneralCall(fg *funcGen, call *ast.CallExpr) (string, error) {
+	if len(call.Args) == 0 {
+		return "", fmt.Errorf("line %d: a call needs at least one argument (weave_spec.md §5: every Weave function takes exactly one)", call.Line)
+	}
+	result, err := genExpr(fg, call.Callee)
+	if err != nil {
+		return "", err
+	}
+	for _, arg := range call.Args {
+		argVal, err := genExpr(fg, arg)
+		if err != nil {
+			return "", err
+		}
+		tmp := fg.newTemp("^any")
+		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.Call\t%s\t%s\n", tmp, result, argVal)
+		result = tmp
+	}
+	return result, nil
+}
+
+// genReturnStmt lowers `return <expr>`, which means two different
+// things depending on which funcGen is active: inside weave_main
+// (fg.isMain) it's main's own `int` exit code (weave_spec.md §12 — the
+// one place Weave's dynamic value model touches a native Go type
+// instead of `any`); inside a function literal's own funcGen (see
+// genFuncLit) it's an ordinary `^any` closure result. Conflating these
+// was a real Step 5 bug caught by running examples/closures.weave
+// through amivm→go build→execution: every `return` inside a closure
+// body was routing through weavert.ExitCode and panicking on the very
+// first non-numeric closure result.
 func genReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
+	if fg.isMain {
+		return genMainReturnStmt(fg, s)
+	}
+	return genClosureReturnStmt(fg, s)
+}
+
+func genMainReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 	if s.Value == nil {
 		return fmt.Errorf("line %d: main must return an int exit code (weave_spec.md §12)", s.Line)
 	}
@@ -295,6 +378,18 @@ func genReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 	fg.declare(exitCodeTemp, "^int")
 	fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.ExitCode\t%s\n", exitCodeTemp, val)
 	fmt.Fprintf(&fg.body, "\tRET\t%%%s\n", exitCodeTemp)
+	return nil
+}
+
+func genClosureReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
+	if s.Value == nil {
+		return fmt.Errorf("line %d: a function literal must return a value (weave_spec.md §5)", s.Line)
+	}
+	val, err := genExpr(fg, s.Value)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(&fg.body, "\tRET\t%s\n", val)
 	return nil
 }
 
@@ -325,6 +420,10 @@ func genExpr(fg *funcGen, expr ast.Expr) (string, error) {
 		return genBinaryExpr(fg, e)
 	case *ast.UnaryExpr:
 		return genUnaryExpr(fg, e)
+	case *ast.CallExpr:
+		return genCallExpr(fg, e)
+	case *ast.FuncLit:
+		return genFuncLit(fg, e)
 	default:
 		return "", fmt.Errorf("line %d: expression not yet implemented", exprLine(expr))
 	}
@@ -464,6 +563,8 @@ func exprLine(x ast.Expr) int {
 	case *ast.BinaryExpr:
 		return x.Line
 	case *ast.UnaryExpr:
+		return x.Line
+	case *ast.FuncLit:
 		return x.Line
 	default:
 		return 0

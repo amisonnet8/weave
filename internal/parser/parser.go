@@ -463,6 +463,8 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 	case lexer.KwNil:
 		p.advance()
 		return &ast.NilLit{Line: t.Line}, nil
+	case lexer.KwFn:
+		return p.parseFuncLit()
 	case lexer.LParen:
 		p.advance()
 		x, err := p.parseExpr()
@@ -475,6 +477,67 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 		return x, nil
 	}
 	return nil, fmt.Errorf("line %d: unexpected token %q in expression", t.Line, t.Literal)
+}
+
+// parseFuncLit parses `fn(params) body` (weave_spec.md §5), where body
+// is either a `{...}` block or — for the chained-currying sugar
+// `fn(a) fn(b) {...}` — another `fn(...)` literal directly, with no
+// braces around the outer body at all. Either way, and regardless of
+// whether the parameter list itself has one name or several
+// (`fn(a, b) {...}` sugar, also §5), the result is always a chain of
+// single-Param FuncLits: every level but the innermost wraps the next
+// in a single implicit `return` (see ast.FuncLit's doc comment).
+func (p *parser) parseFuncLit() (ast.Expr, error) {
+	kw := p.advance() // 'fn'
+	if _, err := p.expect(lexer.LParen, "'('"); err != nil {
+		return nil, err
+	}
+	var params []string
+	for p.peek().Kind != lexer.RParen {
+		name, err := p.expect(lexer.Ident, "parameter name")
+		if err != nil {
+			return nil, err
+		}
+		params = append(params, name.Literal)
+		if p.peek().Kind == lexer.Comma {
+			p.advance()
+			continue
+		}
+		break
+	}
+	if _, err := p.expect(lexer.RParen, "')'"); err != nil {
+		return nil, err
+	}
+	if len(params) == 0 {
+		return nil, fmt.Errorf("line %d: fn(...) requires at least one parameter (weave_spec.md §5)", kw.Line)
+	}
+
+	var body []ast.Stmt
+	if p.peek().Kind == lexer.KwFn {
+		inner, err := p.parseFuncLit()
+		if err != nil {
+			return nil, err
+		}
+		body = []ast.Stmt{&ast.ReturnStmt{Value: inner, Line: kw.Line}}
+	} else {
+		b, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		body = b
+	}
+
+	// Fold multiple params into nested single-Param literals, innermost
+	// first: fn(a, b) {body} becomes fn(a) { return fn(b) {body} }.
+	lit := &ast.FuncLit{Param: params[len(params)-1], Body: body, Line: kw.Line}
+	for i := len(params) - 2; i >= 0; i-- {
+		lit = &ast.FuncLit{
+			Param: params[i],
+			Body:  []ast.Stmt{&ast.ReturnStmt{Value: lit, Line: kw.Line}},
+			Line:  kw.Line,
+		}
+	}
+	return lit, nil
 }
 
 func exprLine(x ast.Expr) int {
@@ -494,6 +557,8 @@ func exprLine(x ast.Expr) int {
 	case *ast.BinaryExpr:
 		return x.Line
 	case *ast.UnaryExpr:
+		return x.Line
+	case *ast.FuncLit:
 		return x.Line
 	default:
 		return 0

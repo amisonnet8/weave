@@ -1,0 +1,25 @@
+func main(): int {
+	add = fn(a) fn(b) { return a + b }
+	add5 = add(5)
+	result = add5(3)
+	result2 = add(5)(3)
+	result3 = add(5, 3)
+	print(result)
+	print(result2)
+	print(result3)
+
+	add3 = fn(a) fn(b) fn(c) { return a + b + c }
+	print(add3(1)(2)(3))
+	print(add3(1, 2, 3))
+
+	base = 100
+	addBase = fn(x) { return x + base }
+	print(addBase(5))
+
+	n = 1
+	getN = fn(unused) { return n }
+	n = 2
+	print(getN(nil))
+
+	return result3
+}

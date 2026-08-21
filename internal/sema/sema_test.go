@@ -254,3 +254,113 @@ func TestCheck_BreakAfterWhileIsAnErrorAgain(t *testing.T) {
 		t.Fatal("expected an error: break after the while has ended is outside any loop")
 	}
 }
+
+func TestCheck_FuncLitCanReadOuterVariable(t *testing.T) {
+	// base = 100
+	// addBase = fn(x) { return x + base }
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "base", Value: &ast.NumberLit{Value: 100}},
+			&ast.AssignStmt{Name: "addBase", Value: &ast.FuncLit{
+				Param: "x",
+				Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.BinaryExpr{
+					Op: "+", X: &ast.Ident{Name: "x"}, Y: &ast.Ident{Name: "base"},
+				}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_FuncLitParamNotVisibleOutside(t *testing.T) {
+	// f = fn(x) { return x }
+	// return x   <- x is the closure's own param, not visible in main
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
+				Param: "x",
+				Body:  []ast.Stmt{&ast.ReturnStmt{Value: &ast.Ident{Name: "x"}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.Ident{Name: "x"}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: x is the closure's own parameter, not visible in main")
+	}
+}
+
+func TestCheck_FuncLitReservedParamNameIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
+				Param: "__t0",
+				Body:  []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: __t0 is a reserved parameter name")
+	}
+}
+
+func TestCheck_BreakInsideFuncLitInsideWhileIsAnError(t *testing.T) {
+	// A function literal is its own boundary for break/continue, even
+	// when lexically nested inside a while loop (weave_spec.md doesn't
+	// say this explicitly — see sema.go checker.loopDepth's doc comment
+	// for why this is treated as settled rather than left open).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.WhileStmt{
+				Cond: &ast.BoolLit{Value: true},
+				Body: []ast.Stmt{
+					&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
+						Param: "x",
+						Body:  []ast.Stmt{&ast.BreakStmt{}},
+					}},
+					&ast.BreakStmt{},
+				},
+			},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: break inside the closure cannot reach the enclosing while")
+	}
+}
+
+func TestCheck_GeneralCallCalleeMustBeDefined(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "undefinedFunc"},
+			Args:   []ast.Expr{&ast.NumberLit{Value: 1}},
+		}}},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: undefinedFunc is not a builtin or a declared variable")
+	}
+}
+
+func TestCheck_BuiltinCalleeIsNotTreatedAsAVariable(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "print"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}

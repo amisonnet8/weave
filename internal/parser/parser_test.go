@@ -239,3 +239,93 @@ func TestParse_BreakAndContinue(t *testing.T) {
 		t.Errorf("body[1] = %T, want *ast.ContinueStmt", w.Body[1])
 	}
 }
+
+func TestParse_FuncLitSingleParam(t *testing.T) {
+	lit := parseExprForTest(t, "fn(a) { return a }")
+	f, ok := lit.(*ast.FuncLit)
+	if !ok {
+		t.Fatalf("got %T, want *ast.FuncLit", lit)
+	}
+	if f.Param != "a" {
+		t.Errorf("Param = %q, want a", f.Param)
+	}
+	if len(f.Body) != 1 {
+		t.Errorf("got %d body statements, want 1", len(f.Body))
+	}
+}
+
+// TestParse_MultiParamSugarMatchesChainedSugar verifies weave_spec.md
+// §5's own claim: `fn(a, b) {...}` and `fn(a) fn(b) {...}` are the same
+// thing. The parser folds both into an identical nested single-Param
+// AST (ast.FuncLit's doc comment), so this compares their exprString
+// forms directly.
+func TestParse_MultiParamSugarMatchesChainedSugar(t *testing.T) {
+	multi := parseExprForTest(t, "fn(a, b) { return a }")
+	chained := parseExprForTest(t, "fn(a) fn(b) { return a }")
+
+	multiLit, ok := multi.(*ast.FuncLit)
+	if !ok {
+		t.Fatalf("multi: got %T, want *ast.FuncLit", multi)
+	}
+	chainedLit, ok := chained.(*ast.FuncLit)
+	if !ok {
+		t.Fatalf("chained: got %T, want *ast.FuncLit", chained)
+	}
+	if multiLit.Param != "a" || chainedLit.Param != "a" {
+		t.Fatalf("outer Param: multi=%q chained=%q, want a/a", multiLit.Param, chainedLit.Param)
+	}
+	innerMulti, ok := multiLit.Body[0].(*ast.ReturnStmt).Value.(*ast.FuncLit)
+	if !ok {
+		t.Fatalf("multi body[0] value: got %T, want *ast.FuncLit", multiLit.Body[0])
+	}
+	innerChained, ok := chainedLit.Body[0].(*ast.ReturnStmt).Value.(*ast.FuncLit)
+	if !ok {
+		t.Fatalf("chained body[0] value: got %T, want *ast.FuncLit", chainedLit.Body[0])
+	}
+	if innerMulti.Param != "b" || innerChained.Param != "b" {
+		t.Fatalf("inner Param: multi=%q chained=%q, want b/b", innerMulti.Param, innerChained.Param)
+	}
+}
+
+func TestParse_FuncLitNoParamsIsAnError(t *testing.T) {
+	if _, err := Parse("func main(): int {\n\tf = fn() { return 1 }\n\treturn 0\n}\n"); err == nil {
+		t.Fatal("expected an error: fn(...) requires at least one parameter")
+	}
+}
+
+func TestParse_ImmediatelyInvokedFuncLit(t *testing.T) {
+	call, ok := parseExprForTest(t, "fn(a) { return a }(5)").(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("got %T, want *ast.CallExpr", call)
+	}
+	if _, ok := call.Callee.(*ast.FuncLit); !ok {
+		t.Errorf("callee: got %T, want *ast.FuncLit", call.Callee)
+	}
+	if len(call.Args) != 1 {
+		t.Errorf("got %d args, want 1", len(call.Args))
+	}
+}
+
+func TestParse_CurryCallSugar(t *testing.T) {
+	// f(a, b, c) parses as ONE CallExpr with 3 args (codegen expands the
+	// curry application; see internal/codegen's genGeneralCall).
+	call, ok := parseExprForTest(t, "f(1, 2, 3)").(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("got %T, want *ast.CallExpr", call)
+	}
+	if len(call.Args) != 3 {
+		t.Errorf("got %d args, want 3", len(call.Args))
+	}
+
+	// f(1)(2)(3) parses as nested single-arg CallExprs instead.
+	chained, ok := parseExprForTest(t, "f(1)(2)(3)").(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("got %T, want *ast.CallExpr", chained)
+	}
+	if len(chained.Args) != 1 {
+		t.Errorf("outer call: got %d args, want 1", len(chained.Args))
+	}
+	if _, ok := chained.Callee.(*ast.CallExpr); !ok {
+		t.Errorf("outer callee: got %T, want *ast.CallExpr", chained.Callee)
+	}
+}

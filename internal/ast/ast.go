@@ -151,6 +151,20 @@ type UnaryExpr struct {
 	Line int
 }
 
+// FuncLit is a function literal `fn(param) { body }` (weave_spec.md
+// §5). Every Weave function takes exactly one argument — Param is
+// always a single name. The multi-argument sugar `fn(a, b) {...}` and
+// the chained-literal sugar `fn(a) fn(b) {...}` are both folded into
+// nested single-Param FuncLits by the parser (see parser.go's
+// parseFuncLit), so this is the only shape codegen/sema ever see:
+// `fn(a, b) { body }` arrives as
+// `FuncLit{Param: "a", Body: [ReturnStmt{Value: FuncLit{Param: "b", Body: body}}]}`.
+type FuncLit struct {
+	Param string
+	Body  []Stmt
+	Line  int
+}
+
 func (*Ident) exprNode()      {}
 func (*NumberLit) exprNode()  {}
 func (*StringLit) exprNode()  {}
@@ -159,3 +173,4 @@ func (*NilLit) exprNode()     {}
 func (*CallExpr) exprNode()   {}
 func (*BinaryExpr) exprNode() {}
 func (*UnaryExpr) exprNode()  {}
+func (*FuncLit) exprNode()    {}
