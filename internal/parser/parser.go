@@ -129,7 +129,7 @@ func (p *parser) parseStmt() (ast.Stmt, error) {
 	case lexer.KwReturn:
 		return p.parseReturnStmt()
 	default:
-		return p.parseExprStmt()
+		return p.parseSimpleStmt()
 	}
 }
 
@@ -145,10 +145,26 @@ func (p *parser) parseReturnStmt() (ast.Stmt, error) {
 	return &ast.ReturnStmt{Value: val, Line: kw.Line}, nil
 }
 
-func (p *parser) parseExprStmt() (ast.Stmt, error) {
+// parseSimpleStmt parses a bare expression statement (e.g. a call like
+// `print(...)`) or, if `=` follows, an assignment (weave_spec.md §2:
+// there is no declaration keyword — `name = value` both introduces and
+// updates a name).
+func (p *parser) parseSimpleStmt() (ast.Stmt, error) {
 	x, err := p.parseExpr()
 	if err != nil {
 		return nil, err
+	}
+	if p.peek().Kind == lexer.Assign {
+		eq := p.advance()
+		name, ok := x.(*ast.Ident)
+		if !ok {
+			return nil, fmt.Errorf("line %d: left-hand side of `=` must be an identifier", eq.Line)
+		}
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.AssignStmt{Name: name.Name, Value: val, Line: eq.Line}, nil
 	}
 	return &ast.ExprStmt{X: x, Line: exprLine(x)}, nil
 }
@@ -215,6 +231,15 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 	case lexer.String:
 		p.advance()
 		return &ast.StringLit{Value: t.Literal, Line: t.Line}, nil
+	case lexer.KwTrue:
+		p.advance()
+		return &ast.BoolLit{Value: true, Line: t.Line}, nil
+	case lexer.KwFalse:
+		p.advance()
+		return &ast.BoolLit{Value: false, Line: t.Line}, nil
+	case lexer.KwNil:
+		p.advance()
+		return &ast.NilLit{Line: t.Line}, nil
 	case lexer.LParen:
 		p.advance()
 		x, err := p.parseExpr()
@@ -236,6 +261,10 @@ func exprLine(x ast.Expr) int {
 	case *ast.NumberLit:
 		return x.Line
 	case *ast.StringLit:
+		return x.Line
+	case *ast.BoolLit:
+		return x.Line
+	case *ast.NilLit:
 		return x.Line
 	case *ast.CallExpr:
 		return x.Line

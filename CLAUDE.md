@@ -194,7 +194,7 @@ Weaveは3本柱(動的型付け・プロトタイプOOP・カリー化/アクタ
 | # | ステップ | 主な内容 | 実証する命令(想定) | 解決する設計課題(上記「Weave特有の設計課題」の番号) |
 |---|---|---|---|---|
 | 1 ✅ | ブートストラップ | lexer/parser/ast/codegen最小構成。`func main(): int { print("Hello, Weave!") return 0 }`をamivm→go build→実行まで通す | `FUNC` `RET` `ENDFUNC` `CALL`(`print`) | 8. `main`のブリッジ方針を確定 |
-| 2 | 動的型の値表現とスカラー変数 | `nil`/`true`/`false`/数値(float64統一)/文字列のリテラル・代入・`print`。Weaveの値をAMIVM-IR/Goのどの型に対応させるかを確定 | `VAR` `SET` `CALL` | **1. 動的型の値表現(最重要・最初に決める)** |
+| 2 ✅ | 動的型の値表現とスカラー変数 | `nil`/`true`/`false`/数値(float64統一)/文字列のリテラル・代入・`print`。Weaveの値をAMIVM-IR/Goのどの型に対応させるかを確定 | `VAR` `SET` `CALL` | **1. 動的型の値表現(最重要・最初に決める)** |
 | 3 | 演算子 | 算術・比較・論理・文字列結合(8節)、優先順位表の実地検証。型が食い違う場合の実行時エラー(8節)を最初に実装し、検出方式を確定 | `ADD` `SUB` `MUL` `DIV` `MOD` `EQ` `NEQ` `LT` `LTE` `GT` `GTE` `AND` `OR` `NOT` `CONCAT` | 6. 実行時型エラーの表現 |
 | 4 | 制御構文 | `if/elif/else`、`while`、`for`(範囲/カウンタ形。オブジェクト走査はStep6以降)、`break`/`continue` | `LABEL` `GOTO` `IF` | — (goto/VAR巻き上げ問題の再確認) |
 | 5 | 関数・クロージャー・カリー化 | `fn(a) {...}`リテラル、レキシカルスコープ捕捉、多引数糖衣`fn(a,b)`のコンパイル時「1引数連鎖」展開、部分適用 | `FNTYPE` `CLOS` `ENDCLOS` | **3. カリー化のコンパイル時展開** |
@@ -218,7 +218,30 @@ Weaveの`func main(): int`をamivmの`!main`へ直接対応させることはで
 
 ### 数値リテラルの扱い
 
-Weaveは整数・浮動小数点を言語レベルで区別しない(2節)ため、字句解析では`Number`という単一のトークン種別にまとめ(整数形・小数形どちらの見た目も同じKindとして扱う)、`ast.NumberLit`は常に`float64`で値を保持する。`main`の戻り値(exit code)はGoの`int`型が必要なため、`return <literal>`をコンパイルする際は「値に小数部が無いか」をcodegenが実行時ではなくコンパイル時に検査し、整数トークンとして`RET`へ埋め込む(Step2で一般の数値変数を導入する際、この「exit codeだけは整数チェックが要る」という特殊性が保たれるか要再検討)。
+Weaveは整数・浮動小数点を言語レベルで区別しない(2節)ため、字句解析では`Number`という単一のトークン種別にまとめ(整数形・小数形どちらの見た目も同じKindとして扱う)、`ast.NumberLit`は常に`float64`で値を保持する。Step1時点の「`return`はコンパイル時に整数チェックする」という扱いはStep2で置き換えた(下記参照)。
+
+### 動的型の値表現(Step 2で確定・最重要設計判断)
+
+**Weaveの全ての値(数値・文字列・真偽値・`nil`)はGoの`any`として表現する。** つまりWeaveの変数は例外なく`VAR %x ^any`として宣言される。これはCLAUDE.md「Weave特有の設計課題」1の結論であり、Seed/Cascadeの静的型付けとは根本的に異なる。
+
+実地検証で確定した具体的なポイント:
+
+- **AMIVMの`value`オペランドカテゴリ(5節)は`nil`/`true,false`/数値/文字列の全リテラル形を1つのカテゴリとして扱う。** そのため`SET %x nil`・`SET %x true`・`SET %x 1.5`・`SET %x "hi"`はいずれも構文上有効で、`%x`の宣言型が`^any`であれば、生成されたGoコード(`var x any; x = nil` 等)はそのままgo/typesを通る。**ランタイムヘルパーを介さない直接SETで動的型の代入が成立する**、という見込みは実地検証(`go build`まで)で確認済み
+- **数値リテラルには罠がある**: AMIVMの`value`トークン`1234`はGoコードにそのまま`x = 1234`として埋め込まれる。`x`が`any`型の場合、Goは無型整数定数のデフォルト型`int`を選ぶため、**`float64`にならない**(実際に`go run`で確認済み: `var x any; x = 1234`は`x`の動的型が`int`になる)。これはWeaveの「数値は内部的に全てfloat64相当」という前提(2節)を壊す。対策として、`internal/codegen`の`formatNumberLiteral`が整数形の値には強制的に`.0`を付与し(`1234`→`1234.0`)、Goの無型浮動小数点定数のデフォルト型`float64`を選ばせる。この罠はSET・CALL引数など、数値リテラルトークンが埋め込まれる**全ての箇所**で共通に踏むため、`genValue`という単一のヘルパーに数値リテラルの文字列化を集約した
+- **`nil`のゼロ値は都合よく一致した**: Goの`any`型のゼロ値はまさに`nil`であり、これは「変数は代入されるまでnil」というWeaveの仕様(2節)と完全に一致する。Seed/Cascadeが`T?`型のために持っていた別ドキュメンテーション「値+`_isset`フラグ」のペアは**不要**——`VAR`宣言直後の状態が自動的にWeaveのnilと同じになる
+- **`print`のnil表示だけはGoのデフォルトと食い違う**: `fmt.Println`は`nil`な`any`を`<nil>`と表示するが、Weaveの`nil`リテラルの綴りに合わせるなら`nil`と表示したい。この1点のためだけに`weavert`パッケージ(Seedの`seedrt`と同じ`go:embed`配布方式)を導入し、`weavert.Print(v any)`が`nil`チェックしてから`fmt.Println`に委譲する
+
+### VAR巻き上げの先取り導入(Step 2で確定)
+
+制御構文(Step4)が入るとgoto/VAR巻き上げ問題(seed_implementation_notes.md §1)が発生するため、**Step2の時点で`internal/codegen`に`funcGen`(hoisted `decls` + `declared`集合 + 命令本体の`strings.Builder`)を導入した。** Cascadeも同じ理由でStep2からこの仕組みを先取りしており(cascade_implementation_notes.md §Step5)、同じ判断を踏襲した形になる。現時点ではWeaveにブロックスコープ(10節)がまだ無い(制御構文が無いため)ため、`declared`は関数全体でフラットな1つの集合で足りる。ブロックスコープ・シャドーイングへの対応はStep4で拡張する。
+
+### 実行時型エラーの最初の実例(Step 2で確定)
+
+`main`の`return <expr>`は`weavert.ExitCode(v any) int`という型アサーション+`panic`のヘルパーを経由するようにした(design question 6の最初の実例)。`return`の対象は動的な`any`値になり得るため、コンパイル時に整数かどうかを検査すること自体ができない(Step1では`ast.NumberLit`の値を直接見て検査していたが、変数を許容した時点でこの方式は成立しなくなった)。実行時に型が食い違えば`panic`でクラッシュする、という一番素朴な方式を採用し、エラーメッセージの改善(パニックではなく通常のエラー終了にする等)は必要になった時点で再検討する。
+
+### 予約名の管理方式(Step 2で確定)
+
+`internal/codegen`が生成する内部名(`weave_main`・`__exitcode`)は、ユーザーが同名の変数へ代入すると衝突する。Seedの`seed_main`と同じ方式で、**`internal/sema`に同じ文字列定数を(importではなく)重複定義し、コメントで同期を明記する**形にした(`internal/codegen`から`internal/sema`への依存を作らないため)。新しい内部専用名を追加するたびに、両方のファイルを揃えて更新すること。
 
 ## 開発の進め方
 

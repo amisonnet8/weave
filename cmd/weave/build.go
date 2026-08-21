@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"github.com/amisonnet8/weave/internal/codegen"
 	"github.com/amisonnet8/weave/internal/parser"
 	"github.com/amisonnet8/weave/internal/sema"
+	"github.com/amisonnet8/weave/weavert"
 )
 
 // compileToIR runs Weave's own share of the pipeline — parse, sema.Check,
@@ -72,6 +74,10 @@ func compileToGo(srcPath string, verbose bool) (goSrc, workDir string, err error
 		cleanup()
 		return "", "", err
 	}
+	if err := writeWeavert(workDir); err != nil {
+		cleanup()
+		return "", "", err
+	}
 
 	irPath := filepath.Join(workDir, "main.ir")
 	if err := os.WriteFile(irPath, []byte(ir), 0o644); err != nil {
@@ -80,7 +86,10 @@ func compileToGo(srcPath string, verbose bool) (goSrc, workDir string, err error
 	}
 
 	goPath := filepath.Join(workDir, "main.go")
-	amivmArgs := []string{irPath, "-o", goPath}
+	// -i is safe to pass unconditionally even for a program that never
+	// calls into weavert: amivm drops an unused import mapping on its
+	// own (see ignored/seed/CLAUDE.md's amivm CLI notes).
+	amivmArgs := []string{irPath, "-o", goPath, "-i", "weavert=weavebuild/weavert"}
 	if verbose {
 		amivmArgs = append(amivmArgs, "-v")
 	}
@@ -123,4 +132,32 @@ func compileToBinary(srcPath, outPath string, verbose bool) error {
 		return fmt.Errorf("go build:\n%s", out)
 	}
 	return nil
+}
+
+// writeWeavert copies weavert's own embedded source (see
+// weavert/embed.go) into workDir/weavert, so it becomes an ordinary
+// subpackage of the scratch build module — "weavebuild/weavert" — with
+// no separate module or replace directive needed. embed.go itself is
+// skipped: copying it too would work (its own //go:embed *.go would
+// just re-embed the copy, harmlessly), but the embed.FS it declares
+// serves no purpose once copied out. Mirrors Seed's writeSeedrt
+// (ignored/seed/cmd/seed/build.go).
+func writeWeavert(workDir string) error {
+	dir := filepath.Join(workDir, "weavert")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return err
+	}
+	return fs.WalkDir(weavert.Source, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || name == "embed.go" {
+			return nil
+		}
+		content, err := fs.ReadFile(weavert.Source, name)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, name), content, 0o644)
+	})
 }

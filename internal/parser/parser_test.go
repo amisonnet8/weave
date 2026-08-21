@@ -52,6 +52,48 @@ func TestParse_HelloWorld(t *testing.T) {
 	}
 }
 
+func TestParse_AssignStmt(t *testing.T) {
+	src := "func main(): int {\n\tx = 1\n\ty = \"hi\"\n\tz = true\n\tw = false\n\tn = nil\n\treturn 0\n}\n"
+	file, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(file.Main.Body) != 6 {
+		t.Fatalf("got %d statements, want 6: %+v", len(file.Main.Body), file.Main.Body)
+	}
+
+	assign, ok := file.Main.Body[0].(*ast.AssignStmt)
+	if !ok || assign.Name != "x" {
+		t.Fatalf("statement 0: got %#v, want AssignStmt(x)", file.Main.Body[0])
+	}
+	if _, ok := assign.Value.(*ast.NumberLit); !ok {
+		t.Errorf("x's value: got %#v, want *ast.NumberLit", assign.Value)
+	}
+
+	z, ok := file.Main.Body[2].(*ast.AssignStmt)
+	if !ok {
+		t.Fatalf("statement 2: got %T, want *ast.AssignStmt", file.Main.Body[2])
+	}
+	zVal, ok := z.Value.(*ast.BoolLit)
+	if !ok || zVal.Value != true {
+		t.Errorf("z's value: got %#v, want BoolLit(true)", z.Value)
+	}
+
+	n, ok := file.Main.Body[4].(*ast.AssignStmt)
+	if !ok {
+		t.Fatalf("statement 4: got %T, want *ast.AssignStmt", file.Main.Body[4])
+	}
+	if _, ok := n.Value.(*ast.NilLit); !ok {
+		t.Errorf("n's value: got %#v, want *ast.NilLit", n.Value)
+	}
+}
+
+func TestParse_AssignToNonIdentIsAnError(t *testing.T) {
+	if _, err := Parse("func main(): int {\n\tprint(x) = 1\n\treturn 0\n}\n"); err == nil {
+		t.Fatal("expected an error assigning to a non-identifier")
+	}
+}
+
 func TestParse_MissingReturnTypeIsAnError(t *testing.T) {
 	if _, err := Parse("func main() {\n}\n"); err == nil {
 		t.Fatal("expected an error for a missing `: <type>`")

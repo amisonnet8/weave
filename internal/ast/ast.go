@@ -41,8 +41,18 @@ type ReturnStmt struct {
 	Line  int
 }
 
+// AssignStmt is `name = value` (weave_spec.md §2, §4.1). Weave has no
+// declaration keyword: the first assignment to a name introduces it in
+// the current scope (§2), and later assignments update it.
+type AssignStmt struct {
+	Name  string
+	Value Expr
+	Line  int
+}
+
 func (*ExprStmt) stmtNode()   {}
 func (*ReturnStmt) stmtNode() {}
+func (*AssignStmt) stmtNode() {}
 
 // Expr is a Weave expression.
 type Expr interface {
@@ -71,8 +81,20 @@ type StringLit struct {
 	Line  int
 }
 
-// CallExpr is a function call `Callee(Args...)`. Step 1 only ever sees
-// Callee as an *Ident naming a builtin (print); general callees
+// BoolLit is `true` or `false`.
+type BoolLit struct {
+	Value bool
+	Line  int
+}
+
+// NilLit is the literal `nil` — Weave's single "value absence" value
+// (weave_spec.md §2).
+type NilLit struct {
+	Line int
+}
+
+// CallExpr is a function call `Callee(Args...)`. Through Step 2, Callee
+// is always an *Ident naming a builtin (print); general callees
 // (currying, method dispatch) arrive in later steps.
 type CallExpr struct {
 	Callee Expr
@@ -83,4 +105,6 @@ type CallExpr struct {
 func (*Ident) exprNode()     {}
 func (*NumberLit) exprNode() {}
 func (*StringLit) exprNode() {}
+func (*BoolLit) exprNode()   {}
+func (*NilLit) exprNode()    {}
 func (*CallExpr) exprNode()  {}

@@ -1,0 +1,15 @@
+func main(): int {
+	x = 1
+	y = "hello"
+	z = true
+	w = nil
+	n = 3.5
+	print(x)
+	print(y)
+	print(z)
+	print(w)
+	print(n)
+	x = 2
+	print(x)
+	return x
+}
