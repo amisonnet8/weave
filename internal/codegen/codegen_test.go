@@ -856,3 +856,85 @@ func TestGenerate_GoTypeDeclEmitsNoIR(t *testing.T) {
 		t.Errorf("gotype(...) declaration must emit no IR at all, got:\n%s", ir)
 	}
 }
+
+func goReaderDeclStmts() []ast.Stmt {
+	return []ast.Stmt{
+		&ast.AssignStmt{Name: "GoReader", Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "gotype"},
+			Args: []ast.Expr{
+				&ast.StringLit{Value: "?strings.Reader"},
+				&ast.ObjectLit{Fields: []ast.ObjectField{
+					{Name: "len", Value: &ast.CallExpr{
+						Callee: &ast.Ident{Name: "gomethod"},
+						Args:   []ast.Expr{&ast.StringLit{Value: "Len"}},
+					}},
+				}},
+			},
+		}},
+		&ast.AssignStmt{Name: "newReader", Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "gofunc"},
+			Args:   []ast.Expr{&ast.StringLit{Value: "?strings.NewReader"}, &ast.Ident{Name: "GoReader"}},
+		}},
+		&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "newReader"},
+			Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+		}},
+	}
+}
+
+func TestGenerate_GoFuncCallNormalizesResult(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: append(goReaderDeclStmts(), &ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}),
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?strings.NewReader\t\"hi\"\n") {
+		t.Errorf("expected a direct CALL to ?strings.NewReader, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.NormalizeGoValue\t") {
+		t.Errorf("expected the gofunc result to be routed through NormalizeGoValue, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_StaticGoMethodCallBypassesWeavertObjGet(t *testing.T) {
+	body := append(goReaderDeclStmts(),
+		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	)
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.CallGoMethod\t%r\t\"Len\"\n") {
+		t.Errorf("expected a direct CallGoMethod with the resolved Go method name, got:\n%s", ir)
+	}
+	if strings.Contains(ir, "?weavert.ObjGet") {
+		t.Errorf("a static Go method call must not go through weavert.ObjGet, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_OrdinaryObjectMethodStillUsesDynamicDispatch(t *testing.T) {
+	// A variable that was never assigned from a gofunc(...) call must
+	// keep using the ordinary dynamic obj.method() path.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "obj", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+				{Name: "greet", Value: &ast.FuncLit{Param: "self", Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}}}}},
+			}}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "obj"}, Prop: "greet"}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.ObjGet\t%obj\t\"greet\"\n") {
+		t.Errorf("expected ordinary dynamic dispatch via ObjGet, got:\n%s", ir)
+	}
+}

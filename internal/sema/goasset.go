@@ -166,3 +166,51 @@ func (c *checker) checkGoFuncDecl(name string, call *ast.CallExpr, line int) err
 	c.goFuncs[name] = &GoFuncInfo{GoName: goName.Value, Proto: proto}
 	return nil
 }
+
+// trackGoStaticVar records name as statically Go-typed (weave_spec.md
+// §16) when value is a direct call to a gofunc(...)-declared name whose
+// own proto is a known gotype — e.g. `f = goOpen(path)`, matching §17's
+// `self.file = goOpen(path)` pattern but for a plain variable (Step 4
+// scope-narrows to this case — see CLAUDE.md's 後半 Step 4 "確定した
+// 設計判断" for why an object property's static type isn't tracked).
+// Any other assignment (including one whose RHS merely happens to be
+// some other call) clears a stale entry: reassigning `f` to an
+// ordinary dynamic value must make `f.whatever()` fall back to normal
+// prototype-chain dispatch, not a leftover static resolution.
+func (c *checker) trackGoStaticVar(name string, value ast.Expr) {
+	if c.goStaticVars == nil {
+		c.goStaticVars = map[string]string{}
+	}
+	if call, ok := value.(*ast.CallExpr); ok {
+		if callee, ok := call.Callee.(*ast.Ident); ok {
+			if info := c.goFuncs[callee.Name]; info != nil && info.Proto != "" {
+				c.goStaticVars[name] = info.Proto
+				return
+			}
+		}
+	}
+	delete(c.goStaticVars, name)
+}
+
+// checkGoMethodCall checks a call whose callee is a property access
+// (`f.Method(...)`). If Obj is a statically Go-typed variable
+// (trackGoStaticVar), the property name must be one gotype(...) actually
+// declared via gomethod(...) — an error here catches a typo/nonexistent
+// method at compile time, instead of a confusing reflect panic from
+// weavert.CallGoMethod at run time (internal/codegen/goasset.go emits
+// the matching static-dispatch IR; see its own doc comment). Otherwise
+// this is an ordinary dynamic method call, and only Obj itself needs
+// checking (weave_spec.md §9's self-injection sugar; the property name
+// is just a map key, not something sema validates for a plain object).
+func (c *checker) checkGoMethodCall(prop *ast.PropExpr, sc *scope) error {
+	if id, ok := prop.Obj.(*ast.Ident); ok {
+		if typeName, ok := c.goStaticVars[id.Name]; ok {
+			info := c.goTypes[typeName]
+			if _, ok := info.Methods[prop.Prop]; !ok {
+				return fmt.Errorf("line %d: %s has no gomethod-declared member %q", prop.Line, typeName, prop.Prop)
+			}
+			return nil
+		}
+	}
+	return c.checkExpr(prop.Obj, sc)
+}

@@ -84,6 +84,12 @@ type funcGen struct {
 	labelCount    int
 	breakStack    []string // target label for `break`, innermost last
 	continueStack []string // target label for `continue`, innermost last
+
+	// goStaticVars mirrors sema's own tracking (internal/sema/goasset.go's
+	// trackGoStaticVar) — kept per-funcGen, not on codegenCtx, since it
+	// tracks ordinary variable identities that don't cross function
+	// boundaries (unlike goTypes/goFuncs, true compile-time constants).
+	goStaticVars map[string]string
 }
 
 func newFuncGen(ctx *codegenCtx) *funcGen {
@@ -297,6 +303,7 @@ func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 	if err != nil {
 		return err
 	}
+	trackGoStaticVar(fg, s.Name, s.Value)
 	fg.declare(s.Name, "^any")
 	fmt.Fprintf(&fg.body, "\tSET\t%%%s\t%s\n", s.Name, val)
 	return nil
@@ -431,6 +438,9 @@ func genGeneralCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 	// outer `(b)` in `obj.method(a)(b)`) is an ordinary curried
 	// application with no further self-injection. See genMethodCall.
 	if prop, ok := call.Callee.(*ast.PropExpr); ok {
+		if handled, result, err := genGoMethodCall(fg, prop, call.Args); handled {
+			return result, err
+		}
 		return genMethodCall(fg, prop, call.Args)
 	}
 	// A gofunc(...)-declared reference compiles straight to its real Go

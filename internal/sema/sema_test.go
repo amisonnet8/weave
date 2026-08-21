@@ -610,3 +610,78 @@ func TestCheck_GoTypeMemberMustBeGomethod(t *testing.T) {
 		t.Fatal("expected an error: member value must be gomethod(...)")
 	}
 }
+
+func TestCheck_StaticGoMethodCallIsValid(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?strings.Reader", []ast.ObjectField{
+				{Name: "len", Value: gomethodExpr("Len")},
+			})},
+			&ast.AssignStmt{Name: "newReader", Value: goFuncDeclExpr("?strings.NewReader", &ast.Ident{Name: "GoReader"})},
+			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "newReader"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_StaticGoMethodCallRejectsUnknownMember(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?strings.Reader", []ast.ObjectField{
+				{Name: "len", Value: gomethodExpr("Len")},
+			})},
+			&ast.AssignStmt{Name: "newReader", Value: goFuncDeclExpr("?strings.NewReader", &ast.Ident{Name: "GoReader"})},
+			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "newReader"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "notDeclared"},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: notDeclared was never gomethod(...)-declared on GoReader")
+	}
+}
+
+func TestCheck_ReassignedVarLosesStaticGoType(t *testing.T) {
+	// r starts Go-typed, then gets reassigned to an ordinary object —
+	// r.someProp() afterward must be treated as an ordinary dynamic
+	// call, not a (now-stale) static Go method resolution.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?strings.Reader", []ast.ObjectField{
+				{Name: "len", Value: gomethodExpr("Len")},
+			})},
+			&ast.AssignStmt{Name: "newReader", Value: goFuncDeclExpr("?strings.NewReader", &ast.Ident{Name: "GoReader"})},
+			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "newReader"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+			}},
+			&ast.AssignStmt{Name: "r", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+				{Name: "len", Value: &ast.FuncLit{Param: "self", Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}}}}},
+			}}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}

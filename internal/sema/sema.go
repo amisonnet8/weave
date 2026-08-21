@@ -124,6 +124,12 @@ type checker struct {
 	loopDepth int
 	goTypes   map[string]*GoTypeInfo
 	goFuncs   map[string]*GoFuncInfo
+
+	// goStaticVars tracks the narrow case Step 4 actually resolves
+	// statically: a plain variable's most recent assignment came
+	// directly from a gofunc(...) call whose declared proto is a known
+	// gotype — see goasset.go's trackGoStaticVar/checkGoMethodCall.
+	goStaticVars map[string]string
 }
 
 // Check validates file ahead of code generation.
@@ -187,6 +193,7 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 		if why, ok := reservedName(s.Name); ok {
 			return fmt.Errorf("line %d: %q is a reserved name (%s)", s.Line, s.Name, why)
 		}
+		c.trackGoStaticVar(s.Name, s.Value)
 		sc.declareIfNew(s.Name)
 		return nil
 	case *ast.ExprStmt:
@@ -255,18 +262,26 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 	case *ast.NumberLit, *ast.StringLit, *ast.BoolLit, *ast.NilLit:
 		return nil
 	case *ast.CallExpr:
-		if callee, ok := e.Callee.(*ast.Ident); ok {
+		switch callee := e.Callee.(type) {
+		case *ast.Ident:
 			if why, ok := goAssetReservedName(callee.Name); ok {
 				return fmt.Errorf("line %d: %q is a reserved name (%s); it may only appear as `name = %s(...)`", callee.Line, callee.Name, why, callee.Name)
 			}
-			if builtinNames[callee.Name] || c.goFuncs[callee.Name] != nil {
-				// builtin, or a gofunc(...)-declared reference (goasset.go):
-				// neither is an ordinary variable, so skip the Ident check below.
-			} else if err := c.checkExpr(e.Callee, sc); err != nil {
+			if !builtinNames[callee.Name] && c.goFuncs[callee.Name] == nil {
+				// Neither a builtin nor a gofunc(...)-declared reference
+				// (goasset.go) — it must be an ordinary variable.
+				if err := c.checkExpr(e.Callee, sc); err != nil {
+					return err
+				}
+			}
+		case *ast.PropExpr:
+			if err := c.checkGoMethodCall(callee, sc); err != nil {
 				return err
 			}
-		} else if err := c.checkExpr(e.Callee, sc); err != nil {
-			return err
+		default:
+			if err := c.checkExpr(e.Callee, sc); err != nil {
+				return err
+			}
 		}
 		for _, arg := range e.Args {
 			if err := c.checkExpr(arg, sc); err != nil {

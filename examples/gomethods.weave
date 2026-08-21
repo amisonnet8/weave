@@ -1,0 +1,13 @@
+func main(): int {
+	GoReader = gotype("?strings.Reader", {
+		len: gomethod("Len")
+	})
+	newReader = gofunc("?strings.NewReader", GoReader)
+
+	r = newReader("hello, weave")
+	print(r.len())
+	print(r.len() + 8)
+	print(r.len() > 10)
+
+	return r.len()
+}

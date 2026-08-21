@@ -1,0 +1,83 @@
+package weavert
+
+import (
+	"fmt"
+	"reflect"
+)
+
+// CallGoMethod implements a gomethod(...)-declared method call
+// (weave_spec.md §15.1, §16): target is a Go value returned by some
+// gofunc call (an ordinary Weave `any`, holding whatever the wrapped Go
+// function actually returned — no wrapper struct needed, see Step 3's
+// genGoFuncCall), and methodName is the *real* Go method name
+// gomethod(...) named, already resolved at compile time by
+// internal/codegen/goasset.go (no dynamic prototype-chain search, per
+// §16 — CLAUDE.md's 後半 Step 4 "確定した設計判断" has the full
+// reasoning for why this still needs reflection despite that: target's
+// static Go type isn't known to the *generated* code, only to codegen
+// itself, so invoking it can't be a literal Go method-call expression).
+func CallGoMethod(target any, methodName string, args ...any) any {
+	v := reflect.ValueOf(target)
+	m := v.MethodByName(methodName)
+	if !m.IsValid() {
+		panic(fmt.Sprintf("weave: %T has no method %s", target, methodName))
+	}
+	mType := m.Type()
+
+	argVals := make([]reflect.Value, len(args))
+	for i, a := range args {
+		if a == nil {
+			argVals[i] = reflect.Zero(mType.In(i))
+		} else {
+			argVals[i] = reflect.ValueOf(a)
+		}
+	}
+
+	out := m.Call(argVals)
+	if len(out) == 0 {
+		return nil
+	}
+	return NormalizeGoValue(out[0].Interface())
+}
+
+// NormalizeGoValue converts a raw Go numeric result to Weave's own
+// unified number representation (weave_spec.md §2: every Weave number
+// is a float64, integers and floats aren't distinguished — CLAUDE.md's
+// Step 2 "確定した設計判断"). Without this, a Go asset call returning a
+// native `int` (e.g. `(*strings.Reader).Len() int`) would silently
+// break any later Weave-native operation expecting float64 (arithmetic,
+// comparisons, main's own exit code) — caught by running
+// examples/gomethods.weave through the full pipeline (see CLAUDE.md's
+// 後半 Step 4 "確定した設計判断"). Strings, bools, float64 itself,
+// nil, and any Go struct/pointer (returned as-is per §15.2, since it
+// has no Weave equivalent to convert to) all pass through unchanged.
+// Both CallGoMethod and genGoFuncCall's direct native calls
+// (internal/codegen/goasset.go) route their results through this.
+func NormalizeGoValue(v any) any {
+	switch x := v.(type) {
+	case int:
+		return float64(x)
+	case int8:
+		return float64(x)
+	case int16:
+		return float64(x)
+	case int32:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case uint:
+		return float64(x)
+	case uint8:
+		return float64(x)
+	case uint16:
+		return float64(x)
+	case uint32:
+		return float64(x)
+	case uint64:
+		return float64(x)
+	case float32:
+		return float64(x)
+	default:
+		return v
+	}
+}
