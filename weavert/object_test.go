@@ -64,14 +64,14 @@ func TestObject_MixedValueTypes(t *testing.T) {
 	ObjSet(o, "s", "hi")
 	ObjSet(o, "b", true)
 	ObjSet(o, "nilv", nil)
-	fn := func(env []any, arg any) any { return arg }
-	ObjSet(o, "f", NewClosure(fn, []any{}))
+	fn := func(arg any) any { return arg }
+	ObjSet(o, "f", fn)
 
 	if ObjGet(o, "n") != 1.0 || ObjGet(o, "s") != "hi" || ObjGet(o, "b") != true || ObjGet(o, "nilv") != nil {
 		t.Error("expected all scalar values to round-trip unchanged")
 	}
-	if _, ok := ObjGet(o, "f").(*Closure); !ok {
-		t.Error("expected the function-valued property to remain a *Closure")
+	if got := ObjGet(o, "f"); Call(got, 5.0) != 5.0 {
+		t.Errorf("expected the function-valued property to remain callable, got %v calling it", got)
 	}
 }
 

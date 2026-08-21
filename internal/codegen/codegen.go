@@ -44,12 +44,11 @@ var builtinNames = map[string]bool{
 }
 
 // codegenCtx is shared by every funcGen created during one Generate()
-// call — main's own funcGen and every nested closure's (see
-// genFuncLit) — so closure FUNCs get globally unique names and all end
-// up collected in one place to emit alongside weave_main/main.
+// call — weave_main's own funcGen and every nested closure's (see
+// genFuncLit) — so nested CLOS instances get globally unique name
+// prefixes (funcGen.namePrefix) regardless of how deeply they nest.
 type codegenCtx struct {
-	closureCount int
-	closureFuncs []string // accumulated `FUNC ... ENDFUNC` blocks, compilation order
+	closureCount int // total CLOS instances compiled so far; also each one's own unique id
 
 	// goTypes/goFuncs are populated as `gotype(...)`/`gofunc(...)`
 	// declarations are compiled (goasset.go) and consulted by later
@@ -58,27 +57,48 @@ type codegenCtx struct {
 	goFuncs map[string]*GoFuncInfo
 }
 
-// funcGen accumulates one AMIVM FUNC body's VAR declarations (hoisted to
-// the top, in first-declared order) and its SET/CALL/GOTO/LABEL/IF/RET
-// instructions (left in source order).
+// funcGen accumulates one AMIVM FUNC or CLOS body's VAR declarations
+// (hoisted to the top, in first-declared order) and its
+// SET/CALL/GOTO/LABEL/IF/RET instructions (left in source order).
+// weave_main's own funcGen (parent == nil) maps to the top-level FUNC;
+// every closure literal (weave_spec.md §5) gets its own funcGen (see
+// genFuncLit) mapping to a CLOS nested inline at the point the literal
+// appears, parented at whichever funcGen was active there — arbitrarily
+// deep, since AMIVM's CLOS can now nest inside another CLOS's body.
 //
 // Weave allows block-scoped shadowing at the language level
-// (weave_spec.md §10), but on the Go side generated variables stay in
-// one completely flat namespace regardless of nesting — sema.go's scope
-// already resolves which Weave name maps to which binding and rejects
-// anything codegen shouldn't be asked to generate (see its "確定した
-// 設計判断" for why a flat `declared` set here is still correct: sema
-// guarantees every Ident it lets through already refers to a valid,
-// visible binding, so codegen never needs its own notion of scope).
-// This also means every VAR — no matter how deeply nested the if/while
-// that introduces it — ends up hoisted ahead of any GOTO/LABEL in the
-// same function, which is required by Go's "goto cannot jump over a
-// variable declaration" rule (seed_implementation_notes.md §1).
+// (weave_spec.md §10), but on the Go side, variables declared by
+// ordinary (non-CLOS-crossing) if/while/for bodies stay in one flat
+// namespace within their own funcGen — sema.go's scope already resolves
+// which Weave name maps to which binding at that granularity, so a flat
+// `declared` set per funcGen is still correct there (see CLAUDE.md's
+// Step 4 "確定した設計判断"). Crossing a CLOS boundary is different: each
+// nested CLOS is a real, independently-scoped Go func literal, so a name
+// declared in one must never collide with the *same* AMIVM naming
+// (`関数名_amivm_function_xxx`, which does not vary by CLOS nesting depth
+// — only `&N`'s own Go name does, via `&L-N`) chosen by another nested
+// CLOS instance. namePrefix (unique per funcGen instance, empty only for
+// weave_main's own top-level funcGen) is how each instance's own %-names
+// stay distinct; resolve walks the parent chain to find which instance
+// (and therefore which prefix) a name was actually bound in, letting a
+// nested closure reference an enclosing one's variable — or reassign it,
+// per §10's "参照で捕捉する" — by the same %-token the enclosing scope
+// itself uses. See genFuncLit's doc comment for the closure-compilation
+// side of this.
+//
+// Every VAR — no matter how deeply nested the if/while that introduces
+// it — ends up hoisted ahead of any GOTO/LABEL in the *same* funcGen,
+// which is required by Go's "goto cannot jump over a variable
+// declaration" rule (seed_implementation_notes.md §1); crossing into a
+// nested CLOS starts a fresh hoisting region, since that's a separate Go
+// func literal with its own goto/label namespace.
 type funcGen struct {
 	ctx           *codegenCtx
-	isMain        bool // true only for weave_main's own funcGen — see genReturnStmt
+	parent        *funcGen // nil only for weave_main's own top-level funcGen
+	namePrefix    string   // unique per funcGen instance; "" for weave_main itself
+	isMain        bool     // true only for weave_main's own funcGen — see genReturnStmt
 	decls         []string
-	declared      map[string]bool
+	declared      map[string]bool // names (bare, unprefixed) declared directly in THIS funcGen
 	body          strings.Builder
 	tempCount     int
 	labelCount    int
@@ -88,7 +108,9 @@ type funcGen struct {
 	// goStaticVars mirrors sema's own tracking (internal/sema/goasset.go's
 	// trackGoStaticVar) — kept per-funcGen, not on codegenCtx, since it
 	// tracks ordinary variable identities that don't cross function
-	// boundaries (unlike goTypes/goFuncs, true compile-time constants).
+	// boundaries (unlike goTypes/goFuncs, true compile-time constants). A
+	// closure does not inherit an enclosing scope's static Go-typing
+	// knowledge (a narrow, pre-existing limitation, unchanged here).
 	goStaticVars map[string]string
 }
 
@@ -96,28 +118,52 @@ func newFuncGen(ctx *codegenCtx) *funcGen {
 	return &funcGen{ctx: ctx, declared: map[string]bool{}}
 }
 
-// declare emits a hoisted `VAR %name irType` line the first time name is
-// seen; later calls for the same name are no-ops (an AMIVM VAR may only
-// be declared once per function).
-func (fg *funcGen) declare(name, irType string) {
+// declare emits a hoisted `VAR %token irType` line the first time name is
+// seen in THIS funcGen specifically (an AMIVM VAR may only be declared
+// once per FUNC/CLOS body), and returns its full, namePrefix-qualified
+// token. Used for bindings that are always fresh at this exact level —
+// a closure's own parameter, a for-in loop's key/value — never for an
+// ordinary Weave assignment, which must check resolve first (see
+// genAssignStmt) so that reassigning a name visible from an enclosing
+// scope updates that binding instead of shadowing it, per weave_spec.md
+// §10's "代入は既存を再代入優先" (CLAUDE.md's Step 4 "確定した設計判断").
+func (fg *funcGen) declare(name, irType string) string {
+	tok := fg.namePrefix + name
 	if fg.declared[name] {
-		return
+		return tok
 	}
 	fg.declared[name] = true
-	fg.decls = append(fg.decls, fmt.Sprintf("\tVAR\t%%%s\t%s\n", name, irType))
+	fg.decls = append(fg.decls, fmt.Sprintf("\tVAR\t%%%s\t%s\n", tok, irType))
+	return tok
 }
 
-// newTemp declares and returns the `%__tN` token of a fresh compiler
-// temp of the given AMIVM type, for holding an intermediate expression
-// or condition result (see genBinaryExpr/genUnaryExpr/genCond). The
-// `__` prefix is reserved wholesale for the compiler's own names (see
-// sema.go's reservedName), so these can never collide with a
-// user-assigned Weave variable.
+// resolve looks up name starting at fg and walking outward through
+// parent funcGens (innermost first), returning the full token of
+// whichever funcGen instance actually declared it. This is what lets a
+// nested closure read — or, via genAssignStmt, reassign — an enclosing
+// scope's variable using Go's own lexical capture (native CLOS nesting,
+// see genFuncLit), rather than a local shadow copy.
+func (fg *funcGen) resolve(name string) (string, bool) {
+	for f := fg; f != nil; f = f.parent {
+		if f.declared[name] {
+			return f.namePrefix + name, true
+		}
+	}
+	return "", false
+}
+
+// newTemp declares and returns the `%token` of a fresh compiler temp of
+// the given AMIVM type, for holding an intermediate expression or
+// condition result (see genBinaryExpr/genUnaryExpr/genCond). The `__`
+// prefix is reserved wholesale for the compiler's own names (see
+// sema.go's reservedName), so the bare name can never collide with a
+// user-assigned Weave variable — namePrefix (see declare) additionally
+// keeps it from colliding with the *same* bare temp name generated by a
+// different funcGen instance (a sibling or ancestor/descendant closure).
 func (fg *funcGen) newTemp(irType string) string {
 	name := fmt.Sprintf("__t%d", fg.tempCount)
 	fg.tempCount++
-	fg.declare(name, irType)
-	return "%" + name
+	return "%" + fg.declare(name, irType)
 }
 
 // newLabel returns a fresh, unique `#name` label token prefixed with
@@ -143,17 +189,9 @@ func Generate(file *ast.File) (string, error) {
 	}
 
 	var b strings.Builder
-	// envType (closure.go) is declared once, program-wide, only if any
-	// closure literal actually needed it.
-	if ctx.closureCount > 0 {
-		fmt.Fprintf(&b, "SLTYPE\t^%s\t^any\n", envType)
-	}
-	// Every closure literal compiled while generating weave_main (or,
-	// transitively, another closure) added its own top-level FUNC here
-	// — see genFuncLit's doc comment on why it can't be nested inline.
-	for _, cf := range ctx.closureFuncs {
-		b.WriteString(cf)
-	}
+	// Every closure literal compiled while generating weave_main is now
+	// an inline, nested CLOS block already sitting inside fg.body (see
+	// genFuncLit) — nothing to emit separately here.
 	fmt.Fprintf(&b, "FUNC\t!%s\t:\t^int\n", weaveMainFunc)
 	for _, d := range fg.decls {
 		b.WriteString(d)
@@ -290,12 +328,22 @@ func genCond(fg *funcGen, expr ast.Expr) (string, error) {
 	return tmp, nil
 }
 
-// genAssignStmt lowers `name = value` to a hoisted `VAR %name ^any`
+// genAssignStmt lowers `name = value` to a hoisted `VAR %token ^any`
 // (first occurrence only) plus a `SET` in source order. Every Weave
 // variable is Go `any` (see genValue's doc comment) — and Go's own zero
 // value for `any` is nil, which already matches weave_spec.md §2's "a
 // variable is nil until assigned" without needing Seed/Cascade's
 // separate `_isset` flag.
+//
+// Reassignment reuses whichever funcGen already declared name — checked
+// via resolve, walking out through enclosing closures if this assignment
+// is inside one — rather than always declaring fresh in fg. This is what
+// makes weave_spec.md §10's "代入は既存を再代入優先" hold even across a
+// CLOS boundary: `n = 1; f = fn(x) { n = n + 1; return n }` must mutate
+// the *same* `n` main sees, not shadow it with a closure-local copy (see
+// funcGen's doc comment). Only when name isn't visible anywhere in the
+// enclosing chain does it become a genuinely new binding, declared in fg
+// itself.
 func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 	if call, ok := s.Value.(*ast.CallExpr); ok {
 		if handled, err := genGoDecl(fg, s.Name, call); handled {
@@ -307,8 +355,11 @@ func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 		return err
 	}
 	trackGoStaticVar(fg, s.Name, s.Value)
-	fg.declare(s.Name, "^any")
-	fmt.Fprintf(&fg.body, "\tSET\t%%%s\t%s\n", s.Name, val)
+	tok, ok := fg.resolve(s.Name)
+	if !ok {
+		tok = fg.declare(s.Name, "^any")
+	}
+	fmt.Fprintf(&fg.body, "\tSET\t%%%s\t%s\n", tok, val)
 	return nil
 }
 
@@ -571,6 +622,19 @@ func genClosureReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 func genExpr(fg *funcGen, expr ast.Expr) (string, error) {
 	switch e := expr.(type) {
 	case *ast.Ident:
+		// resolve walks out through any enclosing closures this
+		// reference sits inside (funcGen's doc comment), finding
+		// whichever funcGen instance actually declared e.Name and
+		// returning its namePrefix-qualified token. sema already
+		// guarantees e.Name is visible somewhere in scope for any real
+		// compiled program, so falling back to the bare (unprefixed)
+		// name when resolve finds nothing is purely a safety net, never
+		// expected to matter in practice — codegen trusts sema's own
+		// validation rather than re-deriving it (CLAUDE.md's Step 4
+		// "確定した設計判断").
+		if tok, ok := fg.resolve(e.Name); ok {
+			return "%" + tok, nil
+		}
 		return "%" + e.Name, nil
 	case *ast.NumberLit:
 		return formatNumberLiteral(e.Value), nil

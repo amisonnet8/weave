@@ -30,8 +30,8 @@ func genForStmt(fg *funcGen, s *ast.ForStmt) error {
 	idx := fg.newTemp("^any")
 	fmt.Fprintf(&fg.body, "\tSET\t%s\t0.0\n", idx)
 
-	fg.declare(s.Key, "^any")
-	fg.declare(s.Value, "^any")
+	keyTok := fg.declare(s.Key, "^any")
+	valTok := fg.declare(s.Value, "^any")
 
 	startLabel := fg.newLabel("for_start")
 	bodyLabel := fg.newLabel("for_body")
@@ -47,8 +47,8 @@ func genForStmt(fg *funcGen, s *ast.ForStmt) error {
 	fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", endLabel)
 	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", bodyLabel)
 
-	fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.KeyAt\t%s\t%s\n", s.Key, keys, idx)
-	fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.ObjGet\t%s\t%%%s\n", s.Value, objVal, s.Key)
+	fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.KeyAt\t%s\t%s\n", keyTok, keys, idx)
+	fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.ObjGet\t%s\t%%%s\n", valTok, objVal, keyTok)
 
 	fg.breakStack = append(fg.breakStack, endLabel)
 	fg.continueStack = append(fg.continueStack, continueLabel)

@@ -2,225 +2,72 @@ package codegen
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/amisonnet8/weave/internal/ast"
 )
 
 // genFuncLit compiles a function literal (weave_spec.md §5) into a
-// fresh, independent top-level FUNC — never a CLOS — plus a
-// weavert.NewClosure call at the point the literal appears, capturing
-// its free variables (see freeVars) into a weavert.Env snapshot.
+// native AMIVM CLOS block, nested inline exactly where the literal
+// appears in the enclosing funcGen's own body — never an independent
+// top-level FUNC. AMIVM's CLOS instruction can now nest inside another
+// CLOS's body (amivm_spec.md §2.1, extended specifically for this): a
+// curried literal (`fn(a) fn(b) {...}`, whose body is, after parser.go's
+// flattening, itself a `return`ed FuncLit) compiles to a CLOS containing
+// another CLOS, arbitrarily deep, one level per curry stage.
 //
-// See weavert/closure.go's package doc comment for why this, rather
-// than AMIVM's own CLOS, is how every Weave function literal compiles:
-// CLOS cannot nest inside another CLOS's body (amivm_spec.md §2.1), but
-// currying (`fn(a) fn(b) {...}`, a closure whose body itself evaluates
-// to another closure that captures `a`) needs exactly that nesting if
-// translated naively.
+// Free variables need no explicit capture step: the generated Go func
+// literal is lexically nested exactly where the Weave closure literal
+// appears, so it captures enclosing %-variables through Go's own closure
+// semantics — by reference, matching weave_spec.md §10's "定義時点の
+// 外側の変数を参照で捕捉する" literally (see funcGen's doc comment and
+// CLAUDE.md's design-decision note for how this differs from — and
+// replaces — the previous env-slice/reflection scheme, which captured by
+// value because AMIVM's CLOS couldn't nest yet).
 //
-// Nested currying falls out of this for free: when a curried FuncLit's
-// body is (after parser.go's flattening) itself a `return`ed FuncLit,
-// that inner literal's own genFuncLit call runs while the OUTER
-// literal's own funcGen (`inner` below, from the outer call) is the
-// active one — so the inner closure's captured variables, which may
-// include the outer's own Param, are read exactly like any other
-// %-token already sitting in that scope by the time the inner literal's
-// call site runs. No special-casing is needed for arbitrary curry depth.
+// Each closure's own bound parameter is bound via `&1` — always the
+// *current* CLOS's own level, referenced only once, right here, whether
+// or not this literal is itself nested inside another closure (AMIVM
+// resolves `&1` relative to whichever CLOS the token is textually
+// written inside — see amivm_spec.md §2.1/§4). It's immediately copied
+// into an ordinary %-declared local (matching how a captured outer
+// variable is read: a plain %token) so that every subsequent reference
+// to the parameter, from this closure's own body OR a nested closure's,
+// is uniform — a %-token resolved through funcGen.resolve, never a raw
+// `&N`/`&L-N` operand. This means codegen never needs to track or emit
+// explicit `&L-N` addressing itself: AMIVM's own nesting-depth-based
+// naming (`amivm_closureL_paramN`) only has to disambiguate that one
+// `SET ... &1` line per closure instance from every other instance's —
+// which funcGen.namePrefix already guarantees by construction.
 func genFuncLit(fg *funcGen, lit *ast.FuncLit) (string, error) {
-	captured := freeVars(lit, fg.ctx.goFuncs)
-
+	fg.ctx.closureCount++
 	inner := newFuncGen(fg.ctx)
-	inner.declare(lit.Param, "^any")
-	fmt.Fprintf(&inner.body, "\tSET\t%%%s\t$2\n", lit.Param)
-	for i, name := range captured {
-		inner.declare(name, "^any")
-		fmt.Fprintf(&inner.body, "\tAGET\t%%%s\t$1\t%d\n", name, i)
-	}
+	inner.parent = fg
+	inner.namePrefix = fmt.Sprintf("c%d_", fg.ctx.closureCount)
+
+	paramTok := inner.declare(lit.Param, "^any")
+	fmt.Fprintf(&inner.body, "\tSET\t%%%s\t&1\n", paramTok)
+
 	if err := genBlock(inner, lit.Body); err != nil {
 		return "", err
 	}
 	// A Weave function body needn't end with an explicit `return`
 	// (weave_spec.md §6.2's own `increment: fn(self, n) { self.count =
-	// self.count + n }` has none) — but the generated FUNC still
+	// self.count + n }` has none) — but the generated CLOS still
 	// declares an `^any` result, and Go requires every path through such
-	// a function to return something. Appending an unconditional
+	// a function literal to return something. Appending an unconditional
 	// trailing `RET nil` covers the implicit case; for a body that
 	// already returns on every path, this is simply unreachable code,
 	// which Go accepts without complaint (confirmed by direct probe —
 	// see CLAUDE.md's Step 7 "確定した設計判断").
 	inner.body.WriteString("\tRET\tnil\n")
 
-	closureName := fmt.Sprintf("closure%d", fg.ctx.closureCount)
-	fg.ctx.closureCount++
-
-	var fn strings.Builder
-	fmt.Fprintf(&fn, "FUNC\t!%s\t^%s\t^any\t:\t^any\n", closureName, envType)
+	target := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCLOS\t%s\t^any\t:\t^any\n", target)
 	for _, d := range inner.decls {
-		fn.WriteString(d)
+		fg.body.WriteString(d)
 	}
-	fn.WriteString(inner.body.String())
-	fn.WriteString("ENDFUNC\n")
-	fg.ctx.closureFuncs = append(fg.ctx.closureFuncs, fn.String())
+	fg.body.WriteString(inner.body.String())
+	fg.body.WriteString("\tENDCLOS\n")
 
-	envVar := fg.newTemp("^" + envType)
-	fmt.Fprintf(&fg.body, "\tSLMAKE\t%s\t^%s\t%d\n", envVar, envType, len(captured))
-	for i, name := range captured {
-		fmt.Fprintf(&fg.body, "\tASET\t%s\t%d\t%%%s\n", envVar, i, name)
-	}
-
-	result := fg.newTemp("^any")
-	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.NewClosure\t!%s\t%s\n", result, closureName, envVar)
-	return result, nil
-}
-
-// envType is the name of the single, program-wide SLTYPE (`[]any`,
-// declared once in Generate if any closures exist) every closure FUNC's
-// env parameter uses. It must be a plain local type — SLMAKE's deftype
-// operand rejects a package-qualified type like `weavert.Env` outright
-// (confirmed by amivm's own error message), which is why weavert.Call
-// resorts to reflection instead of a statically-typed function value —
-// see weavert/closure.go's package doc comment.
-const envType = "WeaveEnv"
-
-// freeVars returns lit's free variables — identifiers read in its body
-// (transitively, through nested statements and nested FuncLits) that
-// resolve to neither lit's own Param nor a name assigned earlier within
-// reach of that read — in deterministic first-use order. These are
-// exactly the names genFuncLit must capture into the closure's
-// weavert.Env.
-//
-// This mirrors sema.scope's own chain resolution, but only to classify
-// bound vs. free: by the time codegen runs, sema has already guaranteed
-// every identifier resolves somewhere, so unlike sema this never needs
-// to report an error.
-//
-// goFuncs is fg.ctx.goFuncs (the gofunc(...)-declared names visible so
-// far): a name used only as a direct call callee matching this set is
-// never a free variable, exactly like a builtin name — a gofunc(...)
-// declaration is compile-time-only (goasset.go's genGoFuncDecl emits no
-// VAR/SET at all, weave_spec.md §16), so there is no `%name` variable to
-// AGET from an outer scope in the first place. Without this exclusion, a
-// closure calling a gofunc(...)-declared function (e.g. an actor message
-// handler calling a Go asset constructor) generates an AGET/ASET pair
-// referencing a %-variable that was never declared, which go/types
-// rejects as `undefined` — caught running a spawn/gofunc integration
-// example through the real pipeline (CLAUDE.md's 後半 Step 5 "確定した
-// 設計判断").
-func freeVars(lit *ast.FuncLit, goFuncs map[string]*GoFuncInfo) []string {
-	w := &freeVarWalker{
-		bound:   []map[string]bool{{lit.Param: true}},
-		seen:    map[string]bool{},
-		goFuncs: goFuncs,
-	}
-	for _, stmt := range lit.Body {
-		w.stmt(stmt)
-	}
-	return w.free
-}
-
-type freeVarWalker struct {
-	bound   []map[string]bool // scope chain, innermost last
-	free    []string
-	seen    map[string]bool
-	goFuncs map[string]*GoFuncInfo
-}
-
-func (w *freeVarWalker) isBound(name string) bool {
-	for _, b := range w.bound {
-		if b[name] {
-			return true
-		}
-	}
-	return false
-}
-
-func (w *freeVarWalker) markFree(name string) {
-	if !w.isBound(name) && !w.seen[name] {
-		w.seen[name] = true
-		w.free = append(w.free, name)
-	}
-}
-
-// block walks stmts in a fresh child scope, mirroring
-// sema.checker.checkBlock (weave_spec.md §10: if/while bodies are their
-// own scope).
-func (w *freeVarWalker) block(stmts []ast.Stmt) {
-	w.bound = append(w.bound, map[string]bool{})
-	for _, stmt := range stmts {
-		w.stmt(stmt)
-	}
-	w.bound = w.bound[:len(w.bound)-1]
-}
-
-func (w *freeVarWalker) stmt(stmt ast.Stmt) {
-	switch s := stmt.(type) {
-	case *ast.AssignStmt:
-		w.expr(s.Value)
-		w.bound[len(w.bound)-1][s.Name] = true
-	case *ast.ExprStmt:
-		w.expr(s.X)
-	case *ast.ReturnStmt:
-		if s.Value != nil {
-			w.expr(s.Value)
-		}
-	case *ast.IfStmt:
-		for _, clause := range s.Clauses {
-			w.expr(clause.Cond)
-			w.block(clause.Body)
-		}
-		if s.Else != nil {
-			w.block(s.Else)
-		}
-	case *ast.WhileStmt:
-		w.expr(s.Cond)
-		w.block(s.Body)
-	case *ast.ForStmt:
-		w.expr(s.Obj)
-		w.bound = append(w.bound, map[string]bool{s.Key: true, s.Value: true})
-		for _, stmt := range s.Body {
-			w.stmt(stmt)
-		}
-		w.bound = w.bound[:len(w.bound)-1]
-	case *ast.PropAssignStmt:
-		w.expr(s.Obj)
-		w.expr(s.Value)
-	case *ast.BreakStmt, *ast.ContinueStmt:
-		// no identifiers
-	}
-}
-
-func (w *freeVarWalker) expr(expr ast.Expr) {
-	switch e := expr.(type) {
-	case *ast.Ident:
-		w.markFree(e.Name)
-	case *ast.NumberLit, *ast.StringLit, *ast.BoolLit, *ast.NilLit:
-		// no identifiers
-	case *ast.CallExpr:
-		if callee, ok := e.Callee.(*ast.Ident); !ok || !(builtinNames[callee.Name] || w.goFuncs[callee.Name] != nil) {
-			w.expr(e.Callee)
-		}
-		for _, a := range e.Args {
-			w.expr(a)
-		}
-	case *ast.BinaryExpr:
-		w.expr(e.X)
-		w.expr(e.Y)
-	case *ast.UnaryExpr:
-		w.expr(e.X)
-	case *ast.FuncLit:
-		// A nested literal's own free variables, aside from whatever it
-		// finds already bound at this point, are free variables of THIS
-		// literal too — the transitive capture that makes arbitrarily
-		// deep currying work (see genFuncLit's doc comment).
-		for _, name := range freeVars(e, w.goFuncs) {
-			w.markFree(name)
-		}
-	case *ast.ObjectLit:
-		for _, field := range e.Fields {
-			w.expr(field.Value)
-		}
-	case *ast.PropExpr:
-		w.expr(e.Obj)
-	}
+	return target, nil
 }

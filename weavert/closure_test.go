@@ -2,37 +2,39 @@ package weavert
 
 import "testing"
 
-// weaveEnv mirrors what codegen.envType generates in a real compiled
-// program: a locally-declared slice type, distinct from any type
-// declared in this package (see Call's doc comment on why reflection,
-// not a shared named type, is what makes this work).
-type weaveEnv []any
-
-func addClosure(env weaveEnv, arg any) any {
-	return env[0].(float64) + arg.(float64)
-}
-
-func TestNewClosureAndCall(t *testing.T) {
-	env := weaveEnv{5.0}
-	c := NewClosure(addClosure, env)
-	got := Call(c, 3.0)
+func TestCall_InvokesNativeGoClosure(t *testing.T) {
+	base := 5.0
+	adder := func(arg any) any { return base + arg.(float64) }
+	got := Call(adder, 3.0)
 	if got != 8.0 {
 		t.Errorf("Call = %v, want 8", got)
 	}
 }
 
-func TestCall_NilArgument(t *testing.T) {
-	identity := func(env weaveEnv, arg any) any { return arg }
-	c := NewClosure(identity, weaveEnv{})
-	if got := Call(c, nil); got != nil {
-		t.Errorf("Call(c, nil) = %v, want nil", got)
+func TestCall_CapturesByReference(t *testing.T) {
+	// Native Go closures capture the variable, not a value snapshot —
+	// unlike the previous env-slice scheme, a later mutation of the
+	// captured variable is visible the next time the closure runs (see
+	// closure.go's doc comment).
+	n := 1.0
+	getN := func(any) any { return n }
+	n = 2.0
+	if got := Call(getN, nil); got != 2.0 {
+		t.Errorf("Call(getN, nil) = %v, want 2 (reference capture)", got)
 	}
 }
 
-func TestCall_NonClosurePanics(t *testing.T) {
+func TestCall_NilArgument(t *testing.T) {
+	identity := func(arg any) any { return arg }
+	if got := Call(identity, nil); got != nil {
+		t.Errorf("Call(identity, nil) = %v, want nil", got)
+	}
+}
+
+func TestCall_NonFunctionPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Fatal("expected Call on a non-closure value to panic")
+			t.Fatal("expected Call on a non-function value to panic")
 		}
 	}()
 	Call(5.0, 1.0)

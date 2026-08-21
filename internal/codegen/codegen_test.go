@@ -369,76 +369,17 @@ func TestGenerate_ConditionRoutesThroughCheckBool(t *testing.T) {
 	}
 }
 
-func TestFreeVars_ParamIsNotFree(t *testing.T) {
-	lit := &ast.FuncLit{Param: "a", Body: []ast.Stmt{
-		&ast.ReturnStmt{Value: &ast.Ident{Name: "a"}},
-	}}
-	if got := freeVars(lit, nil); len(got) != 0 {
-		t.Errorf("freeVars = %v, want none (a is the param)", got)
-	}
-}
+// genFuncLit now compiles every function literal to a native, inline
+// CLOS block (never an independent top-level FUNC) — free variables need
+// no explicit capture step at all, since the generated Go func literal
+// is lexically nested and captures enclosing %-variables through Go's
+// own closure semantics (see closure.go's doc comment). The freeVars
+// analysis this used to require (env-slice construction) no longer
+// exists; these tests replace the old TestFreeVars_*/
+// TestGenerate_FuncLitEmitsClosureFuncAndSLTYPE/
+// TestGenerate_NoClosuresMeansNoSLTYPE suite.
 
-func TestFreeVars_OuterVariableIsFree(t *testing.T) {
-	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
-		&ast.ReturnStmt{Value: &ast.BinaryExpr{Op: "+", X: &ast.Ident{Name: "x"}, Y: &ast.Ident{Name: "base"}}},
-	}}
-	got := freeVars(lit, nil)
-	if len(got) != 1 || got[0] != "base" {
-		t.Errorf("freeVars = %v, want [base]", got)
-	}
-}
-
-func TestFreeVars_LocallyAssignedNameIsNotFree(t *testing.T) {
-	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
-		&ast.AssignStmt{Name: "y", Value: &ast.NumberLit{Value: 1}},
-		&ast.ReturnStmt{Value: &ast.Ident{Name: "y"}},
-	}}
-	if got := freeVars(lit, nil); len(got) != 0 {
-		t.Errorf("freeVars = %v, want none (y is assigned locally before use)", got)
-	}
-}
-
-func TestFreeVars_NameOnlyBoundInsideIfIsStillFreeAfter(t *testing.T) {
-	// if true { y = 1 }
-	// return y   <- y was never bound at THIS literal's own top level,
-	// so a read here must be treated as free (referring to some outer
-	// scope) even though "y" appears bound somewhere inside the literal.
-	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
-		&ast.IfStmt{Clauses: []ast.IfClause{{
-			Cond: &ast.BoolLit{Value: true},
-			Body: []ast.Stmt{&ast.AssignStmt{Name: "y", Value: &ast.NumberLit{Value: 1}}},
-		}}},
-		&ast.ReturnStmt{Value: &ast.Ident{Name: "y"}},
-	}}
-	got := freeVars(lit, nil)
-	if len(got) != 1 || got[0] != "y" {
-		t.Errorf("freeVars = %v, want [y]", got)
-	}
-}
-
-func TestFreeVars_NestedFuncLitCapturesTransitively(t *testing.T) {
-	// fn(a) fn(b) { return a + b + outer }
-	// outer must be free for BOTH the inner and outer literal.
-	inner := &ast.FuncLit{Param: "b", Body: []ast.Stmt{
-		&ast.ReturnStmt{Value: &ast.BinaryExpr{
-			Op: "+",
-			X:  &ast.BinaryExpr{Op: "+", X: &ast.Ident{Name: "a"}, Y: &ast.Ident{Name: "b"}},
-			Y:  &ast.Ident{Name: "outer"},
-		}},
-	}}
-	outer := &ast.FuncLit{Param: "a", Body: []ast.Stmt{&ast.ReturnStmt{Value: inner}}}
-
-	innerFree := freeVars(inner, nil)
-	if len(innerFree) != 2 || innerFree[0] != "a" || innerFree[1] != "outer" {
-		t.Errorf("inner freeVars = %v, want [a outer]", innerFree)
-	}
-	outerFree := freeVars(outer, nil)
-	if len(outerFree) != 1 || outerFree[0] != "outer" {
-		t.Errorf("outer freeVars = %v, want [outer] (a is outer's own param)", outerFree)
-	}
-}
-
-func TestGenerate_FuncLitEmitsClosureFuncAndSLTYPE(t *testing.T) {
+func TestGenerate_FuncLitEmitsNestedCLOS(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
 		Body: []ast.Stmt{
@@ -456,49 +397,101 @@ func TestGenerate_FuncLitEmitsClosureFuncAndSLTYPE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if !strings.HasPrefix(ir, "SLTYPE\t^WeaveEnv\t^any\n") {
-		t.Errorf("expected the IR to start with the env SLTYPE, got:\n%s", ir)
+	if !strings.Contains(ir, "CLOS\t%__t") {
+		t.Errorf("expected an inline CLOS assigning into a temp, got:\n%s", ir)
 	}
-	if !strings.Contains(ir, "FUNC\t!closure0\t^WeaveEnv\t^any\t:\t^any\n") {
-		t.Errorf("expected a closure0 FUNC with the env type, got:\n%s", ir)
+	if !strings.Contains(ir, "ENDCLOS\n") {
+		t.Errorf("expected a matching ENDCLOS, got:\n%s", ir)
 	}
-	if !strings.Contains(ir, "AGET\t%base\t$1\t0\n") {
-		t.Errorf("expected the closure to unpack captured base via AGET, got:\n%s", ir)
+	if !strings.Contains(ir, "SET\t%c1_x\t&1\n") {
+		t.Errorf("expected the closure's own param bound from &1 into a prefixed local, got:\n%s", ir)
 	}
-	if !strings.Contains(ir, "SET\t%x\t$2\n") {
-		t.Errorf("expected the closure's own param to be bound from $2, got:\n%s", ir)
+	// base is captured by plain reference — no AGET/env machinery, just
+	// the same %base token weave_main itself declared.
+	if !strings.Contains(ir, "?weavert.Add\t%c1_x\t%base\n") {
+		t.Errorf("expected the closure body to reference the enclosing %%base directly, got:\n%s", ir)
 	}
-	if !strings.Contains(ir, "ASET\t%__t") || !strings.Contains(ir, "\t0\t%base\n") {
-		t.Errorf("expected the call site to ASET base into the env, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?weavert.NewClosure\t!closure0\t") {
-		t.Errorf("expected the call site to build the closure via weavert.NewClosure, got:\n%s", ir)
+	if strings.Contains(ir, "AGET") || strings.Contains(ir, "SLMAKE") || strings.Contains(ir, "NewClosure") {
+		t.Errorf("native CLOS needs no env-slice machinery at all, got:\n%s", ir)
 	}
 	// A closure's own `return` must NOT go through weavert.ExitCode —
 	// that's exclusively main's bridge (see genReturnStmt's doc
 	// comment on the Step 5 bug this guards against).
-	closureStart := strings.Index(ir, "FUNC\t!closure0")
-	closureEnd := strings.Index(ir[closureStart:], "ENDFUNC") + closureStart
-	closureBody := ir[closureStart:closureEnd]
-	if strings.Contains(closureBody, "weavert.ExitCode") {
-		t.Errorf("closure body must not call weavert.ExitCode, got:\n%s", closureBody)
+	closStart := strings.Index(ir, "CLOS\t%__t")
+	closEnd := strings.Index(ir[closStart:], "ENDCLOS") + closStart
+	closBody := ir[closStart:closEnd]
+	if strings.Contains(closBody, "weavert.ExitCode") {
+		t.Errorf("closure body must not call weavert.ExitCode, got:\n%s", closBody)
 	}
-	if !strings.Contains(closureBody, "RET\t%__t") {
-		t.Errorf("expected the closure to RET its own ^any temp, got:\n%s", closureBody)
+	if !strings.Contains(closBody, "RET\t%c1___t") {
+		t.Errorf("expected the closure to RET its own prefixed ^any temp, got:\n%s", closBody)
 	}
 }
 
-func TestGenerate_NoClosuresMeansNoSLTYPE(t *testing.T) {
+func TestGenerate_NestedCurryProducesTwoLevelsOfCLOS(t *testing.T) {
+	// fn(a) fn(b) { return a + b } — the parser already flattens this
+	// into nested single-Param FuncLits; codegen must emit CLOS-in-CLOS.
+	inner := &ast.FuncLit{Param: "b", Body: []ast.Stmt{
+		&ast.ReturnStmt{Value: &ast.BinaryExpr{Op: "+", X: &ast.Ident{Name: "a"}, Y: &ast.Ident{Name: "b"}}},
+	}}
+	outer := &ast.FuncLit{Param: "a", Body: []ast.Stmt{&ast.ReturnStmt{Value: inner}}}
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
-		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "add", Value: outer},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
 	}}
 	ir, err := Generate(file)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if strings.Contains(ir, "WeaveEnv") {
-		t.Errorf("expected no WeaveEnv SLTYPE when no closures were compiled, got:\n%s", ir)
+	if strings.Count(ir, "CLOS\t") != 2 || strings.Count(ir, "ENDCLOS\n") != 2 {
+		t.Fatalf("expected exactly 2 nested CLOS/ENDCLOS pairs, got:\n%s", ir)
+	}
+	// The inner closure's body must reference the outer's own bound
+	// parameter (a) by its outer-level prefixed token, proving capture
+	// crossed the CLOS boundary via funcGen.resolve rather than
+	// resolving to some local of its own.
+	if !strings.Contains(ir, "?weavert.Add\t%c1_a\t%c2_b\n") {
+		t.Errorf("expected the inner body to add the outer's %%c1_a to its own %%c2_b, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_AssignInsideClosureReassignsOuterBinding(t *testing.T) {
+	// n = 1; f = fn(x) { n = n + x }; — the closure body's `n = ...`
+	// must reassign weave_main's own %n (weave_spec.md §10's "参照で
+	// 捕捉する"/"代入は既存を再代入優先"), not declare a closure-local
+	// shadow copy — the entire point of switching to native CLOS capture
+	// (see funcGen's and genAssignStmt's doc comments).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "n", Value: &ast.NumberLit{Value: 1}},
+			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
+				Param: "x",
+				Body: []ast.Stmt{&ast.AssignStmt{Name: "n", Value: &ast.BinaryExpr{
+					Op: "+", X: &ast.Ident{Name: "n"}, Y: &ast.Ident{Name: "x"},
+				}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(ir, "VAR\t%c1_n\t") {
+		t.Errorf("closure must not declare its own local shadow of n, got:\n%s", ir)
+	}
+	if strings.Count(ir, "VAR\t%n\t^any\n") != 1 {
+		t.Errorf("expected exactly one VAR %%n (weave_main's own), got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.Add\t%n\t%c1_x\n") {
+		t.Errorf("expected the closure body to read weave_main's own %%n, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "SET\t%n\t%c1___t0\n") {
+		t.Errorf("expected the closure body to write back into weave_main's own %%n, got:\n%s", ir)
 	}
 }
 
@@ -602,29 +595,6 @@ func TestGenerate_HasAndRemoveBuiltins(t *testing.T) {
 	}
 }
 
-func TestFreeVars_ObjectLitFieldValuesAreWalked(t *testing.T) {
-	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
-		&ast.ReturnStmt{Value: &ast.ObjectLit{Fields: []ast.ObjectField{
-			{Name: "a", Value: &ast.Ident{Name: "x"}},
-			{Name: "b", Value: &ast.Ident{Name: "base"}},
-		}}},
-	}}
-	got := freeVars(lit, nil)
-	if len(got) != 1 || got[0] != "base" {
-		t.Errorf("freeVars = %v, want [base] (x is the param)", got)
-	}
-}
-
-func TestFreeVars_PropExprObjIsWalked(t *testing.T) {
-	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
-		&ast.ReturnStmt{Value: &ast.PropExpr{Obj: &ast.Ident{Name: "outer"}, Prop: "field"}},
-	}}
-	got := freeVars(lit, nil)
-	if len(got) != 1 || got[0] != "outer" {
-		t.Errorf("freeVars = %v, want [outer]", got)
-	}
-}
-
 func TestGenerate_MethodCallInjectsSelfFirst(t *testing.T) {
 	// alice.greet(1) -> ObjGet(alice, "greet") looked up once, then
 	// Call'd with alice first, then 1 (weave_spec.md §9).
@@ -681,9 +651,9 @@ func TestGenerate_FuncLitAlwaysEndsWithRetNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("genFuncLit: %v", err)
 	}
-	closureBody := fg.ctx.closureFuncs[0]
-	if !strings.HasSuffix(strings.TrimSuffix(closureBody, "ENDFUNC\n"), "RET\tnil\n") {
-		t.Errorf("expected the closure to end with an implicit RET nil, got:\n%s", closureBody)
+	body := fg.body.String()
+	if !strings.HasSuffix(strings.TrimSuffix(body, "\tENDCLOS\n"), "RET\tnil\n") {
+		t.Errorf("expected the closure to end with an implicit RET nil, got:\n%s", body)
 	}
 }
 
@@ -774,6 +744,45 @@ func TestGenerate_ForInContinueLabelAlwaysReferenced(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	labelsBalance(t, ir)
+}
+
+func TestGenerate_ForInInsideClosureUsesPrefixedKeyValueTokens(t *testing.T) {
+	// A regression test for a real bug: genForStmt used to declare k/v
+	// via fg.declare but then reference the bare (unprefixed) s.Key/
+	// s.Value names directly in the KeyAt/ObjGet CALLs, instead of the
+	// namePrefix-qualified token declare actually returned — harmless at
+	// the top level (namePrefix == ""), but inside a closure it produced
+	// a reference to a %name that was never declared anywhere (caught by
+	// go/types as "undefined": see CLAUDE.md's design-decision note).
+	fg := newFuncGen(&codegenCtx{})
+	_, err := genFuncLit(fg, &ast.FuncLit{
+		Param: "o",
+		Body: []ast.Stmt{
+			&ast.ForStmt{
+				Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"},
+				Body: []ast.Stmt{&ast.ExprStmt{X: &ast.CallExpr{
+					Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{&ast.Ident{Name: "v"}},
+				}}},
+			},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("genFuncLit: %v", err)
+	}
+	body := fg.body.String()
+	if strings.Contains(body, "\t%k\t") || strings.Contains(body, "\t%v\t") || strings.Contains(body, "\t%v\n") {
+		t.Errorf("expected no unprefixed %%k/%%v reference inside the closure, got:\n%s", body)
+	}
+	if !strings.Contains(body, "VAR\t%c1_k\t^any\n") || !strings.Contains(body, "VAR\t%c1_v\t^any\n") {
+		t.Errorf("expected k/v declared with the closure's own prefix, got:\n%s", body)
+	}
+	if !strings.Contains(body, "?weavert.KeyAt\t") || !strings.Contains(body, "%c1_k\t") {
+		t.Errorf("expected KeyAt to write into the prefixed key token, got:\n%s", body)
+	}
+	if !strings.Contains(body, "?weavert.ObjGet\t") || !strings.Contains(body, "%c1_v\t") {
+		t.Errorf("expected ObjGet to write into the prefixed value token, got:\n%s", body)
+	}
 }
 
 func TestGenerate_GoFuncDeclEmitsNoIR(t *testing.T) {
@@ -979,11 +988,10 @@ func TestGenerate_TopLevelStatementsPrecedeMainBody(t *testing.T) {
 
 func TestGenerate_GoFuncCallInsideClosureDoesNotCaptureGoFuncName(t *testing.T) {
 	// A closure calling a gofunc(...)-declared name (e.g. an actor
-	// message handler constructing a Go asset) must not treat that name
-	// as a free variable to capture — gofunc(...) declarations emit no
-	// VAR/SET at all, so an AGET/ASET pair referencing it would name an
-	// undeclared variable (see freeVars' doc comment; caught via a
-	// spawn/gofunc integration example).
+	// message handler constructing a Go asset) must never resolve it as
+	// an ordinary %-variable — gofunc(...) declarations emit no VAR/SET
+	// at all (genGeneralCall's gofunc check runs before ordinary Ident
+	// resolution), so no %newReader token should ever appear.
 	file := &ast.File{
 		TopLevel: append(goReaderDeclStmts()[:2], // GoReader + newReader decls only
 			&ast.AssignStmt{Name: "measure", Value: &ast.FuncLit{

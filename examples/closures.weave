@@ -21,5 +21,20 @@ func main(): int {
 	n = 2
 	print(getN(nil))
 
+	// Reference capture (weave_spec.md §10) also means a closure can
+	// accumulate state across multiple calls to the same instance: each
+	// call mutates the same captured `count`, not a fresh copy.
+	makeCounter = fn(start) {
+		count = start
+		return fn(step) {
+			count = count + step
+			return count
+		}
+	}
+	counter = makeCounter(0)
+	print(counter(1))
+	print(counter(1))
+	print(counter(5))
+
 	return result3
 }
