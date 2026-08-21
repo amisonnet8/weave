@@ -21,6 +21,10 @@ var builtinNames = map[string]bool{
 	"list":   true,
 	"len":    true,
 	"string": true,
+	"spawn":  true,
+	"send":   true,
+	"ask":    true,
+	"reply":  true,
 }
 
 // reservedName reports whether name is off-limits for a user assignment

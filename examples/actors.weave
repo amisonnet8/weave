@@ -1,0 +1,27 @@
+func main(): int {
+	counter = {
+		count: 0,
+		increment: fn(self, amount) { self.count = self.count + amount },
+		get: fn(self, replyTo) { reply(replyTo, self.count) }
+	}
+
+	a = spawn(counter)
+	send(a)("increment", 5)
+	send(a)("increment", 3)
+	print(ask(a)("get"))
+
+	tell = send(a)
+	tell("increment", 2)
+	print(ask(a)("get"))
+
+	send(a)("noSuchMessage", 1)
+	print(ask(a)("get"))
+
+	base = {
+		greet: fn(self, replyTo) { reply(replyTo, "hi " + self.name) }
+	}
+	b = spawn({ __proto__: base, name: "Bob" })
+	print(ask(b)("greet"))
+
+	return ask(a)("get")
+}

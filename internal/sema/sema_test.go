@@ -489,3 +489,31 @@ func TestCheck_ListLenStringAreBuiltins(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 }
+
+func TestCheck_ActorBuiltinsDoNotRequireCalleeVariableCheck(t *testing.T) {
+	// send(a)("increment", 5) — the OUTER call's callee is itself a
+	// CallExpr rooted at the builtin `send`, not a plain Ident, so it
+	// must not be mistaken for a general call needing `send` itself to
+	// resolve as a declared variable.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "a", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "spawn"},
+				Args:   []ast.Expr{&ast.ObjectLit{}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.CallExpr{Callee: &ast.Ident{Name: "send"}, Args: []ast.Expr{&ast.Ident{Name: "a"}}},
+				Args:   []ast.Expr{&ast.StringLit{Value: "increment"}, &ast.NumberLit{Value: 5}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.CallExpr{Callee: &ast.Ident{Name: "ask"}, Args: []ast.Expr{&ast.Ident{Name: "a"}}},
+				Args:   []ast.Expr{&ast.StringLit{Value: "get"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}

@@ -37,6 +37,10 @@ var builtinNames = map[string]bool{
 	"list":   true,
 	"len":    true,
 	"string": true,
+	"spawn":  true,
+	"send":   true,
+	"ask":    true,
+	"reply":  true,
 }
 
 // codegenCtx is shared by every funcGen created during one Generate()
@@ -312,15 +316,23 @@ func genBuiltinCall(fg *funcGen, name string, call *ast.CallExpr) (string, error
 	case "print":
 		return genPrintCall(fg, call)
 	case "has":
-		return genTwoArgObjBuiltin(fg, call, "weavert.ObjHas")
+		return genTwoArgBuiltin(fg, call, "weavert.ObjHas")
 	case "remove":
-		return genTwoArgObjBuiltin(fg, call, "weavert.ObjRemove")
+		return genTwoArgBuiltin(fg, call, "weavert.ObjRemove")
 	case "list":
 		return genListCall(fg, call)
 	case "len":
 		return genOneArgBuiltin(fg, call, "weavert.Len")
 	case "string":
 		return genOneArgBuiltin(fg, call, "weavert.ToString")
+	case "spawn":
+		return genOneArgBuiltin(fg, call, "weavert.Spawn")
+	case "send":
+		return genOneArgBuiltin(fg, call, "weavert.Send")
+	case "ask":
+		return genOneArgBuiltin(fg, call, "weavert.Ask")
+	case "reply":
+		return genTwoArgBuiltin(fg, call, "weavert.Reply")
 	default:
 		return "", fmt.Errorf("line %d: builtin %q not yet implemented", call.Line, name)
 	}
@@ -358,10 +370,10 @@ func genListCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 	return obj, nil
 }
 
-// genTwoArgObjBuiltin lowers has(obj, name)/remove(obj, name)
+// genTwoArgBuiltin lowers has(obj, name)/remove(obj, name)
 // (weave_spec.md §11) to the given weavert function, which both take
 // exactly the same (obj, key) shape.
-func genTwoArgObjBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error) {
+func genTwoArgBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error) {
 	if len(call.Args) != 2 {
 		return "", fmt.Errorf("line %d: %s(...) takes exactly two arguments, got %d", call.Line, fn, len(call.Args))
 	}
