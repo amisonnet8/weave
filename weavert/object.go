@@ -43,13 +43,33 @@ func keyOf(v any) string {
 	return s
 }
 
-// ObjGet implements property reads `obj.name` (weave_spec.md §4.1),
-// restricted through Step 6 to an object's own properties — reading a
-// name the object doesn't have returns nil, exactly like a plain Go map
-// index would (§4.2's prototype-chain walk-up on a miss arrives in
-// Step 7).
+// protoKey is the reserved property name a prototype-chain link is
+// stored under (weave_spec.md §4.2). It's an ordinary string key like
+// any other from ObjSet/ObjGet's point of view — the special "walk to
+// the parent on a miss" behavior lives entirely in ObjGet below, not in
+// how the property itself is stored.
+const protoKey = "__proto__"
+
+// ObjGet implements property reads `obj.name` (weave_spec.md §4.2):
+// check obj's own properties first, then — if missing — walk to
+// obj.__proto__ and repeat, returning nil if the chain runs out. A
+// cycle in __proto__ is not detected (matches §4.2's own stated
+// choice: "意図的にチェックを入れていない" — prototype chains are
+// expected to stay shallow in practice) and loops forever, exactly as
+// specified.
 func ObjGet(obj any, key any) any {
-	return objOf(obj)[keyOf(key)]
+	o := objOf(obj)
+	k := keyOf(key)
+	for {
+		if v, ok := o[k]; ok {
+			return v
+		}
+		proto, ok := o[protoKey]
+		if !ok {
+			return nil
+		}
+		o = objOf(proto)
+	}
 }
 
 // ObjSet implements property writes `obj.name = value`, always applied

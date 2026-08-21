@@ -359,6 +359,14 @@ func genPrintCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 // possibly another partially-applied closure) into the next
 // weavert.Call.
 func genGeneralCall(fg *funcGen, call *ast.CallExpr) (string, error) {
+	// obj.method(a, b) is sugar for obj.method(obj, a, b) (weave_spec.md
+	// §9) — but only when the call is written directly against a
+	// property access; a callee that's itself a call result (e.g. the
+	// outer `(b)` in `obj.method(a)(b)`) is an ordinary curried
+	// application with no further self-injection. See genMethodCall.
+	if prop, ok := call.Callee.(*ast.PropExpr); ok {
+		return genMethodCall(fg, prop, call.Args)
+	}
 	if len(call.Args) == 0 {
 		return "", fmt.Errorf("line %d: a call needs at least one argument (weave_spec.md §5: every Weave function takes exactly one)", call.Line)
 	}
@@ -374,6 +382,42 @@ func genGeneralCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 		tmp := fg.newTemp("^any")
 		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.Call\t%s\t%s\n", tmp, result, argVal)
 		result = tmp
+	}
+	return result, nil
+}
+
+// genMethodCall lowers `obj.method(args...)` as `obj.method(obj,
+// args...)` (weave_spec.md §9): evaluate obj once, look up `method` via
+// the prototype chain (weavert.ObjGet — see its own doc comment), then
+// curry-apply starting with obj itself as the first argument, exactly
+// like genGeneralCall's plain multi-arg case but with obj prepended.
+// Zero explicit args is valid here (`alice.greet()`, §9's own example)
+// since self alone is still one argument to apply.
+func genMethodCall(fg *funcGen, prop *ast.PropExpr, args []ast.Expr) (string, error) {
+	objVal, err := genExpr(fg, prop.Obj)
+	if err != nil {
+		return "", err
+	}
+	fn := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.ObjGet\t%s\t%s\n", fn, objVal, quoteKey(prop.Prop))
+
+	// self is always applied first (weave_spec.md §9, using objVal —
+	// already evaluated above, so prop.Obj's side effects don't run
+	// twice), then each explicit argument in order: the same
+	// curry-chaining genGeneralCall uses, just with obj prepended.
+	result := fn
+	applyTo := func(argVal string) {
+		tmp := fg.newTemp("^any")
+		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.Call\t%s\t%s\n", tmp, result, argVal)
+		result = tmp
+	}
+	applyTo(objVal)
+	for _, arg := range args {
+		argVal, err := genExpr(fg, arg)
+		if err != nil {
+			return "", err
+		}
+		applyTo(argVal)
 	}
 	return result, nil
 }
@@ -409,9 +453,17 @@ func genMainReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 	return nil
 }
 
+// genClosureReturnStmt lowers `return`/`return <expr>` inside a
+// function literal. A bare `return` (like falling off the end of the
+// body with no `return` at all — see genFuncLit's trailing RET nil)
+// yields nil: weave_spec.md §6.2's own mutator-style closures
+// (`increment: fn(self, n) { self.count = self.count + n }`) rely on a
+// function being usable purely for a side effect, with nothing
+// meaningful to return.
 func genClosureReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 	if s.Value == nil {
-		return fmt.Errorf("line %d: a function literal must return a value (weave_spec.md §5)", s.Line)
+		fg.body.WriteString("\tRET\tnil\n")
+		return nil
 	}
 	val, err := genExpr(fg, s.Value)
 	if err != nil {

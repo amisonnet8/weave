@@ -40,6 +40,16 @@ func genFuncLit(fg *funcGen, lit *ast.FuncLit) (string, error) {
 	if err := genBlock(inner, lit.Body); err != nil {
 		return "", err
 	}
+	// A Weave function body needn't end with an explicit `return`
+	// (weave_spec.md §6.2's own `increment: fn(self, n) { self.count =
+	// self.count + n }` has none) — but the generated FUNC still
+	// declares an `^any` result, and Go requires every path through such
+	// a function to return something. Appending an unconditional
+	// trailing `RET nil` covers the implicit case; for a body that
+	// already returns on every path, this is simply unreachable code,
+	// which Go accepts without complaint (confirmed by direct probe —
+	// see CLAUDE.md's Step 7 "確定した設計判断").
+	inner.body.WriteString("\tRET\tnil\n")
 
 	closureName := fmt.Sprintf("closure%d", fg.ctx.closureCount)
 	fg.ctx.closureCount++

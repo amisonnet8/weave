@@ -1,0 +1,35 @@
+func main(): int {
+	base = {
+		greet: fn(self) { print(self.name + " says hi") }
+	}
+
+	alice = { __proto__: base, name: "Alice" }
+	// weave_spec.md §9 spells out alice.greet() (no explicit args) as
+	// the correct sugar for greet(alice) when greet is fn(self) {...} —
+	// §4.2's own alice.greet(alice) example over-applies (self injected
+	// PLUS an explicit alice) and is a spec inconsistency; see
+	// CLAUDE.md's Step 7 "確定した設計判断".
+	alice.greet()
+
+	print(alice.name)
+	print(has(alice, "greet"))
+	print(has(alice, "name"))
+	print(alice.missing)
+
+	middle = { __proto__: base, tag: "middle" }
+	bottom = { __proto__: middle, name: "Bottom" }
+	bottom.greet()
+	print(bottom.tag)
+
+	counter = {
+		count: 0,
+		increment: fn(self, n) { self.count = self.count + n },
+		get: fn(self) { return self.count }
+	}
+	c1 = { __proto__: counter, count: 0 }
+	c1.increment(5)
+	c1.increment(3)
+	print(c1.get())
+
+	return c1.get()
+}

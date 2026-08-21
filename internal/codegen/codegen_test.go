@@ -624,3 +624,65 @@ func TestFreeVars_PropExprObjIsWalked(t *testing.T) {
 		t.Errorf("freeVars = %v, want [outer]", got)
 	}
 }
+
+func TestGenerate_MethodCallInjectsSelfFirst(t *testing.T) {
+	// alice.greet(1) -> ObjGet(alice, "greet") looked up once, then
+	// Call'd with alice first, then 1 (weave_spec.md §9).
+	fg := newFuncGen(&codegenCtx{})
+	_, err := genGeneralCall(fg, &ast.CallExpr{
+		Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "alice"}, Prop: "greet"},
+		Args:   []ast.Expr{&ast.NumberLit{Value: 1}},
+	})
+	if err != nil {
+		t.Fatalf("genGeneralCall: %v", err)
+	}
+	body := fg.body.String()
+	if !strings.Contains(body, "?weavert.ObjGet\t%alice\t\"greet\"\n") {
+		t.Errorf("expected a single ObjGet for the method lookup, got:\n%s", body)
+	}
+	if strings.Count(body, "?weavert.ObjGet") != 1 {
+		t.Errorf("expected obj to be evaluated exactly once, got:\n%s", body)
+	}
+	if strings.Count(body, "?weavert.Call") != 2 {
+		t.Errorf("expected two Call applications (self, then the explicit arg), got:\n%s", body)
+	}
+	if !strings.Contains(body, "%alice\n") {
+		t.Errorf("expected self (%%alice) to be applied, got:\n%s", body)
+	}
+	if !strings.Contains(body, "1.0\n") {
+		t.Errorf("expected the explicit argument 1.0 to be applied, got:\n%s", body)
+	}
+}
+
+func TestGenerate_MethodCallWithZeroArgsStillAppliesSelf(t *testing.T) {
+	// alice.greet() -> greet(alice): self alone is a valid, complete
+	// application even with no explicit args (weave_spec.md §9's own
+	// `alice.greet()` example).
+	fg := newFuncGen(&codegenCtx{})
+	_, err := genGeneralCall(fg, &ast.CallExpr{
+		Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "alice"}, Prop: "greet"},
+	})
+	if err != nil {
+		t.Fatalf("genGeneralCall: %v", err)
+	}
+	if strings.Count(fg.body.String(), "?weavert.Call\t") != 1 {
+		t.Errorf("expected exactly one Call (self only), got:\n%s", fg.body.String())
+	}
+}
+
+func TestGenerate_FuncLitAlwaysEndsWithRetNil(t *testing.T) {
+	// weave_spec.md §6.2's own increment: fn(self, n) { self.count =
+	// self.count + n } has no explicit return at all.
+	fg := newFuncGen(&codegenCtx{})
+	_, err := genFuncLit(fg, &ast.FuncLit{
+		Param: "x",
+		Body:  []ast.Stmt{&ast.AssignStmt{Name: "y", Value: &ast.Ident{Name: "x"}}},
+	})
+	if err != nil {
+		t.Fatalf("genFuncLit: %v", err)
+	}
+	closureBody := fg.ctx.closureFuncs[0]
+	if !strings.HasSuffix(strings.TrimSuffix(closureBody, "ENDFUNC\n"), "RET\tnil\n") {
+		t.Errorf("expected the closure to end with an implicit RET nil, got:\n%s", closureBody)
+	}
+}

@@ -74,3 +74,83 @@ func TestObject_MixedValueTypes(t *testing.T) {
 		t.Error("expected the function-valued property to remain a *Closure")
 	}
 }
+
+func TestObjGet_WalksPrototypeChain(t *testing.T) {
+	base := NewObject()
+	ObjSet(base, "greeting", "hi")
+	child := NewObject()
+	ObjSet(child, protoKey, base)
+	ObjSet(child, "name", "Alice")
+
+	if got := ObjGet(child, "greeting"); got != "hi" {
+		t.Errorf("ObjGet(child, greeting) = %v, want hi (inherited via __proto__)", got)
+	}
+	if got := ObjGet(child, "name"); got != "Alice" {
+		t.Errorf("ObjGet(child, name) = %v, want Alice (own property)", got)
+	}
+}
+
+func TestObjGet_OwnPropertyShadowsPrototype(t *testing.T) {
+	base := NewObject()
+	ObjSet(base, "x", "base-value")
+	child := NewObject()
+	ObjSet(child, protoKey, base)
+	ObjSet(child, "x", "child-value")
+
+	if got := ObjGet(child, "x"); got != "child-value" {
+		t.Errorf("ObjGet(child, x) = %v, want child-value (own property wins)", got)
+	}
+}
+
+func TestObjGet_MultiLevelPrototypeChain(t *testing.T) {
+	grandparent := NewObject()
+	ObjSet(grandparent, "tag", "gp")
+	parent := NewObject()
+	ObjSet(parent, protoKey, grandparent)
+	child := NewObject()
+	ObjSet(child, protoKey, parent)
+
+	if got := ObjGet(child, "tag"); got != "gp" {
+		t.Errorf("ObjGet(child, tag) = %v, want gp (two levels up)", got)
+	}
+}
+
+func TestObjGet_MissingAtEndOfChainReturnsNil(t *testing.T) {
+	base := NewObject()
+	child := NewObject()
+	ObjSet(child, protoKey, base)
+
+	if got := ObjGet(child, "nope"); got != nil {
+		t.Errorf("ObjGet(child, nope) = %v, want nil", got)
+	}
+}
+
+func TestObjHasAndObjRemove_DoNotWalkPrototypeChain(t *testing.T) {
+	base := NewObject()
+	ObjSet(base, "x", 1.0)
+	child := NewObject()
+	ObjSet(child, protoKey, base)
+
+	if ObjHas(child, "x") != false {
+		t.Error("ObjHas must not see inherited properties (weave_spec.md §11: obj自身のみ)")
+	}
+	ObjRemove(child, "x") // no-op: child has no own "x" to remove
+	if ObjGet(base, "x") != 1.0 {
+		t.Error("ObjRemove on child must not affect the prototype's own property")
+	}
+}
+
+func TestObjSet_NeverWritesToPrototype(t *testing.T) {
+	base := NewObject()
+	ObjSet(base, "x", 1.0)
+	child := NewObject()
+	ObjSet(child, protoKey, base)
+
+	ObjSet(child, "x", 2.0)
+	if ObjGet(base, "x") != 1.0 {
+		t.Error("writing child.x must not mutate the prototype (weave_spec.md §4.2)")
+	}
+	if ObjHas(child, "x") != true {
+		t.Error("expected child to now have its own x")
+	}
+}
