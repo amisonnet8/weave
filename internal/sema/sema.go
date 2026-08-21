@@ -116,8 +116,14 @@ func (sc *scope) declareIfNew(name string) {
 // function's stack frame entirely, once the closure escapes and is
 // called later) doesn't correspond to anything coherent at runtime, so
 // it's treated as settled rather than left as an open design question.
+// goTypes/goFuncs are the compile-time symbol tables Step 3's Go asset
+// declarations populate (see goasset.go) — a completely separate
+// namespace from scope's ordinary dynamic-value bindings, since these
+// names never hold a runtime value at all.
 type checker struct {
 	loopDepth int
+	goTypes   map[string]*GoTypeInfo
+	goFuncs   map[string]*GoFuncInfo
 }
 
 // Check validates file ahead of code generation.
@@ -170,6 +176,11 @@ func (c *checker) checkBlock(stmts []ast.Stmt, parent *scope) error {
 func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 	switch s := stmt.(type) {
 	case *ast.AssignStmt:
+		if call, ok := s.Value.(*ast.CallExpr); ok {
+			if handled, err := c.checkGoDecl(s.Name, call, s.Line); handled {
+				return err
+			}
+		}
 		if err := c.checkExpr(s.Value, sc); err != nil {
 			return err
 		}
@@ -244,10 +255,18 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 	case *ast.NumberLit, *ast.StringLit, *ast.BoolLit, *ast.NilLit:
 		return nil
 	case *ast.CallExpr:
-		if callee, ok := e.Callee.(*ast.Ident); !ok || !builtinNames[callee.Name] {
-			if err := c.checkExpr(e.Callee, sc); err != nil {
+		if callee, ok := e.Callee.(*ast.Ident); ok {
+			if why, ok := goAssetReservedName(callee.Name); ok {
+				return fmt.Errorf("line %d: %q is a reserved name (%s); it may only appear as `name = %s(...)`", callee.Line, callee.Name, why, callee.Name)
+			}
+			if builtinNames[callee.Name] || c.goFuncs[callee.Name] != nil {
+				// builtin, or a gofunc(...)-declared reference (goasset.go):
+				// neither is an ordinary variable, so skip the Ident check below.
+			} else if err := c.checkExpr(e.Callee, sc); err != nil {
 				return err
 			}
+		} else if err := c.checkExpr(e.Callee, sc); err != nil {
+			return err
 		}
 		for _, arg := range e.Args {
 			if err := c.checkExpr(arg, sc); err != nil {

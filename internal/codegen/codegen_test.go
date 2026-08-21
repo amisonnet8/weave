@@ -775,3 +775,84 @@ func TestGenerate_ForInContinueLabelAlwaysReferenced(t *testing.T) {
 	}
 	labelsBalance(t, ir)
 }
+
+func TestGenerate_GoFuncDeclEmitsNoIR(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "toUpper", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gofunc"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "?strings.ToUpper"}, &ast.NilLit{}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(ir, "toUpper") {
+		t.Errorf("gofunc(...) declaration must emit no IR referencing the Weave name itself, got:\n%s", ir)
+	}
+	if strings.Contains(ir, "VAR\t%toUpper") {
+		t.Errorf("expected no VAR for a gofunc(...)-declared name, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_GoFuncCallCompilesToDirectNativeCall(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "toUpper", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gofunc"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "?strings.ToUpper"}, &ast.NilLit{}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "print"},
+				Args: []ast.Expr{&ast.CallExpr{
+					Callee: &ast.Ident{Name: "toUpper"},
+					Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+				}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?strings.ToUpper\t\"hi\"\n") {
+		t.Errorf("expected a direct CALL to ?strings.ToUpper, got:\n%s", ir)
+	}
+	if strings.Contains(ir, "weavert.Call") {
+		t.Errorf("a gofunc(...) call must not go through weavert.Call, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_GoTypeDeclEmitsNoIR(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoFile", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gotype"},
+				Args: []ast.Expr{
+					&ast.StringLit{Value: "?os.File"},
+					&ast.ObjectLit{Fields: []ast.ObjectField{
+						{Name: "Close", Value: &ast.CallExpr{
+							Callee: &ast.Ident{Name: "gomethod"},
+							Args:   []ast.Expr{&ast.StringLit{Value: "Close"}},
+						}},
+					}},
+				},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(ir, "GoFile") || strings.Contains(ir, "gotype") {
+		t.Errorf("gotype(...) declaration must emit no IR at all, got:\n%s", ir)
+	}
+}

@@ -50,6 +50,12 @@ var builtinNames = map[string]bool{
 type codegenCtx struct {
 	closureCount int
 	closureFuncs []string // accumulated `FUNC ... ENDFUNC` blocks, compilation order
+
+	// goTypes/goFuncs are populated as `gotype(...)`/`gofunc(...)`
+	// declarations are compiled (goasset.go) and consulted by later
+	// references — see genGoDecl's doc comment.
+	goTypes map[string]*GoTypeInfo
+	goFuncs map[string]*GoFuncInfo
 }
 
 // funcGen accumulates one AMIVM FUNC body's VAR declarations (hoisted to
@@ -282,6 +288,11 @@ func genCond(fg *funcGen, expr ast.Expr) (string, error) {
 // variable is nil until assigned" without needing Seed/Cascade's
 // separate `_isset` flag.
 func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
+	if call, ok := s.Value.(*ast.CallExpr); ok {
+		if handled, err := genGoDecl(fg, s.Name, call); handled {
+			return err
+		}
+	}
 	val, err := genExpr(fg, s.Value)
 	if err != nil {
 		return err
@@ -421,6 +432,14 @@ func genGeneralCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 	// application with no further self-injection. See genMethodCall.
 	if prop, ok := call.Callee.(*ast.PropExpr); ok {
 		return genMethodCall(fg, prop, call.Args)
+	}
+	// A gofunc(...)-declared reference compiles straight to its real Go
+	// function, bypassing weavert.Call's dynamic dispatch (weave_spec.md
+	// §16) — see genGoFuncCall's doc comment.
+	if callee, ok := call.Callee.(*ast.Ident); ok {
+		if info := fg.ctx.goFuncs[callee.Name]; info != nil {
+			return genGoFuncCall(fg, info, call)
+		}
 	}
 	if len(call.Args) == 0 {
 		return "", fmt.Errorf("line %d: a call needs at least one argument (weave_spec.md §5: every Weave function takes exactly one)", call.Line)

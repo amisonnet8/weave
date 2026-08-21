@@ -517,3 +517,96 @@ func TestCheck_ActorBuiltinsDoNotRequireCalleeVariableCheck(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 }
+
+func goTypeDeclExpr(goName string, members []ast.ObjectField) *ast.CallExpr {
+	return &ast.CallExpr{
+		Callee: &ast.Ident{Name: "gotype"},
+		Args:   []ast.Expr{&ast.StringLit{Value: goName}, &ast.ObjectLit{Fields: members}},
+	}
+}
+
+func gomethodExpr(goMethodName string) ast.Expr {
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "gomethod"}, Args: []ast.Expr{&ast.StringLit{Value: goMethodName}}}
+}
+
+func goFuncDeclExpr(goName string, proto ast.Expr) *ast.CallExpr {
+	return &ast.CallExpr{
+		Callee: &ast.Ident{Name: "gofunc"},
+		Args:   []ast.Expr{&ast.StringLit{Value: goName}, proto},
+	}
+}
+
+func TestCheck_GoTypeAndGoFuncDeclAreValid(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoFile", Value: goTypeDeclExpr("?os.File", []ast.ObjectField{
+				{Name: "Close", Value: gomethodExpr("Close")},
+			})},
+			&ast.AssignStmt{Name: "goOpen", Value: goFuncDeclExpr("?os.Open", &ast.Ident{Name: "GoFile"})},
+			&ast.AssignStmt{Name: "toUpper", Value: goFuncDeclExpr("?strings.ToUpper", &ast.NilLit{})},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "toUpper"}, Args: []ast.Expr{&ast.StringLit{Value: "hi"}}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_GoFuncNameMustHaveQuestionMarkPrefix(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: goFuncDeclExpr("strings.ToUpper", &ast.NilLit{})},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: Go function name must start with '?'")
+	}
+}
+
+func TestCheck_GoFuncUnknownProtoIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: goFuncDeclExpr("?os.Open", &ast.Ident{Name: "NeverDeclared"})},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: NeverDeclared is not a gotype(...)")
+	}
+}
+
+func TestCheck_GotypeOutsideDeclarationShapeIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "print"},
+				Args:   []ast.Expr{goTypeDeclExpr("?os.File", nil)},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: gotype(...) used outside `name = gotype(...)`")
+	}
+}
+
+func TestCheck_GoTypeMemberMustBeGomethod(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoFile", Value: goTypeDeclExpr("?os.File", []ast.ObjectField{
+				{Name: "Close", Value: &ast.NumberLit{Value: 1}},
+			})},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: member value must be gomethod(...)")
+	}
+}

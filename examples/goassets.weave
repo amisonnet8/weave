@@ -1,0 +1,14 @@
+func main(): int {
+	// weave_spec.md §15.3 shows gotype/gofunc declared at true top
+	// level (module scope), but Weave's grammar only supports general
+	// top-level statements once Step 5 (functions) and Step 6 (objects)
+	// existed to produce them — general top-level bindings are still
+	// not implemented as of this step, so declarations live inside
+	// main() for now (see CLAUDE.md's 後半 Step 3 "確定した設計判断").
+	toUpper = gofunc("?strings.ToUpper", nil)
+	trimSpace = gofunc("?strings.TrimSpace", nil)
+
+	print(toUpper("hello, weave"))
+	print(trimSpace("  padded  "))
+	return 0
+}
