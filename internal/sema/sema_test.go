@@ -72,3 +72,43 @@ func TestCheck_AssignToReservedNameIsAnError(t *testing.T) {
 		t.Fatal("expected an error assigning to the reserved name weave_main")
 	}
 }
+
+func TestCheck_AssignToDoubleUnderscorePrefixIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "__t0", Value: &ast.NumberLit{Value: 1}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error assigning to a __-prefixed reserved name")
+	}
+}
+
+func TestCheck_BinaryExprChecksBothOperands(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.BinaryExpr{
+			Op: "+",
+			X:  &ast.NumberLit{Value: 1},
+			Y:  &ast.Ident{Name: "undefined"},
+		}}},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: the right-hand operand is undefined")
+	}
+}
+
+func TestCheck_UnaryExprChecksOperand(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.UnaryExpr{
+			Op: "-",
+			X:  &ast.Ident{Name: "undefined"},
+		}}},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: the unary operand is undefined")
+	}
+}

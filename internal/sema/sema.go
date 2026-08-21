@@ -2,18 +2,32 @@ package sema
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/amisonnet8/weave/internal/ast"
 )
 
-// reservedNames mirrors codegen's internal temp/bridge names — a user
-// assignment to one of these would collide with generated code. Kept in
-// sync manually with codegen.go's own copies (weaveMainFunc,
-// exitCodeTemp), matching Seed's seed_main precedent (see CLAUDE.md's
-// "確定した設計判断").
-var reservedNames = map[string]string{
-	"weave_main": "reserved for the compiled entry point (weave_spec.md §12)",
-	"__exitcode": "reserved for `return`'s internal exit-code conversion",
+// reservedName reports whether name is off-limits for a user assignment
+// because it would collide with a name codegen generates for itself.
+//
+//   - "weave_main" is the internal bridge name for the compiled `main`
+//     (weave_spec.md §12; kept in sync manually with codegen.go's
+//     weaveMainFunc — see CLAUDE.md's "確定した設計判断").
+//   - Any name starting with "__" is reserved wholesale for codegen's
+//     own compiler-generated temporaries (e.g. the `__exitcode` exit
+//     code conversion, and the `__t0`, `__t1`, ... operator evaluation
+//     temps introduced in Step 3 — see codegen.go's funcGen.newTemp).
+//     A prefix rule scales better than enumerating every generated name
+//     individually, since the temp count grows with expression
+//     complexity and isn't a fixed set.
+func reservedName(name string) (string, bool) {
+	if name == "weave_main" {
+		return "reserved for the compiled entry point (weave_spec.md §12)", true
+	}
+	if strings.HasPrefix(name, "__") {
+		return "names starting with `__` are reserved for the compiler's own use", true
+	}
+	return "", false
 }
 
 // Check validates file ahead of code generation.
@@ -57,7 +71,7 @@ func checkStmt(stmt ast.Stmt, declared map[string]bool) error {
 		if err := checkExpr(s.Value, declared); err != nil {
 			return err
 		}
-		if why, ok := reservedNames[s.Name]; ok {
+		if why, ok := reservedName(s.Name); ok {
 			return fmt.Errorf("line %d: %q is a reserved name (%s)", s.Line, s.Name, why)
 		}
 		declared[s.Name] = true
@@ -95,6 +109,13 @@ func checkExpr(expr ast.Expr, declared map[string]bool) error {
 			}
 		}
 		return nil
+	case *ast.BinaryExpr:
+		if err := checkExpr(e.X, declared); err != nil {
+			return err
+		}
+		return checkExpr(e.Y, declared)
+	case *ast.UnaryExpr:
+		return checkExpr(e.X, declared)
 	default:
 		return fmt.Errorf("sema: unsupported expression %T", expr)
 	}

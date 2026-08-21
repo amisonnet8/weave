@@ -173,11 +173,172 @@ func isStmtEnd(t lexer.Token) bool {
 	return t.Kind == lexer.Newline || t.Kind == lexer.RBrace || t.Kind == lexer.EOF
 }
 
-// parseExpr is the expression entry point. It currently only builds a
-// primary expression optionally followed by calls — the full operator
-// precedence table (weave_spec.md §8) arrives in Step 3.
+// parseExpr is the expression entry point: precedence-climbing over
+// weave_spec.md §8's table, lowest precedence first. Each level parses
+// its higher-precedence operand via the next function down; parseUnary
+// is the last stop before postfix calls/primaries.
+//
+//	parseOr            ||                     (lowest)
+//	parseAnd           &&
+//	parseEquality      == !=
+//	parseComparison    < <= > >=
+//	parseAdditive      + -
+//	parseMultiplicative * / %
+//	parseUnary         unary ! -
+//	parseCallOrPrimary ( ) . call              (highest)
 func (p *parser) parseExpr() (ast.Expr, error) {
+	return p.parseOr()
+}
+
+func (p *parser) parseOr() (ast.Expr, error) {
+	x, err := p.parseAnd()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().Kind == lexer.OrOr {
+		op := p.advance()
+		y, err := p.parseAnd()
+		if err != nil {
+			return nil, err
+		}
+		x = &ast.BinaryExpr{Op: "||", X: x, Y: y, Line: op.Line}
+	}
+	return x, nil
+}
+
+func (p *parser) parseAnd() (ast.Expr, error) {
+	x, err := p.parseEquality()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().Kind == lexer.AndAnd {
+		op := p.advance()
+		y, err := p.parseEquality()
+		if err != nil {
+			return nil, err
+		}
+		x = &ast.BinaryExpr{Op: "&&", X: x, Y: y, Line: op.Line}
+	}
+	return x, nil
+}
+
+func (p *parser) parseEquality() (ast.Expr, error) {
+	x, err := p.parseComparison()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().Kind == lexer.Eq || p.peek().Kind == lexer.Neq {
+		op := p.advance()
+		y, err := p.parseComparison()
+		if err != nil {
+			return nil, err
+		}
+		x = &ast.BinaryExpr{Op: opText(op.Kind), X: x, Y: y, Line: op.Line}
+	}
+	return x, nil
+}
+
+func (p *parser) parseComparison() (ast.Expr, error) {
+	x, err := p.parseAdditive()
+	if err != nil {
+		return nil, err
+	}
+	for isComparisonOp(p.peek().Kind) {
+		op := p.advance()
+		y, err := p.parseAdditive()
+		if err != nil {
+			return nil, err
+		}
+		x = &ast.BinaryExpr{Op: opText(op.Kind), X: x, Y: y, Line: op.Line}
+	}
+	return x, nil
+}
+
+func (p *parser) parseAdditive() (ast.Expr, error) {
+	x, err := p.parseMultiplicative()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().Kind == lexer.Plus || p.peek().Kind == lexer.Minus {
+		op := p.advance()
+		y, err := p.parseMultiplicative()
+		if err != nil {
+			return nil, err
+		}
+		x = &ast.BinaryExpr{Op: opText(op.Kind), X: x, Y: y, Line: op.Line}
+	}
+	return x, nil
+}
+
+func (p *parser) parseMultiplicative() (ast.Expr, error) {
+	x, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+	for isMulOp(p.peek().Kind) {
+		op := p.advance()
+		y, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		x = &ast.BinaryExpr{Op: opText(op.Kind), X: x, Y: y, Line: op.Line}
+	}
+	return x, nil
+}
+
+func (p *parser) parseUnary() (ast.Expr, error) {
+	if p.peek().Kind == lexer.Not || p.peek().Kind == lexer.Minus {
+		op := p.advance()
+		x, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.UnaryExpr{Op: opText(op.Kind), X: x, Line: op.Line}, nil
+	}
 	return p.parseCallOrPrimary()
+}
+
+func isComparisonOp(k lexer.Kind) bool {
+	return k == lexer.Lt || k == lexer.Lte || k == lexer.Gt || k == lexer.Gte
+}
+
+func isMulOp(k lexer.Kind) bool {
+	return k == lexer.Star || k == lexer.Slash || k == lexer.Percent
+}
+
+func opText(k lexer.Kind) string {
+	switch k {
+	case lexer.Plus:
+		return "+"
+	case lexer.Minus:
+		return "-"
+	case lexer.Star:
+		return "*"
+	case lexer.Slash:
+		return "/"
+	case lexer.Percent:
+		return "%"
+	case lexer.Eq:
+		return "=="
+	case lexer.Neq:
+		return "!="
+	case lexer.Lt:
+		return "<"
+	case lexer.Lte:
+		return "<="
+	case lexer.Gt:
+		return ">"
+	case lexer.Gte:
+		return ">="
+	case lexer.AndAnd:
+		return "&&"
+	case lexer.OrOr:
+		return "||"
+	case lexer.Not:
+		return "!"
+	default:
+		return "?"
+	}
 }
 
 func (p *parser) parseCallOrPrimary() (ast.Expr, error) {
@@ -267,6 +428,10 @@ func exprLine(x ast.Expr) int {
 	case *ast.NilLit:
 		return x.Line
 	case *ast.CallExpr:
+		return x.Line
+	case *ast.BinaryExpr:
+		return x.Line
+	case *ast.UnaryExpr:
 		return x.Line
 	default:
 		return 0

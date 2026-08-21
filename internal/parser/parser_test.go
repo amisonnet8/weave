@@ -1,10 +1,70 @@
 package parser
 
 import (
+	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/amisonnet8/weave/internal/ast"
 )
+
+// exprString renders e as a fully-parenthesized expression, for
+// precedence tests: it makes grouping visible in a single assertion
+// instead of walking the AST shape by hand.
+func exprString(e ast.Expr) string {
+	switch e := e.(type) {
+	case *ast.NumberLit:
+		return strconv.FormatFloat(e.Value, 'g', -1, 64)
+	case *ast.Ident:
+		return e.Name
+	case *ast.BoolLit:
+		if e.Value {
+			return "true"
+		}
+		return "false"
+	case *ast.BinaryExpr:
+		return "(" + exprString(e.X) + " " + e.Op + " " + exprString(e.Y) + ")"
+	case *ast.UnaryExpr:
+		return "(" + e.Op + exprString(e.X) + ")"
+	default:
+		return fmt.Sprintf("%#v", e)
+	}
+}
+
+func parseExprForTest(t *testing.T, src string) ast.Expr {
+	t.Helper()
+	file, err := Parse("func main(): int {\n\treturn " + src + "\n}\n")
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", src, err)
+	}
+	ret, ok := file.Main.Body[0].(*ast.ReturnStmt)
+	if !ok {
+		t.Fatalf("Parse(%q): body[0] = %T, want *ast.ReturnStmt", src, file.Main.Body[0])
+	}
+	return ret.Value
+}
+
+func TestParse_OperatorPrecedence(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{"1 + 2 * 3", "(1 + (2 * 3))"},
+		{"1 * 2 + 3", "((1 * 2) + 3)"},
+		{"1 < 2 == true", "((1 < 2) == true)"},
+		{"true || false && true", "(true || (false && true))"},
+		{"!true && false", "((!true) && false)"},
+		{"-1 + 2", "((-1) + 2)"},
+		{"1 + 2 == 3 && 4 < 5", "(((1 + 2) == 3) && (4 < 5))"},
+		{"(1 + 2) * 3", "((1 + 2) * 3)"},
+		{"1 - 2 - 3", "((1 - 2) - 3)"}, // left-associative
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			got := exprString(parseExprForTest(t, tt.src))
+			if got != tt.want {
+				t.Errorf("parse(%q) = %s, want %s", tt.src, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestParse_HelloWorld(t *testing.T) {
 	src := "func main(): int {\n\tprint(\"Hello, Weave!\")\n\treturn 0\n}\n"

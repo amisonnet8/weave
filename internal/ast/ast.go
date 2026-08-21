@@ -102,9 +102,27 @@ type CallExpr struct {
 	Line   int
 }
 
-func (*Ident) exprNode()     {}
-func (*NumberLit) exprNode() {}
-func (*StringLit) exprNode() {}
-func (*BoolLit) exprNode()   {}
-func (*NilLit) exprNode()    {}
-func (*CallExpr) exprNode()  {}
+// BinaryExpr is a binary operator expression (weave_spec.md §8): Op is
+// one of "+" "-" "*" "/" "%" "==" "!=" "<" "<=" ">" ">=" "&&" "||".
+type BinaryExpr struct {
+	Op   string
+	X, Y Expr
+	Line int
+}
+
+// UnaryExpr is a prefix unary operator expression (weave_spec.md §8):
+// Op is "!" or "-".
+type UnaryExpr struct {
+	Op   string
+	X    Expr
+	Line int
+}
+
+func (*Ident) exprNode()      {}
+func (*NumberLit) exprNode()  {}
+func (*StringLit) exprNode()  {}
+func (*BoolLit) exprNode()    {}
+func (*NilLit) exprNode()     {}
+func (*CallExpr) exprNode()   {}
+func (*BinaryExpr) exprNode() {}
+func (*UnaryExpr) exprNode()  {}

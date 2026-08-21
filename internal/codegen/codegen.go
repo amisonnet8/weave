@@ -9,7 +9,7 @@ import (
 )
 
 // weaveMainFunc/exitCodeTemp are codegen's own internal names — see
-// sema.go's reservedNames (kept in sync manually; CLAUDE.md's "確定した
+// sema.go's reservedName (kept in sync manually; CLAUDE.md's "確定した
 // 設計判断" documents why).
 const (
 	// weaveMainFunc is the internal AMIVM function name the user's
@@ -33,9 +33,10 @@ const (
 // enough for now — see seed_implementation_notes.md §1 for why VARs
 // must be hoisted ahead of any future GOTO regardless.
 type funcGen struct {
-	decls    []string
-	declared map[string]bool
-	body     strings.Builder
+	decls     []string
+	declared  map[string]bool
+	body      strings.Builder
+	tempCount int
 }
 
 func newFuncGen() *funcGen {
@@ -51,6 +52,19 @@ func (fg *funcGen) declare(name, irType string) {
 	}
 	fg.declared[name] = true
 	fg.decls = append(fg.decls, fmt.Sprintf("\tVAR\t%%%s\t%s\n", name, irType))
+}
+
+// newTemp declares and returns the name (without a leading `%`) of a
+// fresh `^any` temp for holding an intermediate expression result (e.g.
+// one operand chain's worth of an operator evaluation — see
+// genBinaryExpr/genUnaryExpr). The `__` prefix is reserved wholesale for
+// the compiler's own names (see sema.go's reservedName), so these can
+// never collide with a user-assigned Weave variable.
+func (fg *funcGen) newTemp() string {
+	name := fmt.Sprintf("__t%d", fg.tempCount)
+	fg.tempCount++
+	fg.declare(name, "^any")
+	return name
 }
 
 // Generate lowers a checked *ast.File into AMIVM-IR text.
@@ -100,7 +114,7 @@ func genStmt(fg *funcGen, stmt ast.Stmt) error {
 // variable is nil until assigned" without needing Seed/Cascade's
 // separate `_isset` flag.
 func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
-	val, err := genValue(s.Value)
+	val, err := genExpr(fg, s.Value)
 	if err != nil {
 		return err
 	}
@@ -134,7 +148,7 @@ func genPrintCall(fg *funcGen, call *ast.CallExpr) error {
 	if len(call.Args) != 1 {
 		return fmt.Errorf("line %d: print(...) with %d arguments not yet implemented (Step 1-2 support a single argument)", call.Line, len(call.Args))
 	}
-	val, err := genValue(call.Args[0])
+	val, err := genExpr(fg, call.Args[0])
 	if err != nil {
 		return err
 	}
@@ -151,7 +165,7 @@ func genReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 	if s.Value == nil {
 		return fmt.Errorf("line %d: main must return an int exit code (weave_spec.md §12)", s.Line)
 	}
-	val, err := genValue(s.Value)
+	val, err := genExpr(fg, s.Value)
 	if err != nil {
 		return err
 	}
@@ -161,12 +175,15 @@ func genReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 	return nil
 }
 
-// genValue returns the AMIVM `value` token for expr: either a literal
-// token or a `%name` variable reference. Every Weave value is
-// represented as Go `any` (weave_spec.md §2 — see CLAUDE.md's Weave特有
-// の設計課題 1, resolved in Step 2), so this is the single place that
-// turns a literal AST node into IR text.
-func genValue(expr ast.Expr) (string, error) {
+// genExpr lowers expr and returns the AMIVM `value` token that holds its
+// result: either a literal token, a `%name` variable reference, or (for
+// a compound expression) a freshly declared `%__tN` temp that a CALL
+// just wrote into. Every Weave value is represented as Go `any`
+// (weave_spec.md §2 — see CLAUDE.md's Weave特有の設計課題 1, resolved in
+// Step 2), so literals are the only place that turns an AST node
+// directly into IR text; everything else routes through weavert (see
+// genBinaryExpr/genUnaryExpr's doc comments for why).
+func genExpr(fg *funcGen, expr ast.Expr) (string, error) {
 	switch e := expr.(type) {
 	case *ast.Ident:
 		return "%" + e.Name, nil
@@ -181,9 +198,73 @@ func genValue(expr ast.Expr) (string, error) {
 		return "false", nil
 	case *ast.NilLit:
 		return "nil", nil
+	case *ast.BinaryExpr:
+		return genBinaryExpr(fg, e)
+	case *ast.UnaryExpr:
+		return genUnaryExpr(fg, e)
 	default:
 		return "", fmt.Errorf("line %d: expression not yet implemented", exprLine(expr))
 	}
+}
+
+// binOpFuncs maps weave_spec.md §8's binary operators to their
+// weavert.* implementation. Every operator routes through a runtime
+// function rather than a native AMIVM instruction (ADD/EQ/...) because
+// operands are `any`-typed and Go does not allow e.g. `any + any`
+// directly — see weavert/ops.go's package doc comment. Using weavert
+// uniformly (even for `==`/`!=`, where Go's own `==` on two `any`
+// values would in fact compile directly) is a deliberate simplicity
+// choice over chasing a native-instruction fast path this early — see
+// CLAUDE.md's Step 3 "確定した設計判断".
+var binOpFuncs = map[string]string{
+	"+": "Add", "-": "Sub", "*": "Mul", "/": "Div", "%": "Mod",
+	"==": "Eq", "!=": "Neq",
+	"<": "Lt", "<=": "Lte", ">": "Gt", ">=": "Gte",
+	"&&": "And", "||": "Or",
+}
+
+// genBinaryExpr lowers a two-operand operator expression. Both operands
+// are evaluated eagerly (as plain CALL arguments), which is correct for
+// every arithmetic/comparison operator — but for `&&`/`||` it means
+// Weave does not yet short-circuit (see weavert.And/Or's doc comment;
+// CLAUDE.md's Step 3 "確定した設計判断" tracks fixing this in Step 4).
+func genBinaryExpr(fg *funcGen, e *ast.BinaryExpr) (string, error) {
+	fn, ok := binOpFuncs[e.Op]
+	if !ok {
+		return "", fmt.Errorf("line %d: binary operator %q not yet implemented", e.Line, e.Op)
+	}
+	x, err := genExpr(fg, e.X)
+	if err != nil {
+		return "", err
+	}
+	y, err := genExpr(fg, e.Y)
+	if err != nil {
+		return "", err
+	}
+	tmp := fg.newTemp()
+	fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.%s\t%s\t%s\n", tmp, fn, x, y)
+	return "%" + tmp, nil
+}
+
+// genUnaryExpr lowers a prefix unary operator expression. Unary `-` has
+// no dedicated AMIVM instruction (nor a weavert.Neg — see
+// seed_implementation_notes.md §3's "-x is SUB tmp 0 x" trick), so it
+// reuses weavert.Sub(0.0, x) rather than adding a redundant function.
+func genUnaryExpr(fg *funcGen, e *ast.UnaryExpr) (string, error) {
+	x, err := genExpr(fg, e.X)
+	if err != nil {
+		return "", err
+	}
+	tmp := fg.newTemp()
+	switch e.Op {
+	case "-":
+		fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.Sub\t0.0\t%s\n", tmp, x)
+	case "!":
+		fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.Not\t%s\n", tmp, x)
+	default:
+		return "", fmt.Errorf("line %d: unary operator %q not yet implemented", e.Line, e.Op)
+	}
+	return "%" + tmp, nil
 }
 
 // formatNumberLiteral renders v as a Go float literal that is
@@ -217,6 +298,10 @@ func exprLine(x ast.Expr) int {
 	case *ast.NilLit:
 		return x.Line
 	case *ast.CallExpr:
+		return x.Line
+	case *ast.BinaryExpr:
+		return x.Line
+	case *ast.UnaryExpr:
 		return x.Line
 	default:
 		return 0
