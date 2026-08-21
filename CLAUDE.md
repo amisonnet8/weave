@@ -174,10 +174,16 @@ Seed/Cascadeは静的型付け言語だったため、この防波堤として�
   Makefile                      build/install/test/fmt/vet/tidy/clean タスク
   cmd/weave/
     main.go                     CLIエントリポイント(build/run/emit-ir/emit-go/help のディスパッチ)
-    build.go                    compileToIR → compileToGo → compileToBinary の3段パイプライン
+    build.go                    modloader.Load → sema.Check → codegen.Generate(compileToIR)
+                                 → amivm(compileToGo) → go build(compileToBinary) のパイプライン。
+                                 srcPathは単一.weaveファイル、またはパッケージディレクトリのいずれも
+                                 受け付ける(modloader.Loadの項参照)
   internal/lexer/               字句解析
   internal/parser/               構文解析 → AST
   internal/ast/                 AST定義
+  internal/modloader/           パッケージ/importの解決(weave_spec.md §17)。複数.weaveファイル・
+                                 複数パッケージを1つのフラットな*ast.Fileへ解決してからsema/codegenへ
+                                 渡すため、両者はパッケージという概念を一切知らない(下記「確定した設計判断」参照)
   internal/sema/                意味検査(スコープ解決・構文レベルの検査。動的型のため範囲はSeed/Cascadeより狭い見込み)
   internal/codegen/             AST → AMIVM-IR生成
   weavert/                      Weave独自ランタイム(導入する場合。go:embedで配布)
@@ -457,6 +463,30 @@ Step3・4で持ち越した2つの制約(`self.file = goOpen(path)`のような�
 対策として、`weavert.CallGoMethod`(既存)と全く同じreflectパターンを`gofunc`呼び出しにも適用する`weavert.CallGoFunc(fn any, args ...any) any`を新設した。ポイントは**Go関数値自体を文字列名ではなく`?pkg.Func`という値トークンとして直接引数に渡せる**こと——amivmのオペランドカテゴリ表(5節)を確認したところ、`callname`だけでなく`value`カテゴリにも`?xxx_123`/`?xxx_123.xxx_123`が含まれており(実装前に見落としていた)、`CALL result : ?weavert.CallGoFunc ?strings.NewReader arg1 arg2`が構文上有効で、生成されるGoコードは`weavert.CallGoFunc(strings.NewReader, arg1, arg2)`という「関数値を第一級の値として渡す」ごく普通のGo式になる。`CallGoFunc`内部は`reflect.ValueOf(fn).Call(...)`で各引数を`reflect.Value.Convert`により実際のパラメータ型へ変換してから呼び出す(Weaveの数値は常に`float64`のため、たとえば`float64→int`のような妥当な変換のみが起こり、Seed/Cascadeが踏んだ「int→stringのルーン変換」の地雷とは無関係——`float64`から`string`への`Convert`はGoの型システム上そもそも失敗するため安全側)。`NormalizeGoValue`による戻り値の正規化も`CallGoFunc`内に統合し、`genGoFuncCall`から個別の`CALL`が消えた。
 
 これにより「16節が謳う“動的なプロトタイプ検索を経由しない”は名前解決の静的さを指すのであってGo呼び出し自体のネイティブさではない」という後半Step4の教訓(`weavert.CallGoMethod`の節参照)が、`gofunc`の直接呼び出しにもそのまま当てはまることが判明した——**Step3で「`gofunc`は前半の“weavertへ一元化”傾向の意図的な例外」と記録したが、この記録は不正確だったと修正する**: 引数がリテラルだけの限定的なケースでのみネイティブ呼び出しが成立していただけで、一般のケースでは`gofunc`も結局reflect経由のweavertヘルパーを要した。「例外」ではなく、Go資産呼び出し全般(`gofunc`・`gomethod`)が同じreflectパターンに帰着する、という方がより正確な理解。
+
+### モジュールと複数ファイルの統合(後半完了後に追加、weave_spec.md §17)
+
+前半・後半の計画完了後、ユーザーからの要望でCascadeのモジュール機構(`cascade_spec.md`§11、`internal/pkgloader`)を参考にWeaveへ導入した。Cascadeとの違い・Weave特有の設計判断は以下の通り(詳細な検討経緯はweave_spec.md §17自体、および導入前のユーザーとの設計協議に記録済み)。
+
+**アーキテクチャはCascadeの`pkgloader`をほぼそのまま踏襲**: sema/codegenより前の独立した`internal/modloader`パッケージが、複数ファイル・複数パッケージを1つのフラットな`*ast.File`へ静的に解決してから渡す。sema.Check・codegen.Generateは一切変更不要だった(Cascadeと全く同じ結論)。
+
+**核心の設計判断: `修飾子.名前`をASTレベルでプレーンな`*ast.Ident`へ書き換えることで、9節のメソッド呼び出し糖衣構文(`self`自動注入)との衝突を回避した。** Cascadeの`修飾子.識別子`はレシーバー呼び出し構文にたまたま意味的に無害に乗せられたが、Weaveの`obj.method(args)`は既に「第1引数に`obj`自身を自動注入する」という別の意味論を持つため、`mathutil.clamp(15, 0, 10)`をそのまま9節の糖衣構文として展開すると`clamp(mathutil, 15, 0, 10)`という誤った呼び出しになってしまう。`internal/modloader/rewrite.go`の`rewriter.rewriteExpr`が`PropExpr{Obj: Ident(qualifier), Prop: member}`を検出した時点で、まだ`CallExpr.Callee`に代入される前に(`ast.Expr`を返す書き換えパスとして設計したため)ノードそのものを`*ast.Ident{Name: "mathutil_clamp"}`へ丸ごと差し替える——sema/codegenが見る頃には元がPropExprだった痕跡は残らず、`genGeneralCall`の「CalleeがPropExprかどうか」という既存の自己注入判定に一切引っかからない。実装前の設計段階でこの衝突を見抜き、Cascadeを試してから壁にぶつかるのではなく最初から回避策込みで設計できた点は、前半・後半の「実装してからamivmのエラーで気づく」という多くの前例とは違うパターンだった。
+
+**GVARは不要——Cascadeとの最大の違い。** Cascadeは複数のトップレベル関数(struct/レシーバー関数等、それぞれ独立した`FUNC`)を持つためGVAR(グローバル変数)が必要だったが、Weaveは後半Step5の時点で確立した通り`main`以外にトップレベル関数を持たない。非ルートパッケージの束縛(`pub`の有無を問わず全て)も含め、全パッケージの内容は最終的に`ld.order`の順(importされた側が先)で1つのフラットな`TopLevel []ast.Stmt`へ連結され、`weave_main`という単一の`funcGen`へそのまま流し込まれる——単一ファイルの場合と全く同じコード経路。この予測は実装前から立てていた(前回のユーザーとの設計協議時点)が、実装してみても覆らなかった。
+
+**識別子の一意化はCascadeより単純だった。** Cascadeは`struct`/`func`(非レシーバー)/`stage`/トップレベル`let`という型付きの宣言カテゴリごとにリネーム対象を分けていたが、**Weaveには「トップレベルの`name = value`束縛」という1種類の構文しか無い**ため、`internal/modloader/modloader.go`の`collectRenames`は非ルートパッケージの`TopLevel`にある`*ast.AssignStmt`を無条件に`パッケージ名_元の名前`へリネームするだけで済んだ(`pub`かどうかは無関係——`pub`でない束縛も同じパッケージ内の`pub`な束縛から参照されうるため、リネーム対象からは除外できない)。
+
+**`pub`は「トップレベルの`name = value`にのみ付けられる」という制約を、パーサの構造だけで実現した。** `pub`は`parseFile`のトップレベル文ループでのみ認識され(`parseTopLevelStmt`)、`parseStmt`(ブロック内で使う)には対応するケースが無いため、`func main`の中やネストしたブロック内で`pub`を書くと自然に「unexpected token」の構文エラーになる——専用のsemaチェックは不要だった。
+
+**qualifier名の再利用は「曖昧なまま許容せず、確実にエラーにする」という判断をCascadeより一歩進めた。** Cascadeは「トップレベル宣言のリネームがローカル変数によるシャドーイングを正しく扱わない」ことを既知の限定スコープとして受け入れていたが(構文的なリネームだけでは区別できないため)、Weaveでは**import修飾子と同名のローカル変数・関数パラメータ・for変数を使うこと自体を`internal/modloader/rewrite.go`の`checkNoQualifierShadow`でコンパイルエラーにする**ことで、この種の曖昧さそのものを発生させないようにした。これは修飾子という「新しく導入される特別な名前」1つだけを対象にした狭いチェックなので、Cascade的な「宣言カテゴリごとの複雑なスコープ解決」を持ち込まずに実現できた(パッケージ自身の他のトップレベル束縛がローカル変数にシャドーされる、というCascadeと同種の限定スコープはWeaveにも残っているが、これは許容範囲として受け入れている)。
+
+**単一ファイルコンパイルは兄弟ファイルを無視する、というCascadeの実務的な妥協をそのまま採用した。** `weave build examples/hello.weave`のように特定の`.weave`ファイルを直接指定した場合、同じディレクトリの他のファイル(`examples/actors.weave`等)は無視され、そのファイル1つだけの独立パッケージとして扱われる。これにより`examples/`以下の既存の全11+個のサンプルが無変更で動き続けた(実地検証で確認済み——全既存サンプルを個別にビルド・実行し、モジュール機構導入前と出力が完全に一致することを確認)。
+
+**発見: `parser.Parse`の「missing entry point」チェックはファイル単位ではなくパッケージ単位の責務だった(実装中に発覚した設計の見直し)。** 複数ファイルパッケージの実装当初、`internal/modloader/modloader.go`の`loadPackageFiles`が各ファイルを個別に`parser.Parse`していたところ、`mathutil/clamp.weave`のような(`func main`を持たない)正当なパッケージ構成員ファイルが「missing entry point」エラーで弾かれてしまった。**Step1以来`parser.parseFile`が「1ファイル=1プログラム」という前提で単体でも`func main`の存在を要求していたが、複数ファイルパッケージの世界ではこの前提が崩れる。** 修正として、この検査を`parser.parseFile`から削除し(単体の`.weave`ファイルは`func main`を持たなくても構文的に正当)、`internal/modloader.Load`がルートパッケージ全体をマージした**後**に「ルートパッケージ全体としては最低1つ`func main`が必要」という形でチェックするよう責務を移した。既存の`TestParse_MissingMainIsAnError`(単体ファイルレベルのテスト)は、この新しい責務分担を反映して`TestParse_MissingMainIsNotAParseError`に置き換え、`internal/modloader`側に`TestLoad_MissingMainIsAnError`を新設した。
+
+**発見: `-o`省略時のデフォルト出力パスがディレクトリ引数でソースツリーを汚染するバグ(Cascadeが同種のバグを踏んでいた前例からの予防的修正)。** `cascade_implementation_notes`相当の申し送り(Cascade自身のCLAUDE.md「CLI・配布」節)に、`defaultOutPath`がディレクトリ引数を想定しておらず`go build -o <既存ディレクトリ>`という意味になってしまうバグの記録があったため、Weave側は実装時に同じ地雷を踏む前に`cmd/weave/main.go`の`defaultOutPath`へディレクトリ検出分岐(`filepath.Base(srcPath)`を使う)を先回りで組み込んだ。実地検証(`weave emit-ir examples/modules`が`examples/modules/`の中ではなくカレントディレクトリに`modules.ir`を作ることを確認)で問題が無いことを確認済み。
+
+`examples/modules/`(ルートパッケージ`main.weave`が`mathutil`という別パッケージをインポートし、`pub`な関数(`clamp`・`clampSquare`)・`pub`でないパッケージ内プライベートヘルパー(`square`、同一パッケージ内の`pub`な`clampSquare`から参照される)を組み合わせる、weave_spec.md §17.2の例をほぼそのまま再現したサンプル)で`amivm`→`go build`→実行まで実地検証済み。加えて、非公開メンバーへの他パッケージからの参照・存在しないメンバーの参照・非ルートパッケージでの`func main`宣言・循環import・qualifier名のシャドーイング・同一qualifierへの異なるパスの二重import・識別子として不正なパッケージディレクトリ名、という7つのエラーケースをそれぞれ個別に実地検証し、いずれも意図通り明確なエラーメッセージで拒否されることを確認した。
 
 ## 開発の進め方
 

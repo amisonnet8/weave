@@ -8,25 +8,23 @@ import (
 	"path/filepath"
 
 	"github.com/amisonnet8/weave/internal/codegen"
-	"github.com/amisonnet8/weave/internal/parser"
+	"github.com/amisonnet8/weave/internal/modloader"
 	"github.com/amisonnet8/weave/internal/sema"
 	"github.com/amisonnet8/weave/weavert"
 )
 
-// compileToIR runs Weave's own share of the pipeline — parse, sema.Check,
-// codegen.Generate — and returns the resulting AMIVM-IR text. Per
-// CLAUDE.md, this is the full extent of what Weave itself is responsible
-// for; everything past this point hands off to an external tool (amivm,
-// then go build).
+// compileToIR runs Weave's own share of the pipeline — modloader.Load
+// (parsing plus, per weave_spec.md §17, resolving multi-file packages and
+// imports into one flat *ast.File), sema.Check, codegen.Generate — and
+// returns the resulting AMIVM-IR text. Per CLAUDE.md, this is the full
+// extent of what Weave itself is responsible for; everything past this
+// point hands off to an external tool (amivm, then go build). srcPath may
+// name either a single .weave file or a package directory (see
+// modloader.Load's own doc for the distinction).
 func compileToIR(srcPath string) (string, error) {
-	src, err := os.ReadFile(srcPath)
+	file, err := modloader.Load(srcPath)
 	if err != nil {
-		return "", err
-	}
-
-	file, err := parser.Parse(string(src))
-	if err != nil {
-		return "", fmt.Errorf("parse error: %w", err)
+		return "", fmt.Errorf("load error: %w", err)
 	}
 
 	if err := sema.Check(file); err != nil {

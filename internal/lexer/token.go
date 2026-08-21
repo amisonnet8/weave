@@ -29,6 +29,8 @@ const (
 	KwBreak
 	KwContinue
 	KwReturn
+	KwImport
+	KwPub
 
 	// punctuation
 	LParen
@@ -72,6 +74,8 @@ var keywords = map[string]Kind{
 	"break":    KwBreak,
 	"continue": KwContinue,
 	"return":   KwReturn,
+	"import":   KwImport,
+	"pub":      KwPub,
 }
 
 // Token is a single lexical token together with its source line (1-based).

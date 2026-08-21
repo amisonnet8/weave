@@ -21,8 +21,23 @@ package ast
 // including what would have to change if Weave ever grew a second
 // top-level function).
 type File struct {
+	Imports  []Import
 	TopLevel []Stmt
 	Main     *FuncDecl
+}
+
+// Import is `import <qualifier> "<relative path>"` (weave_spec.md §17.2):
+// binds Qualifier to the package rooted at Path (relative to this file's
+// own directory). Only meaningful to internal/modloader, which resolves
+// every Import away — by the time a *File reaches sema.Check/
+// codegen.Generate, Imports is always empty and every `qualifier.name`
+// reference has already been rewritten into a plain, already-renamed
+// *Ident (see modloader's package doc comment). Parser.go's parseFile
+// requires every Import to appear before any other top-level construct.
+type Import struct {
+	Qualifier string
+	Path      string
+	Line      int
 }
 
 // FuncDecl is the `func main(): int { ... }` entry point (weave_spec.md
@@ -61,6 +76,15 @@ type AssignStmt struct {
 	Name  string
 	Value Expr
 	Line  int
+
+	// Pub marks a top-level `pub name = value` binding as visible to
+	// other packages via `import` (weave_spec.md §17.2). Only meaningful
+	// on a top-level statement (parser.go rejects `pub` anywhere else);
+	// only internal/modloader reads it — sema.Check/codegen.Generate
+	// never see a non-root package's AssignStmts at all (modloader
+	// resolves/merges everything first), so this field is irrelevant to
+	// them and always false on whatever they receive.
+	Pub bool
 }
 
 // IfClause is one `if`/`elif` condition-and-body pair.

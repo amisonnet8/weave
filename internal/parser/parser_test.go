@@ -479,8 +479,89 @@ func TestParse_TwoFuncMainIsAnError(t *testing.T) {
 	}
 }
 
-func TestParse_MissingMainIsAnError(t *testing.T) {
-	if _, err := Parse("x = 1\n"); err == nil {
-		t.Fatal("expected an error for a file with no `func main`")
+func TestParse_MissingMainIsNotAParseError(t *testing.T) {
+	// A single file legitimately has no `func main` — it may be a
+	// package member file (weave_spec.md §17.1). Requiring at least one
+	// `func main` across a whole package is modloader.Load's job, not
+	// Parse's — see TestLoad_MissingMainIsAnError in internal/modloader.
+	file, err := Parse("x = 1\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if file.Main != nil {
+		t.Errorf("Main = %#v, want nil", file.Main)
+	}
+}
+
+func TestParse_ImportStmt(t *testing.T) {
+	file, err := Parse("import mathutil \"./mathutil\"\nfunc main(): int {\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(file.Imports) != 1 {
+		t.Fatalf("got %d imports, want 1", len(file.Imports))
+	}
+	imp := file.Imports[0]
+	if imp.Qualifier != "mathutil" || imp.Path != "./mathutil" {
+		t.Errorf("Import = %#v, want Qualifier=mathutil Path=./mathutil", imp)
+	}
+}
+
+func TestParse_MultipleImports(t *testing.T) {
+	file, err := Parse("import a \"./a\"\nimport b \"./b\"\nfunc main(): int {\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(file.Imports) != 2 {
+		t.Fatalf("got %d imports, want 2", len(file.Imports))
+	}
+}
+
+func TestParse_ImportAfterTopLevelStmtIsAnError(t *testing.T) {
+	if _, err := Parse("x = 1\nimport a \"./a\"\nfunc main(): int {\n\treturn 0\n}\n"); err == nil {
+		t.Fatal("expected an error for `import` after another top-level statement")
+	}
+}
+
+func TestParse_ImportPathMustBeStringLiteral(t *testing.T) {
+	if _, err := Parse("import a x\nfunc main(): int {\n\treturn 0\n}\n"); err == nil {
+		t.Fatal("expected an error for a non-string-literal import path")
+	}
+}
+
+func TestParse_PubTopLevelAssign(t *testing.T) {
+	file, err := Parse("pub x = 1\nfunc main(): int {\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(file.TopLevel) != 1 {
+		t.Fatalf("got %d top-level statements, want 1", len(file.TopLevel))
+	}
+	a, ok := file.TopLevel[0].(*ast.AssignStmt)
+	if !ok || !a.Pub || a.Name != "x" {
+		t.Errorf("TopLevel[0] = %#v, want Pub AssignStmt(x)", file.TopLevel[0])
+	}
+}
+
+func TestParse_PubWithoutAssignIsAnError(t *testing.T) {
+	if _, err := Parse("pub print(1)\nfunc main(): int {\n\treturn 0\n}\n"); err == nil {
+		t.Fatal("expected an error for `pub` prefixing a non-assignment statement")
+	}
+}
+
+func TestParse_PubInsideMainIsAnError(t *testing.T) {
+	if _, err := Parse("func main(): int {\n\tpub x = 1\n\treturn 0\n}\n"); err == nil {
+		t.Fatal("expected an error for `pub` used inside func main")
+	}
+}
+
+func TestParse_NonPubTopLevelAssignHasPubFalse(t *testing.T) {
+	file, err := Parse("x = 1\nfunc main(): int {\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	a, ok := file.TopLevel[0].(*ast.AssignStmt)
+	if !ok || a.Pub {
+		t.Errorf("TopLevel[0] = %#v, want non-Pub AssignStmt", file.TopLevel[0])
 	}
 }

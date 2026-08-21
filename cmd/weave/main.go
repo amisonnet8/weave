@@ -50,7 +50,11 @@ func printUsage(w io.Writer) {
 
 Usage:
 
-	weave <command> [flags] <file.weave>
+	weave <command> [flags] <file.weave | package-dir>
+
+A package-dir compiles every .weave file in that directory as one package
+(weave_spec.md §17); a single file compiles only that file, ignoring any
+siblings in the same directory.
 
 Commands:
 
@@ -82,7 +86,7 @@ func parseOneSrcArg(fs *flag.FlagSet, args []string) (string, error) {
 		return "", err
 	}
 	if fs.NArg() != 1 {
-		return "", fmt.Errorf("usage: weave %s [-o file] [-v] <file.weave>", fs.Name())
+		return "", fmt.Errorf("usage: weave %s [-o file] [-v] <file.weave | package-dir>", fs.Name())
 	}
 	return fs.Arg(0), nil
 }
@@ -106,7 +110,7 @@ func runBuild(args []string) error {
 
 func runRun(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: weave run <file.weave>")
+		return fmt.Errorf("usage: weave run <file.weave | package-dir>")
 	}
 	srcPath := args[0]
 
@@ -188,6 +192,19 @@ func runEmitGo(args []string) error {
 // defaultOutPath derives an output path from srcPath by stripping its
 // .weave extension and appending ext (e.g. ".ir", ".go", or "" for a
 // build's bare executable name).
+//
+// srcPath may name a package directory rather than a single file
+// (weave_spec.md §17.1) — TrimSuffix(".weave") is then a no-op, which
+// would otherwise leave the output path identical to the source
+// directory itself (`go build -o <existing dir>` writes *into* that
+// directory instead of naming a new file — silently dropping a build
+// artifact into the source tree). So a directory srcPath instead derives
+// the name from the directory's own base name, written to the current
+// directory — matching `go build ./mypackage`'s own default (no -o) of
+// naming the binary after the package directory.
 func defaultOutPath(srcPath, ext string) string {
+	if info, err := os.Stat(srcPath); err == nil && info.IsDir() {
+		return filepath.Base(srcPath) + ext
+	}
 	return strings.TrimSuffix(srcPath, ".weave") + ext
 }

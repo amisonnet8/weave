@@ -56,18 +56,35 @@ func (p *parser) expect(k lexer.Kind, what string) (lexer.Token, error) {
 	return p.advance(), nil
 }
 
-// parseFile parses a Weave source file: an interleaving of ordinary
-// top-level statements (weave_spec.md §17's gotype/gofunc declarations,
-// prototype object literals, ...) and exactly one `func main(): int
-// {...}` declaration, in any order. See ast.File's doc comment for why
-// top-level statements need no dedicated codegen/sema treatment beyond
-// being processed against the same scope as main's body.
+// parseFile parses a Weave source file: a leading run of `import`
+// statements (weave_spec.md §17.2 — must come before anything else),
+// followed by an interleaving of ordinary top-level statements
+// (weave_spec.md §17's gotype/gofunc declarations, prototype object
+// literals, optionally `pub`-prefixed, §17.2) and exactly one `func
+// main(): int {...}` declaration, in any order. See ast.File's doc
+// comment for why top-level statements need no dedicated codegen/sema
+// treatment beyond being processed against the same scope as main's
+// body — modloader.Load resolves imports/pub away before sema/codegen
+// ever see a *File.
 func (p *parser) parseFile() (*ast.File, error) {
 	p.skipNewlines()
+	var imports []ast.Import
+	for p.peek().Kind == lexer.KwImport {
+		imp, err := p.parseImport()
+		if err != nil {
+			return nil, err
+		}
+		imports = append(imports, imp)
+		p.skipNewlines()
+	}
+
 	var topLevel []ast.Stmt
 	var main *ast.FuncDecl
 	for p.peek().Kind != lexer.EOF {
-		if p.peek().Kind == lexer.KwFunc {
+		switch p.peek().Kind {
+		case lexer.KwImport:
+			return nil, fmt.Errorf("line %d: `import` must appear before any other top-level statement (weave_spec.md §17.2)", p.peek().Line)
+		case lexer.KwFunc:
 			fn, err := p.parseFuncDecl()
 			if err != nil {
 				return nil, err
@@ -76,8 +93,8 @@ func (p *parser) parseFile() (*ast.File, error) {
 				return nil, fmt.Errorf("line %d: only one `func main` is allowed per file", fn.Line)
 			}
 			main = fn
-		} else {
-			stmt, err := p.parseSimpleStmt()
+		default:
+			stmt, err := p.parseTopLevelStmt()
 			if err != nil {
 				return nil, err
 			}
@@ -85,10 +102,52 @@ func (p *parser) parseFile() (*ast.File, error) {
 		}
 		p.skipNewlines()
 	}
-	if main == nil {
-		return nil, fmt.Errorf("missing entry point: expected `func main(): int { ... }`")
+	// A single parsed file need not contain `func main` at all — a
+	// package member file (weave_spec.md §17.1) legitimately has none.
+	// Requiring at least one `func main` somewhere in the whole package
+	// is internal/modloader's job, once every file in the package has
+	// been merged (see modloader.Load).
+	return &ast.File{Imports: imports, TopLevel: topLevel, Main: main}, nil
+}
+
+// parseImport parses `import <qualifier> "<relative path>"`
+// (weave_spec.md §17.2). The path must be a string literal — it is
+// resolved at compile time (internal/modloader), never at runtime, so a
+// computed expression would have nothing to evaluate it against.
+func (p *parser) parseImport() (ast.Import, error) {
+	kw := p.advance() // 'import'
+	qual, err := p.expect(lexer.Ident, "import qualifier")
+	if err != nil {
+		return ast.Import{}, err
 	}
-	return &ast.File{TopLevel: topLevel, Main: main}, nil
+	path, err := p.expect(lexer.String, "import path string literal")
+	if err != nil {
+		return ast.Import{}, err
+	}
+	return ast.Import{Qualifier: qual.Literal, Path: path.Literal, Line: kw.Line}, nil
+}
+
+// parseTopLevelStmt parses an ordinary top-level statement, optionally
+// prefixed with `pub` (weave_spec.md §17.2). `pub` is only recognized
+// here — parseStmt (used inside blocks/func main) has no such case, so
+// `pub` used anywhere else is simply an "unexpected token" parse error,
+// which is exactly the restriction §17.2 states ("pubはトップレベルの
+// `名前 = 値`という束縛にのみ付けられる").
+func (p *parser) parseTopLevelStmt() (ast.Stmt, error) {
+	if p.peek().Kind != lexer.KwPub {
+		return p.parseSimpleStmt()
+	}
+	kw := p.advance() // 'pub'
+	stmt, err := p.parseSimpleStmt()
+	if err != nil {
+		return nil, err
+	}
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok {
+		return nil, fmt.Errorf("line %d: `pub` may only prefix a `name = value` binding (weave_spec.md §17.2)", kw.Line)
+	}
+	assign.Pub = true
+	return assign, nil
 }
 
 func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {
