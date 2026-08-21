@@ -150,6 +150,9 @@ func (w *freeVarWalker) stmt(stmt ast.Stmt) {
 	case *ast.WhileStmt:
 		w.expr(s.Cond)
 		w.block(s.Body)
+	case *ast.PropAssignStmt:
+		w.expr(s.Obj)
+		w.expr(s.Value)
 	case *ast.BreakStmt, *ast.ContinueStmt:
 		// no identifiers
 	}
@@ -181,5 +184,11 @@ func (w *freeVarWalker) expr(expr ast.Expr) {
 		for _, name := range freeVars(e) {
 			w.markFree(name)
 		}
+	case *ast.ObjectLit:
+		for _, field := range e.Fields {
+			w.expr(field.Value)
+		}
+	case *ast.PropExpr:
+		w.expr(e.Obj)
 	}
 }

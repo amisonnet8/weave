@@ -329,3 +329,92 @@ func TestParse_CurryCallSugar(t *testing.T) {
 		t.Errorf("outer callee: got %T, want *ast.CallExpr", chained.Callee)
 	}
 }
+
+func TestParse_ObjectLit(t *testing.T) {
+	lit, ok := parseExprForTest(t, "{ x: 1, y: 2 }").(*ast.ObjectLit)
+	if !ok {
+		t.Fatalf("got %T, want *ast.ObjectLit", lit)
+	}
+	if len(lit.Fields) != 2 || lit.Fields[0].Name != "x" || lit.Fields[1].Name != "y" {
+		t.Errorf("Fields = %+v, want [x y]", lit.Fields)
+	}
+}
+
+func TestParse_EmptyObjectLit(t *testing.T) {
+	lit, ok := parseExprForTest(t, "{}").(*ast.ObjectLit)
+	if !ok {
+		t.Fatalf("got %T, want *ast.ObjectLit", lit)
+	}
+	if len(lit.Fields) != 0 {
+		t.Errorf("got %d fields, want 0", len(lit.Fields))
+	}
+}
+
+func TestParse_ObjectLitTrailingComma(t *testing.T) {
+	lit, ok := parseExprForTest(t, "{ x: 1, y: 2, }").(*ast.ObjectLit)
+	if !ok {
+		t.Fatalf("got %T, want *ast.ObjectLit", lit)
+	}
+	if len(lit.Fields) != 2 {
+		t.Errorf("got %d fields, want 2", len(lit.Fields))
+	}
+}
+
+func TestParse_PropExpr(t *testing.T) {
+	prop, ok := parseExprForTest(t, "point.x").(*ast.PropExpr)
+	if !ok {
+		t.Fatalf("got %T, want *ast.PropExpr", prop)
+	}
+	if prop.Prop != "x" {
+		t.Errorf("Prop = %q, want x", prop.Prop)
+	}
+	obj, ok := prop.Obj.(*ast.Ident)
+	if !ok || obj.Name != "point" {
+		t.Errorf("Obj = %#v, want Ident(point)", prop.Obj)
+	}
+}
+
+func TestParse_ChainedPropExpr(t *testing.T) {
+	prop, ok := parseExprForTest(t, "a.b.c").(*ast.PropExpr)
+	if !ok {
+		t.Fatalf("got %T, want *ast.PropExpr", prop)
+	}
+	if prop.Prop != "c" {
+		t.Errorf("outer Prop = %q, want c", prop.Prop)
+	}
+	inner, ok := prop.Obj.(*ast.PropExpr)
+	if !ok || inner.Prop != "b" {
+		t.Errorf("inner = %#v, want PropExpr(b)", prop.Obj)
+	}
+}
+
+func TestParse_PropAssignStmt(t *testing.T) {
+	file, err := Parse("func main(): int {\n\tpoint.x = 10\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	assign, ok := file.Main.Body[0].(*ast.PropAssignStmt)
+	if !ok {
+		t.Fatalf("statement 0: got %T, want *ast.PropAssignStmt", file.Main.Body[0])
+	}
+	if assign.Prop != "x" {
+		t.Errorf("Prop = %q, want x", assign.Prop)
+	}
+	obj, ok := assign.Obj.(*ast.Ident)
+	if !ok || obj.Name != "point" {
+		t.Errorf("Obj = %#v, want Ident(point)", assign.Obj)
+	}
+}
+
+func TestParse_MethodCallOnPropExpr(t *testing.T) {
+	// obj.greet("x") — a call whose callee is a property access, not a
+	// plain identifier (general-call/builtin dispatch is codegen's job,
+	// not the parser's — see codegen.genCallExpr).
+	call, ok := parseExprForTest(t, `obj.greet("x")`).(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("got %T, want *ast.CallExpr", call)
+	}
+	if _, ok := call.Callee.(*ast.PropExpr); !ok {
+		t.Errorf("callee: got %T, want *ast.PropExpr", call.Callee)
+	}
+}

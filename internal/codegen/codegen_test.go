@@ -529,3 +529,98 @@ func TestGenerate_ZeroArgGeneralCallIsAnError(t *testing.T) {
 		t.Fatal("expected an error: a call needs at least one argument")
 	}
 }
+
+func TestGenerate_ObjectLitBuildsViaNewObjectAndObjSet(t *testing.T) {
+	fg := newFuncGen(&codegenCtx{})
+	got, err := genExpr(fg, &ast.ObjectLit{Fields: []ast.ObjectField{
+		{Name: "x", Value: &ast.NumberLit{Value: 1}},
+		{Name: "y", Value: &ast.NumberLit{Value: 2}},
+	}})
+	if err != nil {
+		t.Fatalf("genExpr: %v", err)
+	}
+	body := fg.body.String()
+	if !strings.Contains(body, "CALL\t"+got+"\t:\t?weavert.NewObject\n") {
+		t.Errorf("expected NewObject into %s, got:\n%s", got, body)
+	}
+	if !strings.Contains(body, "CALL\t:\t?weavert.ObjSet\t"+got+"\t\"x\"\t1.0\n") {
+		t.Errorf("expected ObjSet for field x, got:\n%s", body)
+	}
+	if !strings.Contains(body, "CALL\t:\t?weavert.ObjSet\t"+got+"\t\"y\"\t2.0\n") {
+		t.Errorf("expected ObjSet for field y, got:\n%s", body)
+	}
+}
+
+func TestGenerate_PropExprUsesObjGet(t *testing.T) {
+	fg := newFuncGen(&codegenCtx{})
+	got, err := genExpr(fg, &ast.PropExpr{Obj: &ast.Ident{Name: "obj"}, Prop: "x"})
+	if err != nil {
+		t.Fatalf("genExpr: %v", err)
+	}
+	if !strings.Contains(fg.body.String(), "CALL\t"+got+"\t:\t?weavert.ObjGet\t%obj\t\"x\"\n") {
+		t.Errorf("expected ObjGet, got:\n%s", fg.body.String())
+	}
+}
+
+func TestGenerate_PropAssignUsesObjSet(t *testing.T) {
+	fg := newFuncGen(&codegenCtx{})
+	err := genPropAssignStmt(fg, &ast.PropAssignStmt{
+		Obj: &ast.Ident{Name: "obj"}, Prop: "x", Value: &ast.NumberLit{Value: 5},
+	})
+	if err != nil {
+		t.Fatalf("genPropAssignStmt: %v", err)
+	}
+	if !strings.Contains(fg.body.String(), "CALL\t:\t?weavert.ObjSet\t%obj\t\"x\"\t5.0\n") {
+		t.Errorf("expected ObjSet, got:\n%s", fg.body.String())
+	}
+}
+
+func TestGenerate_HasAndRemoveBuiltins(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "has"},
+				Args:   []ast.Expr{&ast.Ident{Name: "o"}, &ast.StringLit{Value: "x"}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "remove"},
+				Args:   []ast.Expr{&ast.Ident{Name: "o"}, &ast.StringLit{Value: "x"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.ObjHas\t%o\t\"x\"\n") {
+		t.Errorf("expected has(...) to lower to weavert.ObjHas, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.ObjRemove\t%o\t\"x\"\n") {
+		t.Errorf("expected remove(...) to lower to weavert.ObjRemove, got:\n%s", ir)
+	}
+}
+
+func TestFreeVars_ObjectLitFieldValuesAreWalked(t *testing.T) {
+	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
+		&ast.ReturnStmt{Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+			{Name: "a", Value: &ast.Ident{Name: "x"}},
+			{Name: "b", Value: &ast.Ident{Name: "base"}},
+		}}},
+	}}
+	got := freeVars(lit)
+	if len(got) != 1 || got[0] != "base" {
+		t.Errorf("freeVars = %v, want [base] (x is the param)", got)
+	}
+}
+
+func TestFreeVars_PropExprObjIsWalked(t *testing.T) {
+	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
+		&ast.ReturnStmt{Value: &ast.PropExpr{Obj: &ast.Ident{Name: "outer"}, Prop: "field"}},
+	}}
+	got := freeVars(lit)
+	if len(got) != 1 || got[0] != "outer" {
+		t.Errorf("freeVars = %v, want [outer]", got)
+	}
+}

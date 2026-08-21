@@ -218,15 +218,18 @@ func (p *parser) parseSimpleStmt() (ast.Stmt, error) {
 	}
 	if p.peek().Kind == lexer.Assign {
 		eq := p.advance()
-		name, ok := x.(*ast.Ident)
-		if !ok {
-			return nil, fmt.Errorf("line %d: left-hand side of `=` must be an identifier", eq.Line)
-		}
 		val, err := p.parseExpr()
 		if err != nil {
 			return nil, err
 		}
-		return &ast.AssignStmt{Name: name.Name, Value: val, Line: eq.Line}, nil
+		switch target := x.(type) {
+		case *ast.Ident:
+			return &ast.AssignStmt{Name: target.Name, Value: val, Line: eq.Line}, nil
+		case *ast.PropExpr:
+			return &ast.PropAssignStmt{Obj: target.Obj, Prop: target.Prop, Value: val, Line: eq.Line}, nil
+		default:
+			return nil, fmt.Errorf("line %d: left-hand side of `=` must be an identifier or a property access", eq.Line)
+		}
 	}
 	return &ast.ExprStmt{X: x, Line: exprLine(x)}, nil
 }
@@ -403,18 +406,36 @@ func opText(k lexer.Kind) string {
 	}
 }
 
+// parseCallOrPrimary handles weave_spec.md §8's highest-precedence
+// level: a primary expression followed by any mix of calls (`(args)`)
+// and property accesses (`.name`), left to right — e.g. `obj.method(a).field`.
 func (p *parser) parseCallOrPrimary() (ast.Expr, error) {
 	x, err := p.parsePrimary()
 	if err != nil {
 		return nil, err
 	}
-	for p.peek().Kind == lexer.LParen {
-		x, err = p.parseCallArgs(x)
+	for {
+		switch p.peek().Kind {
+		case lexer.LParen:
+			x, err = p.parseCallArgs(x)
+		case lexer.Dot:
+			x, err = p.parsePropAccess(x)
+		default:
+			return x, nil
+		}
 		if err != nil {
 			return nil, err
 		}
 	}
-	return x, nil
+}
+
+func (p *parser) parsePropAccess(obj ast.Expr) (ast.Expr, error) {
+	dot := p.advance() // '.'
+	name, err := p.expect(lexer.Ident, "property name")
+	if err != nil {
+		return nil, err
+	}
+	return &ast.PropExpr{Obj: obj, Prop: name.Literal, Line: dot.Line}, nil
 }
 
 func (p *parser) parseCallArgs(callee ast.Expr) (ast.Expr, error) {
@@ -465,6 +486,8 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 		return &ast.NilLit{Line: t.Line}, nil
 	case lexer.KwFn:
 		return p.parseFuncLit()
+	case lexer.LBrace:
+		return p.parseObjectLit()
 	case lexer.LParen:
 		p.advance()
 		x, err := p.parseExpr()
@@ -477,6 +500,41 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 		return x, nil
 	}
 	return nil, fmt.Errorf("line %d: unexpected token %q in expression", t.Line, t.Literal)
+}
+
+// parseObjectLit parses `{ }` or `{ x: 1, y: 2 }` (weave_spec.md §3,
+// §4.1). Newlines are allowed around fields and after the trailing
+// comma, so a literal can be spread across multiple lines like a block.
+func (p *parser) parseObjectLit() (ast.Expr, error) {
+	lb := p.advance() // '{'
+	p.skipNewlines()
+	var fields []ast.ObjectField
+	for p.peek().Kind != lexer.RBrace {
+		key, err := p.expect(lexer.Ident, "property name")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(lexer.Colon, "':'"); err != nil {
+			return nil, err
+		}
+		p.skipNewlines()
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, ast.ObjectField{Name: key.Literal, Value: val})
+		p.skipNewlines()
+		if p.peek().Kind == lexer.Comma {
+			p.advance()
+			p.skipNewlines()
+			continue
+		}
+		break
+	}
+	if _, err := p.expect(lexer.RBrace, "'}'"); err != nil {
+		return nil, err
+	}
+	return &ast.ObjectLit{Fields: fields, Line: lb.Line}, nil
 }
 
 // parseFuncLit parses `fn(params) body` (weave_spec.md §5), where body
@@ -559,6 +617,10 @@ func exprLine(x ast.Expr) int {
 	case *ast.UnaryExpr:
 		return x.Line
 	case *ast.FuncLit:
+		return x.Line
+	case *ast.ObjectLit:
+		return x.Line
+	case *ast.PropExpr:
 		return x.Line
 	default:
 		return 0

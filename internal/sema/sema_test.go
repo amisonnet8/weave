@@ -364,3 +364,62 @@ func TestCheck_BuiltinCalleeIsNotTreatedAsAVariable(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 }
+
+func TestCheck_ObjectLitChecksFieldValues(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.ObjectLit{
+			Fields: []ast.ObjectField{{Name: "x", Value: &ast.Ident{Name: "undefined"}}},
+		}}},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: object field value is undefined")
+	}
+}
+
+func TestCheck_PropExprChecksObj(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.PropExpr{
+			Obj: &ast.Ident{Name: "undefined"}, Prop: "x",
+		}}},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: property access on an undefined object")
+	}
+}
+
+func TestCheck_PropAssignChecksObjAndValue(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
+			&ast.PropAssignStmt{Obj: &ast.Ident{Name: "o"}, Prop: "x", Value: &ast.Ident{Name: "undefined"}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: property assignment value is undefined")
+	}
+}
+
+func TestCheck_HasAndRemoveAreBuiltins(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "has"},
+				Args:   []ast.Expr{&ast.Ident{Name: "o"}, &ast.StringLit{Value: "x"}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "remove"},
+				Args:   []ast.Expr{&ast.Ident{Name: "o"}, &ast.StringLit{Value: "x"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}

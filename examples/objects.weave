@@ -1,0 +1,36 @@
+func main(): int {
+	point = { x: 1, y: 2 }
+	print(point.x)
+	print(point.y)
+
+	point.z = 3
+	print(point.z)
+
+	point.x = 10
+	print(point.x)
+
+	print(has(point, "x"))
+	print(has(point, "w"))
+
+	remove(point, "y")
+	print(has(point, "y"))
+	print(point.y)
+
+	empty = {}
+	print(has(empty, "x"))
+
+	mixed = { n: 1, s: "hi", b: true, nested: { inner: 42 } }
+	print(mixed.n)
+	print(mixed.s)
+	print(mixed.b)
+	print(mixed.nested.inner)
+
+	greeter = { greet: fn(name) { return "hello, " + name } }
+	print(greeter.greet("weave"))
+
+	base = 100
+	obj = { addBase: fn(x) { return x + base } }
+	print(obj.addBase(5))
+
+	return point.x
+}

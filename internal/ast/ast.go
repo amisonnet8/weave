@@ -79,13 +79,24 @@ type WhileStmt struct {
 type BreakStmt struct{ Line int }
 type ContinueStmt struct{ Line int }
 
-func (*ExprStmt) stmtNode()     {}
-func (*ReturnStmt) stmtNode()   {}
-func (*AssignStmt) stmtNode()   {}
-func (*IfStmt) stmtNode()       {}
-func (*WhileStmt) stmtNode()    {}
-func (*BreakStmt) stmtNode()    {}
-func (*ContinueStmt) stmtNode() {}
+// PropAssignStmt is `obj.name = value` (weave_spec.md §4.1). A property
+// write always applies to Obj itself, never a prototype (§4.2) — that
+// distinction only matters once Step 7 adds prototype-chain reads.
+type PropAssignStmt struct {
+	Obj   Expr
+	Prop  string
+	Value Expr
+	Line  int
+}
+
+func (*ExprStmt) stmtNode()       {}
+func (*ReturnStmt) stmtNode()     {}
+func (*AssignStmt) stmtNode()     {}
+func (*IfStmt) stmtNode()         {}
+func (*WhileStmt) stmtNode()      {}
+func (*BreakStmt) stmtNode()      {}
+func (*ContinueStmt) stmtNode()   {}
+func (*PropAssignStmt) stmtNode() {}
 
 // Expr is a Weave expression.
 type Expr interface {
@@ -165,6 +176,28 @@ type FuncLit struct {
 	Line  int
 }
 
+// ObjectField is one `key: value` pair in an object literal.
+type ObjectField struct {
+	Name  string
+	Value Expr
+}
+
+// ObjectLit is `{ }` or `{ x: 1, y: 2 }` (weave_spec.md §3, §4.1). A
+// prototype-carrying literal (`{ __proto__: base, x: 1 }`, §4.2)
+// arrives in Step 7 — through Step 6 every field is an ordinary
+// property.
+type ObjectLit struct {
+	Fields []ObjectField
+	Line   int
+}
+
+// PropExpr is a property read `obj.name` (weave_spec.md §4.1).
+type PropExpr struct {
+	Obj  Expr
+	Prop string
+	Line int
+}
+
 func (*Ident) exprNode()      {}
 func (*NumberLit) exprNode()  {}
 func (*StringLit) exprNode()  {}
@@ -174,3 +207,5 @@ func (*CallExpr) exprNode()   {}
 func (*BinaryExpr) exprNode() {}
 func (*UnaryExpr) exprNode()  {}
 func (*FuncLit) exprNode()    {}
+func (*ObjectLit) exprNode()  {}
+func (*PropExpr) exprNode()   {}

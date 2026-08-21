@@ -31,7 +31,9 @@ const (
 // values applied through weavert.Call — kept in sync manually with
 // sema.go's own copy (CLAUDE.md's "確定した設計判断").
 var builtinNames = map[string]bool{
-	"print": true,
+	"print":  true,
+	"has":    true,
+	"remove": true,
 }
 
 // codegenCtx is shared by every funcGen created during one Generate()
@@ -177,6 +179,8 @@ func genStmt(fg *funcGen, stmt ast.Stmt) error {
 	case *ast.ContinueStmt:
 		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", fg.continueStack[len(fg.continueStack)-1])
 		return nil
+	case *ast.PropAssignStmt:
+		return genPropAssignStmt(fg, s)
 	default:
 		return fmt.Errorf("codegen: unsupported statement %T", stmt)
 	}
@@ -302,9 +306,33 @@ func genBuiltinCall(fg *funcGen, name string, call *ast.CallExpr) (string, error
 	switch name {
 	case "print":
 		return genPrintCall(fg, call)
+	case "has":
+		return genTwoArgObjBuiltin(fg, call, "weavert.ObjHas")
+	case "remove":
+		return genTwoArgObjBuiltin(fg, call, "weavert.ObjRemove")
 	default:
 		return "", fmt.Errorf("line %d: builtin %q not yet implemented", call.Line, name)
 	}
+}
+
+// genTwoArgObjBuiltin lowers has(obj, name)/remove(obj, name)
+// (weave_spec.md §11) to the given weavert function, which both take
+// exactly the same (obj, key) shape.
+func genTwoArgObjBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error) {
+	if len(call.Args) != 2 {
+		return "", fmt.Errorf("line %d: %s(...) takes exactly two arguments, got %d", call.Line, fn, len(call.Args))
+	}
+	obj, err := genExpr(fg, call.Args[0])
+	if err != nil {
+		return "", err
+	}
+	key, err := genExpr(fg, call.Args[1])
+	if err != nil {
+		return "", err
+	}
+	tmp := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?%s\t%s\t%s\n", tmp, fn, obj, key)
+	return tmp, nil
 }
 
 // genPrintCall lowers print(x) to a ?weavert.Print call, which owns the
@@ -424,6 +452,10 @@ func genExpr(fg *funcGen, expr ast.Expr) (string, error) {
 		return genCallExpr(fg, e)
 	case *ast.FuncLit:
 		return genFuncLit(fg, e)
+	case *ast.ObjectLit:
+		return genObjectLit(fg, e)
+	case *ast.PropExpr:
+		return genPropExpr(fg, e)
 	default:
 		return "", fmt.Errorf("line %d: expression not yet implemented", exprLine(expr))
 	}
@@ -565,6 +597,10 @@ func exprLine(x ast.Expr) int {
 	case *ast.UnaryExpr:
 		return x.Line
 	case *ast.FuncLit:
+		return x.Line
+	case *ast.ObjectLit:
+		return x.Line
+	case *ast.PropExpr:
 		return x.Line
 	default:
 		return 0

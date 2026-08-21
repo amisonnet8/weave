@@ -15,7 +15,9 @@ import (
 // with codegen.go's own copy (CLAUDE.md's "確定した設計判断" tracks
 // this alongside the other manually-synced name lists).
 var builtinNames = map[string]bool{
-	"print": true,
+	"print":  true,
+	"has":    true,
+	"remove": true,
 }
 
 // reservedName reports whether name is off-limits for a user assignment
@@ -209,6 +211,11 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 			return fmt.Errorf("line %d: `continue` outside of a loop (weave_spec.md §7)", s.Line)
 		}
 		return nil
+	case *ast.PropAssignStmt:
+		if err := c.checkExpr(s.Obj, sc); err != nil {
+			return err
+		}
+		return c.checkExpr(s.Value, sc)
 	default:
 		return fmt.Errorf("sema: unsupported statement %T", stmt)
 	}
@@ -248,6 +255,15 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 		return c.checkExpr(e.X, sc)
 	case *ast.FuncLit:
 		return c.checkFuncLit(e, sc)
+	case *ast.ObjectLit:
+		for _, field := range e.Fields {
+			if err := c.checkExpr(field.Value, sc); err != nil {
+				return err
+			}
+		}
+		return nil
+	case *ast.PropExpr:
+		return c.checkExpr(e.Obj, sc)
 	default:
 		return fmt.Errorf("sema: unsupported expression %T", expr)
 	}
