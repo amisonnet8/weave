@@ -25,12 +25,21 @@ func main(): int {
 	print(mixed.b)
 	print(mixed.nested.inner)
 
+	// greet/addBase take a plain value, not `self` — calling them via
+	// obj.name(args) would trigger 9節's method-call sugar (self
+	// auto-injected as the first argument), which is not what these
+	// demonstrate. Reading the property into a local first, then calling
+	// that, sidesteps the sugar (it only applies when a call's callee is
+	// written directly as `obj.name`, weave_spec.md §9's own example
+	// shows the injecting form; prototypes.weave demonstrates it fully).
 	greeter = { greet: fn(name) { return "hello, " + name } }
-	print(greeter.greet("weave"))
+	greet = greeter.greet
+	print(greet("weave"))
 
 	base = 100
 	obj = { addBase: fn(x) { return x + base } }
-	print(obj.addBase(5))
+	addBase = obj.addBase
+	print(addBase(5))
 
 	return point.x
 }

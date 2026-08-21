@@ -342,6 +342,12 @@ Weaveのカリー化(`fn(a) fn(b) {...}`、5節)は「クロージャーを返�
 
 **9節自身が直後に`alice.greet()`(引数無し)を`greet(alice)`の糖衣構文の正しい例として明記している**(「4.2節のgreetはfn(self) {...}という1引数関数だったため」という注釈付き)ため、9節の記述を正とし、4.2節の`alice.greet(alice)`は仕様のサンプルコードの誤り(推測: `alice.greet()`と書くつもりだった)として扱う。この判断はサンプルプログラム(`examples/prototypes.weave`)にコメントとして残した。
 
+### 発見: `examples/objects.weave`がStep7の自己注入導入後に壊れたまま残っていた(後日発見・修正)
+
+`examples/objects.weave`(Step6作成、「オブジェクトリテラルとプロパティアクセス(自身のみ)」用のサンプル)の`greeter.greet("weave")`・`obj.addBase(5)`は、どちらも`self`を取らないプレーンな1引数関数(`greet: fn(name) {...}`・`addBase: fn(x) {...}`)をプロパティに持たせ、`.name(args)`という形で呼び出していた。Step6時点では`.`は素直なプロパティアクセス+通常呼び出しでしかなかったため問題無かったが、**Step7が導入した9節の自己注入糖衣構文(`obj.method(args)`→`method(obj, args)`)は、この構文の意味を全ての`.name(args)`呼び出しに対して無条件に変えてしまい**(`genGeneralCall`の分岐は「CalleeがPropExprかどうか」という純粋に構文的な判定——呼び出し先が`self`を期待する「メソッド」かどうかは一切見ない)、`greeter.greet("weave")`は`greet(greeter, "weave")`という誤った適用になる(`greet`は1引数関数なので`greet(greeter)`の時点で評価が完了し、結果の文字列に"weave"をさらに適用しようとして壊れる——実際には`"hello, " + greeter`という文字列+オブジェクトの加算が先に`weavert.Add`の実行時エラーとしてpanicする)。
+
+このバグは新機能追加のたびに実行される`examples/`の実地検証(CLAUDE.md「開発の進め方」4)が、**過去に作成済みのサンプルまで遡って再検証する運用にはなっていなかった**ために、Step7以降ずっと見過ごされていた——後半のモジュール機能の実装作業中に、既存サンプル全体を横断的に再実行して初めて発覚した。修正は、これら2つの非メソッド関数プロパティを`.name(args)`で直接呼ばず、**一度プロパティ読み取りを別の変数に代入してから呼ぶ**形に変更した(`greet = greeter.greet; greet("weave")`)——`genGeneralCall`の自己注入判定は「`CallExpr.Callee`が直接`PropExpr`かどうか」でしか発火しないため、この形は自己注入を経由せず、Step6が本来示したかった「プロパティに関数を持たせて呼べる」という趣旨に忠実な形になる(自己注入付きの`.method(args)`呼び出し自体は`examples/prototypes.weave`が既に別途カバー済みで、objects.weave側で重複して示す必要は無い)。
+
 ### 関数リテラルは明示的な`return`が無くてもよい(Step 7で発見した実装バグ)
 
 `weave_spec.md`6.2節の`increment: fn(self, amount) { self.count = self.count + amount }`が明示的な`return`を一切持たないことに、`examples/prototypes.weave`(このパターンを再現したサンプル)をamivm→go buildした際の「missing return」エラーで気づいた。Step5時点の`genFuncLit`は、クロージャー本体に`return`が無いケースを想定しておらず、Goの「`^any`を返す関数は全ての経路でreturnが必要」という制約に違反していた。
