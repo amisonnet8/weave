@@ -6,7 +6,7 @@ A dynamically-typed programming language, implemented in Go, that unifies proper
 
 ## Status
 
-Weave's front end (lexer, parser, semantic checker, and AMIVM-IR code generator) implements the language described in [`weave_spec.md`](weave_spec.md): dynamic values (numbers, strings, booleans, `nil`), operators, control flow, functions/closures/currying, prototype-based objects and method dispatch, built-in functions, `for`-`in`, and the actor model (`spawn`/`send`/`ask`/`reply`). Static Go-asset integration (`gotype`/`gofunc`/`gomethod`, §15–16) is not implemented yet.
+Weave's front end (lexer, parser, semantic checker, and AMIVM-IR code generator) implements the full language described in [`weave_spec.md`](weave_spec.md): dynamic values (numbers, strings, booleans, `nil`), operators, control flow, functions/closures/currying (including self-recursion), prototype-based objects and method dispatch, built-in functions, `for`-`in`, the actor model (`spawn`/`send`/`ask`/`reply`), static Go-asset integration (`gotype`/`gofunc`/`gomethod`, §15–16), and multi-file/multi-package modules (`import`/`pub`, §17).
 
 ## Pipeline
 
@@ -39,8 +39,10 @@ Both land in `$GOBIN` (or `$GOPATH/bin` if unset) — make sure that directory i
 ## Usage
 
 ```
-weave <command> [flags] <file.weave>
+weave <command> [flags] <file.weave | package-dir>
 ```
+
+A package directory compiles every `.weave` file in it as one package (`import`/`pub`, §17 of the spec); a single file compiles only that file, ignoring any siblings in the same directory.
 
 | Command | Output |
 |---|---|
@@ -80,7 +82,7 @@ Alice says hi
 8
 ```
 
-More runnable examples covering scalars, operators, control flow, closures/currying, objects/prototypes, built-ins/`for`-`in`, and actors live in [`examples/`](examples/).
+More runnable examples covering scalars, operators, control flow, closures/currying/recursion, objects/prototypes, built-ins/`for`-`in`, actors, Go-asset integration, and multi-package modules live in [`examples/`](examples/).
 
 ## Language
 
@@ -89,18 +91,21 @@ More runnable examples covering scalars, operators, control flow, closures/curry
 ## Repository layout
 
 ```
-cmd/weave/          CLI entry point (this README's `weave` commands)
+cmd/weave/           CLI entry point (this README's `weave` commands)
 internal/lexer/      tokenizing
 internal/parser/     parsing → AST
 internal/ast/        AST definitions
+internal/modloader/  resolves multi-file packages and imports (§17) into one flat AST
+                      before sema/codegen ever run — see CLAUDE.md
 internal/sema/       semantic analysis (scope resolution, syntax-level checks — Weave's
                       dynamic typing means most value-type errors are a runtime concern
                       instead; see CLAUDE.md)
 internal/codegen/    AST → AMIVM-IR
 weavert/             Weave's Go runtime library (every Weave value is dynamically typed,
-                      so operators, objects, closures, and actors all route through here
-                      rather than AMIVM's native instructions — see CLAUDE.md), embedded
-                      into every weave build
+                      so operators, objects, and actors route through here rather than
+                      AMIVM's native instructions, and even a native closure — a real,
+                      nested AMIVM CLOS — still calls through here via reflection; see
+                      CLAUDE.md), embedded into every weave build
 examples/            runnable .weave sample programs, one group per language feature
 weave_spec.md        the Weave language specification (the only authoritative one)
 CLAUDE.md            project conventions for AI-assisted development

@@ -10,7 +10,7 @@ Weaveの核心は、次の3つを**1つの仕組み(名前によるプロパテ�
 2. プロトタイプ継承による関数呼び出し(`obj.greet()`)
 3. アクターへのメッセージ送信(`send(a)("increment")(5)`)
 
-アクターの「メッセージハンドラ」定義は、オブジェクトの「メソッド」定義と**全く同じ構文**(`fn(self, ...) {...}`をプロパティに持たせるだけ)。この統一原理がWeaveの設計の全てを貫く(コード生成レベルでも、メソッド呼び出しとメッセージディスパッチは同じヘルパーを共有する見込み。14節参照)。
+アクターの「メッセージハンドラ」定義は、オブジェクトの「メソッド」定義と**全く同じ構文**(`fn(self, ...) {...}`をプロパティに持たせるだけ)。この統一原理がWeaveの設計の全てを貫く(コード生成レベルでも、メソッド呼び出しとメッセージディスパッチは同じ`ObjGet`+`Call`のヘルパーを共有することを後半Step1で実証済み。14節参照)。
 
 Seed/Cascadeとの違いとして、Weaveは**動的型付け**言語であり(`weave_spec.md` 2節)、Seed/Cascadeが確立した「静的型をAMIVM-IRの型システムへ素直に落とす」パターンがそのままでは通用しない。値は実行時までAMIVMのネイティブ型(`^int`/`^string`等)に固定できず、多くの操作が`any`越しの動的処理になる可能性が高い(詳細は下記「Weave特有の設計課題」参照)。
 
@@ -110,22 +110,22 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | map | `MPTYPE` `MPMAKE` `MSET` `MGET` `MPKEYS` |
 | クロージャー・関数型 | `FNTYPE` `CLOS` `ENDCLOS` |
 
-`type1`等の「型」オペランドは`^xxx_123`のようなGo型名トークンなら何でも許容される(5節オペランドカテゴリ)。**`^any`はGoの組み込み型`any`としてそのまま通る**ため、`MPTYPE ^string ^any`(Weaveのオブジェクト表現、14節)は構文上問題なく成立する見込み——ただし実地検証(amivm→go buildが通るか)は未実施。
+`type1`等の「型」オペランドは`^xxx_123`のようなGo型名トークンなら何でも許容される(5節オペランドカテゴリ)。**`^any`はGoの組み込み型`any`としてそのまま通る**ため、`MPTYPE ^string ^any`という宣言自体は構文上問題なく成立する(実地検証済み)。ただしWeaveのオブジェクト表現(14節の当初案)としては、結局`MPTYPE`ではなく`weavert.Object`(`map[string]any`)へ完全に一元化することになった——構文が通ることと、Weaveの`^any`変数からネイティブにmapアクセスできることは別問題だったため(詳細は下記「オブジェクトもAMIVMのネイティブ命令を使わずweavertへ一元化」Step 6の節)。
 
 各命令の生成Goコード・オペランドカテゴリ(`whole`/`integer`/`value`/`single`/`multi`/`callname`等)・Kind分類は`ignored/amivm/docs/amivm_spec.md`の4〜6節を参照。**キャスト・組み込み関数は専用命令を持たず`CALL`に統合されている。**
 
-## Weave特有の設計課題(実装前に確定すべき論点)
+## Weave特有の設計課題(実装前に確定すべき論点として列挙。全て解決済み——番号は下記の随所から参照されるため、解決後も維持している)
 
-`weave_spec.md` 14節・16節はAMIVM-IRへの対応方針を示しているが、**Seed・Cascadeのどちらも通っていない領域(動的型付け・プロトタイプ検索・アクター)を含むため、仮説の域を出ない。** 実装ステップの早い段階で以下を実地検証し、確定した内容は本ファイルに「確定した設計判断」節を新設して記録すること(Seed/Cascadeと同じ運用)。
+`weave_spec.md` 14節・16節はAMIVM-IRへの対応方針を示していたが、実装開始前は「Seed・Cascadeのどちらも通っていない領域(動的型付け・プロトタイプ検索・アクター)を含むため仮説の域を出ない」という位置づけだった。以下8項目は前半・後半の実装を通じて全て確定した——各項目の「確定した設計判断」節の対応箇所を併記する。
 
-1. **動的型の値表現**: Weaveの値(数値・文字列・真偽値・`nil`・オブジェクト・関数・アクター参照)を、AMIVM-IR/Goのどの型に対応させるか。14節は「`any`越しの演算」を示唆しているが、`any`に格納する際の具体的な内部表現(数値は常に`float64`か、オブジェクトは`map[string]any`か、関数値は`FNTYPE`のクロージャーか、`any`の中にそれらをどう詰めるか)を先に決める必要がある。特に「オブジェクトのプロパティ値としてクロージャー・アクター参照・別のオブジェクトを混在させて`map[string]any`に入れられるか」はAMIVM側の型定義(`MPTYPE ^string ^any`)が許容するかどうかの実地検証が前提
-2. **プロパティ検索(プロトタイプチェーン)の実装方式**: `obj.x`は`MGET`のcomma-ok形→見つからなければ`__proto__`を辿って再帰、という処理(14節)。これをAMIVM-IR自体で(`LABEL`+`GOTO`によるループ展開で)表現するか、Weave独自のGoランタイムヘルパー(`?weavert.GetProp(obj, name) any`のような1回の`CALL`)に肩代わりさせるかは未確定。後者の方がIR生成は単純だが、Cascade実装知見(cascade_implementation_notes.md §3)が示す通り「専用ランタイムが要るレベルの制約」に該当する可能性が高く、最初からランタイムヘルパー方式を軸に検討する価値がある
-3. **カリー化のコンパイル時展開**: 多引数に見える定義・呼び出しを「1引数の`FNTYPE`+`CLOS`の連鎖」へ展開する変換自体はコード生成側の変換ロジックの問題であり新規AMIVM命令は不要と想定されるが、`fn(a, b) {...}`のような糖衣構文をASTのどの段階(parser/sema/codegen)で展開するかは設計判断が要る
-4. **メソッド呼び出し糖衣構文**(`obj.method(a,b)` → `obj.method(obj,a,b)`、9節)の実装は上記2のプロパティ検索と共通のヘルパーを使う想定(0節の統一原理)。アクターのメッセージディスパッチ(6.2節)も同じヘルパーを共有できるかが、この言語の核心的な設計判断
-5. **アクターのメッセージディスパッチ**: `spawn`(`CHTYPE`+`CHMAKE`+`SPAWN`)・メッセージ構造体(`STTYPE`で`{name string, args []any, replyTo chan any}`相当)・受信ループでの名前解決呼び出しの具体的なIR化パターンは未検証。`tell`/`ask`(6.3節)の一時受信チャネルの生成・破棄パターンも同様
-6. **実行時型エラーの表現**: Seed/Cascadeは静的型付けのため`go/types`が大半のミスを捕捉したが、Weaveは動的型付けのため「数値+文字列は実行時エラー」(8節)のような検査を`go/types`に頼れず、**Weave自身のGoランタイム(型アサーション+panic、または値+errorのペア)で行う必要がある。** amivm側は型不整合を検証しない前提(意味検証の責任分担、下記参照)なので、動的型エラーの検出は実質的にランタイム層(コンパイル時のsemaではなく)に寄る可能性が高く、これはSeed/Cascadeの「semaが防波堤」という前提と根本的に異なる
-7. **Go資産(`gotype`/`gofunc`/`gomethod`)の静的解決**(15〜16節): コンパイル時に評価される宣言であり、識別子が「動的なプロトタイプオブジェクト」か「静的に確定したGo型・Go関数への参照」かをsemaが区別する必要がある。この区別をASTレベル(識別子解決)でどう表現するか
-8. **`main`のブリッジ**: Weaveの`func main(): int`もSeed/Cascadeと同じく`!main`に直接対応できない(引数無し・戻り値無しというGoの制約)可能性が高く、`weave_main`のような内部名分離パターンを踏襲する見込み(要確認)
+1. **動的型の値表現**(→「動的型の値表現」Step 2で確定): Weaveの値(数値・文字列・真偽値・`nil`・オブジェクト・関数・アクター参照)を、AMIVM-IR/Goのどの型に対応させるか。**確定: 全ての値をGoの`any`として表現する**(数値は常に`float64`)
+2. **プロパティ検索(プロトタイプチェーン)の実装方式**(→「プロトタイプチェーンは`ObjGet`内のループで完結」Step 7で確定): `obj.x`は`MGET`のcomma-ok形→見つからなければ`__proto__`を辿って再帰、という処理をAMIVM-IR自体で表現するか、Weave独自のGoランタイムヘルパーに肩代わりさせるか。**確定: `weavert.ObjGet`への一元化**
+3. **カリー化のコンパイル時展開**(→「多引数糖衣の展開場所」Step 5で確定): `fn(a, b) {...}`のような糖衣構文をASTのどの段階で展開するか。**確定: 関数リテラルはパーサ、呼び出しはcodegen**
+4. **メソッド呼び出し糖衣構文**(→「メソッド呼び出し糖衣構文は`genGeneralCall`の1分岐として実装」Step 7で確定): 上記2のプロパティ検索と共通のヘルパーを使えるか。**確定: 使える。アクターのメッセージディスパッチ(後半Step 1)も同じ`ObjGet`+`Call`を共有**
+5. **アクターのメッセージディスパッチ**(→「アクターはAMIVMのネイティブ命令を試さず最初からweavertへ一元化」後半Step 1で確定): `spawn`/メッセージ構造体/受信ループの具体的なIR化パターン。**確定: AMIVMのネイティブ命令(CHTYPE/SPAWN等)を一切使わず、Goのgoroutine/channelを`weavert`内に隠蔽**
+6. **実行時型エラーの表現**(→「全ての演算子はweavertへ一元化」Step 3で確定): `go/types`に頼れない動的型エラーの検出をどこが担うか。**確定: `weavert`のランタイム関数(`weavert.Add`等)が担う。semaはスコープ解決・構文レベルの検査にとどまる**
+7. **Go資産(`gotype`/`gofunc`/`gomethod`)の静的解決**(→「`gotype`/`gofunc`はASTの新設無しでパターン認識」後半Step 3で確定): 識別子が動的なプロトタイプオブジェクトか静的なGo参照かをASTレベルでどう区別するか。**確定: 新規ASTノード不要、`AssignStmt`のRHSパターンマッチで判定**
+8. **`main`のブリッジ**(→「`main`のブリッジ方針」Step 1で確定): `func main(): int`を`!main`にどう対応させるか。**確定: `weave_main`という内部名に分離し、`!main`は薄いラッパー**
 
 ## 意味検証の責任分担(重要)
 
@@ -135,14 +135,15 @@ Seed/Cascadeは静的型付け言語だったため、この防波堤として�
 
 ## 独自のGoランタイムを呼ぶ
 
-`amivm`は`?pkg.Func`+`CALL`の仕組みで任意のGo関数を呼べる。Weaveは以下の理由から、Seed(`seedrt`)・Cascade(`cascadert`、現在は削除済み)よりも早い段階でGoランタイムパッケージ(`weavert`を想定)が必要になる可能性が高い。
+`amivm`は`?pkg.Func`+`CALL`の仕組みで任意のGo関数を呼べる。Weaveは(想定通り)Seed(`seedrt`)・Cascade(`cascadert`、現在は削除済み)よりも早い段階で独自のGoランタイムパッケージ`weavert`が必要になった。理由は以下の通り(いずれも「確定した設計判断」に詳細あり)。
 
-1. プロトタイプチェーンを辿るプロパティ検索(上記課題2)
-2. 動的型の演算・実行時型エラー(上記課題6)
-3. `send`/`ask`/`reply`のメッセージハンドリング補助
-4. `gofunc`/`gomethod`経由のGo値↔Weave値変換
+1. プロトタイプチェーンを辿るプロパティ検索(`weavert.ObjGet`、Step 6〜7)
+2. 動的型の演算・実行時型エラー(`weavert.Add`等、Step 3)
+3. `send`/`ask`/`reply`のメッセージハンドリング補助(`weavert.Send`/`Ask`/`Reply`、後半Step 1)
+4. `gofunc`/`gomethod`経由のGo値↔Weave値変換(`weavert.CallGoFunc`/`CallGoMethod`、後半Step 3〜5)
+5. クロージャーの呼び出し(`weavert.Call`。ネイティブな`CLOS`ネストへ移行した後も、クロージャー値自体は`^any`型変数に格納されるため、呼び出しはreflect経由のまま——モジュール機能完成後の「クロージャーをネイティブな`CLOS`ネストへ全面移行」節参照)
 
-導入する場合は、Seed(`seedrt/embed.go`)・Cascade(`cascadert/embed.go`、現在は削除)と同じ配布方式(`go:embed`で自身の`.go`ファイルを埋め込み、ビルド時にスクラッチディレクトリへコピーして`amivm`の`-i`で解決)を踏襲する。Cascadeの`cascadert`は`MPKEYS`命令の追加でネイティブ命令に置き換わり不要になった前例があるため、**「AMIVM本体の命令だけで実現できないか」を先に検討し、ランタイム関数化は最後の手段とする**(cascade_implementation_notes.md §8「AMIVM本体への機能要求が正当化される基準」も参照)。
+配布方式はSeed(`seedrt/embed.go`)・Cascade(`cascadert/embed.go`、現在は削除)と同じ(`go:embed`で自身の`.go`ファイルを埋め込み、ビルド時にスクラッチディレクトリへコピーして`amivm`の`-i`で解決)を踏襲している。Cascadeの`cascadert`は`MPKEYS`命令の追加でネイティブ命令に置き換わり不要になった前例があり、Weaveでも同じ判断基準(**「AMIVM本体の命令だけで実現できないか」を先に検討し、ランタイム関数化は最後の手段とする**、cascade_implementation_notes.md §8「AMIVM本体への機能要求が正当化される基準」)を適用したが、Weaveの値が全て`^any`である設計上、結局ほぼ全ての機能でweavertへの一元化が最終判断になった(Step 5・6・後半Step 1の各節参照)。唯一の例外は`gofunc`のネイティブ呼び出し(後半Step 3)だったが、これも後半Step 5で「引数がリテラルの場合だけの限定的な例外だった」と判明し、結局reflect経由のweavertヘルパーへ切り替えている。
 
 ## 過去に踏まれた地雷(Seed/Cascadeからの申し送り)
 
@@ -160,17 +161,17 @@ Seed/Cascadeは静的型付け言語だったため、この防波堤として�
 10. **map(オブジェクト)の走査は`MPKEYS`を使う**: Cascadeで一度`cascadert`ランタイムが必要になったが、`MPKEYS`命令の追加で不要になった前例がある(cascade_implementation_notes.md §3)。Weaveの`for k, v in obj`(7節)は最初から`MPKEYS`を使う設計にできる
 11. **`callname`は`$N`/`&N`(関数引数・クロージャー引数)を直接受け付ける**(amivm改修済み、cascade_implementation_notes.md §4)。関数として受け取った値をそのまま呼ぶケースでコピー回避の特別処理は不要
 
-## リポジトリ構成(予定・未実装)
+## リポジトリ構成
 
-**`/workspaces/weave`(このディレクトリ自体)がWeaveのホーム。** `weave_spec.md`・`seed_implementation_notes.md`・`cascade_implementation_notes.md`・`seed/`・`cascade/`・`amivm/`は`ignored/`配下にまとめて置き(git対象外)、Weave本体の実装(`go.mod`以下)はリポジトリ直下に追加していく。実装が進むにつれ実態に合わせて更新すること。
+**`/workspaces/weave`(このディレクトリ自体)がWeaveのホーム。** `weave_spec.md`・`seed_implementation_notes.md`・`cascade_implementation_notes.md`・`seed/`・`cascade/`・`amivm/`は`ignored/`配下にまとめて置き(git対象外)、Weave本体の実装(`go.mod`以下)はリポジトリ直下に置かれている。実態に変更があれば都度この節も更新すること。
 
 ```
 /workspaces/weave/              Weaveのホーム(このリポジトリのルート)
   weave_spec.md                 Weave言語仕様(唯一の正)
   CLAUDE.md                     本ファイル
   LICENSE                       MIT
-  README.md / README_ja.md      導入ドキュメント(実装が固まってから作成)
-  go.mod                        module github.com/amisonnet8/weave (想定)
+  README.md / README_ja.md      導入ドキュメント
+  go.mod                        module github.com/amisonnet8/weave
   Makefile                      build/install/test/fmt/vet/tidy/clean タスク
   cmd/weave/
     main.go                     CLIエントリポイント(build/run/emit-ir/emit-go/help のディスパッチ)
@@ -184,9 +185,9 @@ Seed/Cascadeは静的型付け言語だったため、この防波堤として�
   internal/modloader/           パッケージ/importの解決(weave_spec.md §17)。複数.weaveファイル・
                                  複数パッケージを1つのフラットな*ast.Fileへ解決してからsema/codegenへ
                                  渡すため、両者はパッケージという概念を一切知らない(下記「確定した設計判断」参照)
-  internal/sema/                意味検査(スコープ解決・構文レベルの検査。動的型のため範囲はSeed/Cascadeより狭い見込み)
+  internal/sema/                意味検査(スコープ解決・構文レベルの検査。動的型のためSeed/Cascadeより範囲は狭い)
   internal/codegen/             AST → AMIVM-IR生成
-  weavert/                      Weave独自ランタイム(導入する場合。go:embedで配布)
+  weavert/                      Weave独自ランタイム(go:embedで配布)
   examples/                     サンプルWeaveプログラム(`.weave`。実装した構文ごとに追加)
   ignored/                      参照専用(git対象外)。amivm/seed/cascadeのクローンと各notes
 ```

@@ -6,7 +6,7 @@
 
 ## ステータス
 
-Weaveのフロントエンド(字句解析・構文解析・意味検査・AMIVM-IRコード生成)は、[`weave_spec.md`](weave_spec.md)に記載された言語仕様のうち以下を実装済みです: 動的な値(数値・文字列・真偽値・`nil`)、演算子、制御構文、関数・クロージャー・カリー化、プロトタイプベースのオブジェクトとメソッド呼び出し、組み込み関数、`for`-`in`、アクターモデル(`spawn`/`send`/`ask`/`reply`)。静的なGo資産連携(`gotype`/`gofunc`/`gomethod`、15〜16節)はまだ未実装です。
+Weaveのフロントエンド(字句解析・構文解析・意味検査・AMIVM-IRコード生成)は、[`weave_spec.md`](weave_spec.md)に記載された言語仕様を全て実装済みです: 動的な値(数値・文字列・真偽値・`nil`)、演算子、制御構文、関数・クロージャー・カリー化(自己再帰含む)、プロトタイプベースのオブジェクトとメソッド呼び出し、組み込み関数、`for`-`in`、アクターモデル(`spawn`/`send`/`ask`/`reply`)、静的なGo資産連携(`gotype`/`gofunc`/`gomethod`、15〜16節)、複数ファイル・複数パッケージのモジュール機構(`import`/`pub`、17節)。
 
 ## パイプライン
 
@@ -39,8 +39,10 @@ go install github.com/amisonnet8/weave/cmd/weave@latest
 ## 使い方
 
 ```
-weave <コマンド> [フラグ] <file.weave>
+weave <コマンド> [フラグ] <file.weave | package-dir>
 ```
+
+ディレクトリを指定した場合、その中の全`.weave`ファイルを1つのパッケージとしてコンパイルします(`import`/`pub`、仕様17節)。単一ファイルを指定した場合はそのファイルだけをコンパイルし、同じディレクトリの他のファイルは無視します。
 
 | コマンド | 出力 |
 |---|---|
@@ -80,7 +82,7 @@ Alice says hi
 8
 ```
 
-スカラー値・演算子・制御構文・クロージャー/カリー化・オブジェクト/プロトタイプ・組み込み関数/`for`-`in`・アクターを一通り網羅した実行可能なサンプルを[`examples/`](examples/)に置いています。
+スカラー値・演算子・制御構文・クロージャー/カリー化/再帰・オブジェクト/プロトタイプ・組み込み関数/`for`-`in`・アクター・Go資産連携・複数パッケージのモジュールを一通り網羅した実行可能なサンプルを[`examples/`](examples/)に置いています。
 
 ## 言語仕様
 
@@ -89,16 +91,20 @@ Alice says hi
 ## リポジトリ構成
 
 ```
-cmd/weave/           CLIエントリポイント(本READMEの`weave`コマンド群)
+cmd/weave/            CLIエントリポイント(本READMEの`weave`コマンド群)
 internal/lexer/       字句解析
 internal/parser/      構文解析 → AST
 internal/ast/         AST定義
+internal/modloader/   複数ファイル・複数パッケージ・import(17節)をsema/codegenの前に
+                       1つのフラットなASTへ解決する。詳細はCLAUDE.md参照
 internal/sema/        意味検査(スコープ解決・構文レベルの検査。Weaveは動的型付けのため、
                        値の型に依存するエラーの多くは実行時の関心事になる。詳細はCLAUDE.md参照)
 internal/codegen/     AST → AMIVM-IR
 weavert/              Weaveのランタイムライブラリ(全ての値が動的型のため、演算子・
-                       オブジェクト・クロージャー・アクターはAMIVMネイティブ命令ではなく
-                       ここを経由する。詳細はCLAUDE.md参照)。weaveビルドのたびに埋め込まれる
+                       オブジェクト・アクターはAMIVMネイティブ命令ではなくここを経由する。
+                       ネイティブなクロージャー(入れ子のAMIVM CLOS)自体の呼び出しも
+                       reflect経由でここを通る。詳細はCLAUDE.md参照)。weaveビルドの
+                       たびに埋め込まれる
 examples/             実行可能な.weaveサンプル(言語機能ごとにグループ化)
 weave_spec.md         Weave言語仕様(唯一の正確な仕様)
 CLAUDE.md             AIによる開発支援のためのプロジェクト規約
