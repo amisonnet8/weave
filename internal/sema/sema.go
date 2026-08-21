@@ -192,11 +192,25 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 				return err
 			}
 		}
-		if err := c.checkExpr(s.Value, sc); err != nil {
-			return err
-		}
 		if why, ok := reservedName(s.Name); ok {
 			return fmt.Errorf("line %d: %q is a reserved name (%s)", s.Line, s.Name, why)
+		}
+		if _, ok := s.Value.(*ast.FuncLit); ok {
+			// Self-recursion: a function literal assigned directly to a
+			// name (`fact = fn(n) { ... fact(n-1) ... }`) may refer to
+			// that same name inside its own body — declare the binding
+			// before checking the literal (checkFuncLit's own scope is a
+			// child of sc, so it inherits this) rather than after, the
+			// order every other assignment uses. This only ever matters
+			// when the closure genuinely captures its own name (an
+			// ordinary non-recursive `f = fn(x) {...}` behaves
+			// identically either way — declareIfNew is a no-op the
+			// second time). codegen.go's genAssignStmt mirrors this
+			// exact carve-out so the two stay consistent.
+			sc.declareIfNew(s.Name)
+		}
+		if err := c.checkExpr(s.Value, sc); err != nil {
+			return err
 		}
 		c.trackGoStaticVar(s.Name, s.Value)
 		sc.declareIfNew(s.Name)

@@ -1,0 +1,21 @@
+func main(): int {
+	// A function literal assigned directly to a name may call itself
+	// inside its own body (weave_spec.md §10) — this relies on
+	// closures capturing by reference (5節/10節), since `fact` doesn't
+	// exist yet at the moment the closure literal itself is evaluated,
+	// only by the time it's actually called.
+	fact = fn(n) {
+		if n == 0 { return 1 }
+		return n * fact(n - 1)
+	}
+	print(fact(5))
+
+	fib = fn(n) {
+		if n == 0 { return 0 }
+		if n == 1 { return 1 }
+		return fib(n - 1) + fib(n - 2)
+	}
+	print(fib(10))
+
+	return fact(5)
+}

@@ -723,3 +723,64 @@ func TestCheck_TopLevelUndefinedNameIsAnError(t *testing.T) {
 		t.Fatal("expected an error referencing an undefined top-level name")
 	}
 }
+
+func TestCheck_SelfRecursiveFuncLitIsValid(t *testing.T) {
+	// fact = fn(n) { ... fact(n - 1) ... } — a function literal assigned
+	// directly to a name may refer to itself inside its own body.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "fact", Value: &ast.FuncLit{
+				Param: "n",
+				Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.CallExpr{
+					Callee: &ast.Ident{Name: "fact"},
+					Args:   []ast.Expr{&ast.Ident{Name: "n"}},
+				}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_MutualRecursionIsStillAnError(t *testing.T) {
+	// The self-recursion carve-out only pre-declares a FuncLit's own
+	// name for itself — a second closure referring to a name not yet
+	// assigned (mutual recursion) must still fail, exactly as before.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "isEven", Value: &ast.FuncLit{
+				Param: "n",
+				Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.CallExpr{
+					Callee: &ast.Ident{Name: "isOdd"},
+					Args:   []ast.Expr{&ast.Ident{Name: "n"}},
+				}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error referencing isOdd before it's assigned")
+	}
+}
+
+func TestCheck_NonRecursiveFuncLitStillReservedNameChecked(t *testing.T) {
+	// The pre-declare carve-out for FuncLit RHS must not skip the
+	// reserved-name check.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "weave_main", Value: &ast.FuncLit{
+				Param: "x",
+				Body:  []ast.Stmt{&ast.ReturnStmt{Value: &ast.Ident{Name: "x"}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error assigning a FuncLit to a reserved name")
+	}
+}

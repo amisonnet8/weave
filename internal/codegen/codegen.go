@@ -344,10 +344,29 @@ func genCond(fg *funcGen, expr ast.Expr) (string, error) {
 // funcGen's doc comment). Only when name isn't visible anywhere in the
 // enclosing chain does it become a genuinely new binding, declared in fg
 // itself.
+//
+// Self-recursion mirrors sema.go's identical carve-out: when s.Value is
+// directly a *ast.FuncLit, s.Name is declared in fg *before* compiling
+// the literal's body (genFuncLit), instead of after alongside the SET —
+// so a reference to s.Name from inside the closure (calling itself)
+// resolves through fg.resolve to this VAR, already hoisted, rather than
+// falling through genExpr's undefined-name fallback. This costs nothing
+// for an ordinary non-recursive closure (declare is idempotent; the
+// eventual SET still lands at the same source position, only the VAR's
+// entry in fg.decls moves earlier — decls are all hoisted ahead of body
+// text regardless of order), so no separate check for whether the body
+// actually refers to itself is needed.
 func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 	if call, ok := s.Value.(*ast.CallExpr); ok {
 		if handled, err := genGoDecl(fg, s.Name, call); handled {
 			return err
+		}
+	}
+	tok, bound := fg.resolve(s.Name)
+	if !bound {
+		if _, isFuncLit := s.Value.(*ast.FuncLit); isFuncLit {
+			tok = fg.declare(s.Name, "^any")
+			bound = true
 		}
 	}
 	val, err := genExpr(fg, s.Value)
@@ -355,8 +374,7 @@ func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 		return err
 	}
 	trackGoStaticVar(fg, s.Name, s.Value)
-	tok, ok := fg.resolve(s.Name)
-	if !ok {
+	if !bound {
 		tok = fg.declare(s.Name, "^any")
 	}
 	fmt.Fprintf(&fg.body, "\tSET\t%%%s\t%s\n", tok, val)

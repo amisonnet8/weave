@@ -1023,3 +1023,36 @@ func TestGenerate_GoFuncCallInsideClosureDoesNotCaptureGoFuncName(t *testing.T) 
 		t.Errorf("expected the closure body to still compile the gofunc call itself, got:\n%s", ir)
 	}
 }
+
+func TestGenerate_SelfRecursiveFuncLitReferencesOwnHoistedVar(t *testing.T) {
+	// fact = fn(n) { ... fact(n - 1) ... } — mirrors sema's own
+	// pre-declare-for-FuncLit-RHS carve-out (sema.go's checkStmt): fact
+	// must resolve to weave_main's own %fact, not fall through to some
+	// undefined/fresh token.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "fact", Value: &ast.FuncLit{
+				Param: "n",
+				Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.CallExpr{
+					Callee: &ast.Ident{Name: "fact"},
+					Args:   []ast.Expr{&ast.Ident{Name: "n"}},
+				}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Count(ir, "VAR\t%fact\t^any\n") != 1 {
+		t.Errorf("expected exactly one VAR %%fact, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.Call\t%fact\t%c1_n\n") {
+		t.Errorf("expected the closure body to call weave_main's own %%fact, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "SET\t%fact\t%__t0\n") {
+		t.Errorf("expected the closure value to still be assigned to %%fact after compiling it, got:\n%s", ir)
+	}
+}
