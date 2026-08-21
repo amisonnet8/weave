@@ -1,0 +1,4 @@
+func main(): int {
+	print("Hello, Weave!")
+	return 0
+}
