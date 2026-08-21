@@ -165,3 +165,77 @@ func TestParse_UnterminatedBlockIsAnError(t *testing.T) {
 		t.Fatal("expected an error for an unterminated block")
 	}
 }
+
+func TestParse_IfElifElse(t *testing.T) {
+	src := "func main(): int {\n" +
+		"\tif x == 100 {\n\t\ty = 100\n" +
+		"\t} elif x == 200 {\n\t\tz = 200\n" +
+		"\t} else {\n\t\tx = x + 1\n\t}\n" +
+		"\treturn 0\n}\n"
+	file, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ifStmt, ok := file.Main.Body[0].(*ast.IfStmt)
+	if !ok {
+		t.Fatalf("statement 0: got %T, want *ast.IfStmt", file.Main.Body[0])
+	}
+	if len(ifStmt.Clauses) != 2 {
+		t.Fatalf("got %d clauses (if+elif), want 2", len(ifStmt.Clauses))
+	}
+	if len(ifStmt.Clauses[0].Body) != 1 || len(ifStmt.Clauses[1].Body) != 1 {
+		t.Errorf("expected one statement per clause body, got %#v", ifStmt.Clauses)
+	}
+	if ifStmt.Else == nil || len(ifStmt.Else) != 1 {
+		t.Errorf("expected a one-statement else body, got %#v", ifStmt.Else)
+	}
+}
+
+func TestParse_IfWithoutElifOrElse(t *testing.T) {
+	file, err := Parse("func main(): int {\n\tif true {\n\t\tx = 1\n\t}\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ifStmt, ok := file.Main.Body[0].(*ast.IfStmt)
+	if !ok {
+		t.Fatalf("statement 0: got %T, want *ast.IfStmt", file.Main.Body[0])
+	}
+	if len(ifStmt.Clauses) != 1 {
+		t.Errorf("got %d clauses, want 1 (just the if)", len(ifStmt.Clauses))
+	}
+	if ifStmt.Else != nil {
+		t.Errorf("expected no else body, got %#v", ifStmt.Else)
+	}
+}
+
+func TestParse_While(t *testing.T) {
+	file, err := Parse("func main(): int {\n\twhile i < 10 {\n\t\ti = i + 1\n\t}\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	w, ok := file.Main.Body[0].(*ast.WhileStmt)
+	if !ok {
+		t.Fatalf("statement 0: got %T, want *ast.WhileStmt", file.Main.Body[0])
+	}
+	if exprString(w.Cond) != "(i < 10)" {
+		t.Errorf("cond = %s, want (i < 10)", exprString(w.Cond))
+	}
+	if len(w.Body) != 1 {
+		t.Errorf("got %d body statements, want 1", len(w.Body))
+	}
+}
+
+func TestParse_BreakAndContinue(t *testing.T) {
+	src := "func main(): int {\n\twhile true {\n\t\tbreak\n\t\tcontinue\n\t}\n\treturn 0\n}\n"
+	file, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	w := file.Main.Body[0].(*ast.WhileStmt)
+	if _, ok := w.Body[0].(*ast.BreakStmt); !ok {
+		t.Errorf("body[0] = %T, want *ast.BreakStmt", w.Body[0])
+	}
+	if _, ok := w.Body[1].(*ast.ContinueStmt); !ok {
+		t.Errorf("body[1] = %T, want *ast.ContinueStmt", w.Body[1])
+	}
+}

@@ -50,9 +50,42 @@ type AssignStmt struct {
 	Line  int
 }
 
-func (*ExprStmt) stmtNode()   {}
-func (*ReturnStmt) stmtNode() {}
-func (*AssignStmt) stmtNode() {}
+// IfClause is one `if`/`elif` condition-and-body pair.
+type IfClause struct {
+	Cond Expr
+	Body []Stmt
+}
+
+// IfStmt is `if cond {...} elif cond2 {...} else {...}` (weave_spec.md
+// §7). Clauses always has at least one element: Clauses[0] is the `if`,
+// any further elements are `elif`s in source order. Else is nil when
+// there is no `else` block.
+type IfStmt struct {
+	Clauses []IfClause
+	Else    []Stmt
+	Line    int
+}
+
+// WhileStmt is `while cond {...}` (weave_spec.md §7).
+type WhileStmt struct {
+	Cond Expr
+	Body []Stmt
+	Line int
+}
+
+// BreakStmt and ContinueStmt are `break`/`continue` (weave_spec.md §7):
+// valid inside a `while` (and, from Step 8, a `for`), affecting only the
+// innermost enclosing loop.
+type BreakStmt struct{ Line int }
+type ContinueStmt struct{ Line int }
+
+func (*ExprStmt) stmtNode()     {}
+func (*ReturnStmt) stmtNode()   {}
+func (*AssignStmt) stmtNode()   {}
+func (*IfStmt) stmtNode()       {}
+func (*WhileStmt) stmtNode()    {}
+func (*BreakStmt) stmtNode()    {}
+func (*ContinueStmt) stmtNode() {}
 
 // Expr is a Weave expression.
 type Expr interface {

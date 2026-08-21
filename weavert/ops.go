@@ -95,25 +95,29 @@ func ordCmp(op string, a, b any) int {
 	panic(binOpError(op, a, b))
 }
 
-// And, Or, Not implement `&& || !`: boolean logic (weave_spec.md §8).
-// Both operands must be bool.
-//
-// Known gap (see CLAUDE.md's Step 3 "確定した設計判断"): And/Or are
-// plain function calls, so Go evaluates both operands before the call —
-// Weave's `&&`/`||` do not yet short-circuit. Proper short-circuiting
-// needs branching (IF/GOTO/LABEL), which arrives with control flow in
-// Step 4; this will move from a runtime call to codegen-level branching
-// then.
-func And(a, b any) any { return boolOp("&&", a, b, func(x, y bool) bool { return x && y }) }
-func Or(a, b any) any  { return boolOp("||", a, b, func(x, y bool) bool { return x || y }) }
+// `&&`/`||` (weave_spec.md §8) are not plain weavert functions like the
+// operators above: they need to short-circuit (skip evaluating the
+// right operand entirely along the branch where it doesn't matter),
+// which a Go function call can't do — every argument is evaluated
+// before the call happens. codegen.genShortCircuit lowers them directly
+// to IF/GOTO/LABEL branching instead, using CheckBool below at each
+// operand it actually does evaluate. (Step 3 first tried plain And/Or
+// functions and flagged the missing short-circuiting as a gap — see
+// CLAUDE.md's Step 3 "確定した設計判断" — Step 4 removed them once
+// genShortCircuit existed to replace them.)
 
-func boolOp(op string, a, b any, f func(x, y bool) bool) any {
-	ab, aok := a.(bool)
-	bb, bok := b.(bool)
-	if !aok || !bok {
-		panic(binOpError(op, a, b))
+// CheckBool asserts v is a Weave bool and returns it as Go's native
+// bool. AMIVM's IF instruction compiles to a bare Go `if cond { goto
+// label }`, which requires cond to be concretely bool-typed — an `any`
+// holding a bool doesn't satisfy that — so every branch condition
+// (if/elif/while, and each operand genShortCircuit actually evaluates)
+// routes through this.
+func CheckBool(v any) bool {
+	b, ok := v.(bool)
+	if !ok {
+		panic(fmt.Sprintf("weave: condition must be a bool, got %T", v))
 	}
-	return f(ab, bb)
+	return b
 }
 
 // Not implements unary `!`.

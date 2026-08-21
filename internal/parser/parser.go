@@ -128,6 +128,14 @@ func (p *parser) parseStmt() (ast.Stmt, error) {
 	switch p.peek().Kind {
 	case lexer.KwReturn:
 		return p.parseReturnStmt()
+	case lexer.KwIf:
+		return p.parseIfStmt()
+	case lexer.KwWhile:
+		return p.parseWhileStmt()
+	case lexer.KwBreak:
+		return &ast.BreakStmt{Line: p.advance().Line}, nil
+	case lexer.KwContinue:
+		return &ast.ContinueStmt{Line: p.advance().Line}, nil
 	default:
 		return p.parseSimpleStmt()
 	}
@@ -143,6 +151,60 @@ func (p *parser) parseReturnStmt() (ast.Stmt, error) {
 		return nil, err
 	}
 	return &ast.ReturnStmt{Value: val, Line: kw.Line}, nil
+}
+
+// parseIfStmt parses `if cond {...} elif cond2 {...} else {...}`
+// (weave_spec.md §7). `elif`/`else` must appear on the same line as the
+// preceding block's closing `}` — like Go's own `if {} else {}` — since
+// a newline there would already have ended the statement (§1: newline
+// is a statement terminator) before `elif`/`else` could be seen as a
+// continuation of the same if-statement.
+func (p *parser) parseIfStmt() (ast.Stmt, error) {
+	kw := p.advance() // 'if'
+	cond, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	stmt := &ast.IfStmt{Clauses: []ast.IfClause{{Cond: cond, Body: body}}, Line: kw.Line}
+
+	for p.peek().Kind == lexer.KwElif {
+		p.advance()
+		c, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		b, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Clauses = append(stmt.Clauses, ast.IfClause{Cond: c, Body: b})
+	}
+	if p.peek().Kind == lexer.KwElse {
+		p.advance()
+		b, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Else = b
+	}
+	return stmt, nil
+}
+
+func (p *parser) parseWhileStmt() (ast.Stmt, error) {
+	kw := p.advance() // 'while'
+	cond, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.WhileStmt{Cond: cond, Body: body, Line: kw.Line}, nil
 }
 
 // parseSimpleStmt parses a bare expression statement (e.g. a call like

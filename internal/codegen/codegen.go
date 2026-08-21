@@ -27,16 +27,29 @@ const (
 )
 
 // funcGen accumulates one AMIVM FUNC body's VAR declarations (hoisted to
-// the top, in first-declared order) and its SET/CALL/RET instructions
-// (left in source order). Weave has no block scoping yet (that arrives
-// with control flow in Step 4), so a single flat `declared` set is
-// enough for now — see seed_implementation_notes.md §1 for why VARs
-// must be hoisted ahead of any future GOTO regardless.
+// the top, in first-declared order) and its SET/CALL/GOTO/LABEL/IF/RET
+// instructions (left in source order).
+//
+// Weave allows block-scoped shadowing at the language level
+// (weave_spec.md §10), but on the Go side generated variables stay in
+// one completely flat namespace regardless of nesting — sema.go's scope
+// already resolves which Weave name maps to which binding and rejects
+// anything codegen shouldn't be asked to generate (see its "確定した
+// 設計判断" for why a flat `declared` set here is still correct: sema
+// guarantees every Ident it lets through already refers to a valid,
+// visible binding, so codegen never needs its own notion of scope).
+// This also means every VAR — no matter how deeply nested the if/while
+// that introduces it — ends up hoisted ahead of any GOTO/LABEL in the
+// same function, which is required by Go's "goto cannot jump over a
+// variable declaration" rule (seed_implementation_notes.md §1).
 type funcGen struct {
-	decls     []string
-	declared  map[string]bool
-	body      strings.Builder
-	tempCount int
+	decls         []string
+	declared      map[string]bool
+	body          strings.Builder
+	tempCount     int
+	labelCount    int
+	breakStack    []string // target label for `break`, innermost last
+	continueStack []string // target label for `continue`, innermost last
 }
 
 func newFuncGen() *funcGen {
@@ -54,26 +67,34 @@ func (fg *funcGen) declare(name, irType string) {
 	fg.decls = append(fg.decls, fmt.Sprintf("\tVAR\t%%%s\t%s\n", name, irType))
 }
 
-// newTemp declares and returns the name (without a leading `%`) of a
-// fresh `^any` temp for holding an intermediate expression result (e.g.
-// one operand chain's worth of an operator evaluation — see
-// genBinaryExpr/genUnaryExpr). The `__` prefix is reserved wholesale for
-// the compiler's own names (see sema.go's reservedName), so these can
-// never collide with a user-assigned Weave variable.
-func (fg *funcGen) newTemp() string {
+// newTemp declares and returns the `%__tN` token of a fresh compiler
+// temp of the given AMIVM type, for holding an intermediate expression
+// or condition result (see genBinaryExpr/genUnaryExpr/genCond). The
+// `__` prefix is reserved wholesale for the compiler's own names (see
+// sema.go's reservedName), so these can never collide with a
+// user-assigned Weave variable.
+func (fg *funcGen) newTemp(irType string) string {
 	name := fmt.Sprintf("__t%d", fg.tempCount)
 	fg.tempCount++
-	fg.declare(name, "^any")
+	fg.declare(name, irType)
+	return "%" + name
+}
+
+// newLabel returns a fresh, unique `#name` label token prefixed with
+// prefix (e.g. "if_then3"). Labels need no VAR-style hoisting or
+// reservation: they're never user-facing (weave_spec.md has no goto),
+// so they can't collide with anything sema tracks.
+func (fg *funcGen) newLabel(prefix string) string {
+	name := fmt.Sprintf("%s%d", prefix, fg.labelCount)
+	fg.labelCount++
 	return name
 }
 
 // Generate lowers a checked *ast.File into AMIVM-IR text.
 func Generate(file *ast.File) (string, error) {
 	fg := newFuncGen()
-	for _, stmt := range file.Main.Body {
-		if err := genStmt(fg, stmt); err != nil {
-			return "", err
-		}
+	if err := genBlock(fg, file.Main.Body); err != nil {
+		return "", err
 	}
 
 	var b strings.Builder
@@ -94,6 +115,18 @@ func Generate(file *ast.File) (string, error) {
 	return b.String(), nil
 }
 
+// genBlock lowers a statement list in source order. It does not open a
+// new codegen scope — see funcGen's doc comment for why a flat variable
+// namespace is safe even though Weave's own blocks are lexically scoped.
+func genBlock(fg *funcGen, stmts []ast.Stmt) error {
+	for _, stmt := range stmts {
+		if err := genStmt(fg, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func genStmt(fg *funcGen, stmt ast.Stmt) error {
 	switch s := stmt.(type) {
 	case *ast.AssignStmt:
@@ -102,9 +135,99 @@ func genStmt(fg *funcGen, stmt ast.Stmt) error {
 		return genExprStmt(fg, s)
 	case *ast.ReturnStmt:
 		return genReturnStmt(fg, s)
+	case *ast.IfStmt:
+		return genIfStmt(fg, s)
+	case *ast.WhileStmt:
+		return genWhileStmt(fg, s)
+	case *ast.BreakStmt:
+		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", fg.breakStack[len(fg.breakStack)-1])
+		return nil
+	case *ast.ContinueStmt:
+		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", fg.continueStack[len(fg.continueStack)-1])
+		return nil
 	default:
 		return fmt.Errorf("codegen: unsupported statement %T", stmt)
 	}
+}
+
+// genIfStmt lowers `if cond {...} elif cond2 {...} else {...}`
+// (weave_spec.md §7). Each clause becomes: evaluate its condition,
+// jump into its body if true, otherwise fall through to the next
+// clause's check; every body ends by jumping to the shared end label.
+// Mirrors Seed/Cascade's genIfStmt pattern (cascade_implementation_notes.md
+// "パーサの実装方式" / Step 5 note).
+func genIfStmt(fg *funcGen, s *ast.IfStmt) error {
+	endLabel := fg.newLabel("if_end")
+	for _, clause := range s.Clauses {
+		cond, err := genCond(fg, clause.Cond)
+		if err != nil {
+			return err
+		}
+		thenLabel := fg.newLabel("if_then")
+		nextLabel := fg.newLabel("if_next")
+		fmt.Fprintf(&fg.body, "\tIF\t%s\t#%s\n", cond, thenLabel)
+		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", nextLabel)
+		fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", thenLabel)
+		if err := genBlock(fg, clause.Body); err != nil {
+			return err
+		}
+		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", endLabel)
+		fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", nextLabel)
+	}
+	if s.Else != nil {
+		if err := genBlock(fg, s.Else); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", endLabel)
+	return nil
+}
+
+// genWhileStmt lowers `while cond {...}` (weave_spec.md §7). break/
+// continue targets are pushed for the body and popped afterward, so
+// nested loops each resolve to their own innermost labels.
+func genWhileStmt(fg *funcGen, s *ast.WhileStmt) error {
+	startLabel := fg.newLabel("while_start")
+	bodyLabel := fg.newLabel("while_body")
+	endLabel := fg.newLabel("while_end")
+
+	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", startLabel)
+	cond, err := genCond(fg, s.Cond)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(&fg.body, "\tIF\t%s\t#%s\n", cond, bodyLabel)
+	fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", endLabel)
+	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", bodyLabel)
+
+	fg.breakStack = append(fg.breakStack, endLabel)
+	fg.continueStack = append(fg.continueStack, startLabel)
+	err = genBlock(fg, s.Body)
+	fg.breakStack = fg.breakStack[:len(fg.breakStack)-1]
+	fg.continueStack = fg.continueStack[:len(fg.continueStack)-1]
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", startLabel)
+	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", endLabel)
+	return nil
+}
+
+// genCond lowers a condition expression and asserts it down to a
+// Go-native ^bool temp via weavert.CheckBool. AMIVM's IF instruction
+// compiles to a bare Go `if cond { goto label }`, which requires cond to
+// be concretely bool-typed — an `any` holding a bool does not
+// type-check there, so every branch condition (if/elif/while, and the
+// short-circuit && / || in genShortCircuit) must go through this.
+func genCond(fg *funcGen, expr ast.Expr) (string, error) {
+	val, err := genExpr(fg, expr)
+	if err != nil {
+		return "", err
+	}
+	tmp := fg.newTemp("^bool")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.CheckBool\t%s\n", tmp, val)
+	return tmp, nil
 }
 
 // genAssignStmt lowers `name = value` to a hoisted `VAR %name ^any`
@@ -208,27 +331,27 @@ func genExpr(fg *funcGen, expr ast.Expr) (string, error) {
 }
 
 // binOpFuncs maps weave_spec.md §8's binary operators to their
-// weavert.* implementation. Every operator routes through a runtime
-// function rather than a native AMIVM instruction (ADD/EQ/...) because
-// operands are `any`-typed and Go does not allow e.g. `any + any`
-// directly — see weavert/ops.go's package doc comment. Using weavert
-// uniformly (even for `==`/`!=`, where Go's own `==` on two `any`
-// values would in fact compile directly) is a deliberate simplicity
-// choice over chasing a native-instruction fast path this early — see
-// CLAUDE.md's Step 3 "確定した設計判断".
+// weavert.* implementation, for every operator except `&&`/`||` (see
+// genShortCircuit — those need inline branching, not a plain call).
+// Operators route through a runtime function rather than a native
+// AMIVM instruction (ADD/EQ/...) because operands are `any`-typed and
+// Go does not allow e.g. `any + any` directly — see weavert/ops.go's
+// package doc comment. Using weavert uniformly (even for `==`/`!=`,
+// where Go's own `==` on two `any` values would in fact compile
+// directly) is a deliberate simplicity choice over chasing a
+// native-instruction fast path this early — see CLAUDE.md's Step 3
+// "確定した設計判断".
 var binOpFuncs = map[string]string{
 	"+": "Add", "-": "Sub", "*": "Mul", "/": "Div", "%": "Mod",
 	"==": "Eq", "!=": "Neq",
 	"<": "Lt", "<=": "Lte", ">": "Gt", ">=": "Gte",
-	"&&": "And", "||": "Or",
 }
 
-// genBinaryExpr lowers a two-operand operator expression. Both operands
-// are evaluated eagerly (as plain CALL arguments), which is correct for
-// every arithmetic/comparison operator — but for `&&`/`||` it means
-// Weave does not yet short-circuit (see weavert.And/Or's doc comment;
-// CLAUDE.md's Step 3 "確定した設計判断" tracks fixing this in Step 4).
+// genBinaryExpr lowers a two-operand operator expression.
 func genBinaryExpr(fg *funcGen, e *ast.BinaryExpr) (string, error) {
+	if e.Op == "&&" || e.Op == "||" {
+		return genShortCircuit(fg, e)
+	}
 	fn, ok := binOpFuncs[e.Op]
 	if !ok {
 		return "", fmt.Errorf("line %d: binary operator %q not yet implemented", e.Line, e.Op)
@@ -241,9 +364,48 @@ func genBinaryExpr(fg *funcGen, e *ast.BinaryExpr) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tmp := fg.newTemp()
-	fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.%s\t%s\t%s\n", tmp, fn, x, y)
-	return "%" + tmp, nil
+	tmp := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.%s\t%s\t%s\n", tmp, fn, x, y)
+	return tmp, nil
+}
+
+// genShortCircuit lowers `&&`/`||` with real short-circuit evaluation:
+// the right operand's code only runs along the branch where it actually
+// matters. This replaces the eager weavert.And/Or call Step 3 used (see
+// CLAUDE.md's Step 3 "確定した設計判断", which flagged this as a known
+// gap to fix once branching existed) — And/Or were removed from
+// weavert/ops.go since nothing calls them anymore.
+//
+// The result temp doubles as the left operand's already-checked ^bool:
+// genCond leaves `x`'s truth value sitting in a fresh temp, and
+// whichever branch below is taken either leaves it alone (the
+// short-circuited case) or overwrites it with the right operand's
+// checked value.
+func genShortCircuit(fg *funcGen, e *ast.BinaryExpr) (string, error) {
+	result, err := genCond(fg, e.X)
+	if err != nil {
+		return "", err
+	}
+
+	endLabel := fg.newLabel("sc_end")
+	if e.Op == "&&" {
+		// x false -> short-circuit to false (skip evaluating y entirely).
+		rhsLabel := fg.newLabel("sc_rhs")
+		fmt.Fprintf(&fg.body, "\tIF\t%s\t#%s\n", result, rhsLabel)
+		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", endLabel)
+		fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", rhsLabel)
+	} else {
+		// x true -> short-circuit to true (skip evaluating y entirely).
+		fmt.Fprintf(&fg.body, "\tIF\t%s\t#%s\n", result, endLabel)
+	}
+
+	y, err := genExpr(fg, e.Y)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.CheckBool\t%s\n", result, y)
+	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", endLabel)
+	return result, nil
 }
 
 // genUnaryExpr lowers a prefix unary operator expression. Unary `-` has
@@ -255,16 +417,16 @@ func genUnaryExpr(fg *funcGen, e *ast.UnaryExpr) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tmp := fg.newTemp()
+	tmp := fg.newTemp("^any")
 	switch e.Op {
 	case "-":
-		fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.Sub\t0.0\t%s\n", tmp, x)
+		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.Sub\t0.0\t%s\n", tmp, x)
 	case "!":
-		fmt.Fprintf(&fg.body, "\tCALL\t%%%s\t:\t?weavert.Not\t%s\n", tmp, x)
+		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.Not\t%s\n", tmp, x)
 	default:
 		return "", fmt.Errorf("line %d: unary operator %q not yet implemented", e.Line, e.Op)
 	}
-	return "%" + tmp, nil
+	return tmp, nil
 }
 
 // formatNumberLiteral renders v as a Go float literal that is

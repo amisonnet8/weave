@@ -191,3 +191,180 @@ func TestGenerate_MissingReturnIsAnError(t *testing.T) {
 		t.Fatal("expected an error for a bare `return` in main")
 	}
 }
+
+// labelsBalance is a light structural check for control-flow codegen:
+// every GOTO/IF target must have a matching LABEL, and vice versa.
+func labelsBalance(t *testing.T, ir string) {
+	t.Helper()
+	defined := map[string]bool{}
+	referenced := map[string]bool{}
+	for _, line := range strings.Split(ir, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "LABEL":
+			defined[fields[1]] = true
+		case "GOTO":
+			referenced[fields[1]] = true
+		case "IF":
+			referenced[fields[2]] = true
+		}
+	}
+	for label := range referenced {
+		if !defined[label] {
+			t.Errorf("label %s is referenced but never defined:\n%s", label, ir)
+		}
+	}
+	for label := range defined {
+		if !referenced[label] {
+			t.Errorf("label %s is defined but never referenced:\n%s", label, ir)
+		}
+	}
+}
+
+func TestGenerate_IfElifElseLabelsBalance(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.IfStmt{
+				Clauses: []ast.IfClause{
+					{Cond: &ast.BinaryExpr{Op: "==", X: &ast.Ident{Name: "x"}, Y: &ast.NumberLit{Value: 100}},
+						Body: []ast.Stmt{&ast.AssignStmt{Name: "y", Value: &ast.NumberLit{Value: 100}}}},
+					{Cond: &ast.BinaryExpr{Op: "==", X: &ast.Ident{Name: "x"}, Y: &ast.NumberLit{Value: 200}},
+						Body: []ast.Stmt{&ast.AssignStmt{Name: "z", Value: &ast.NumberLit{Value: 200}}}},
+				},
+				Else: []ast.Stmt{&ast.AssignStmt{Name: "x", Value: &ast.NumberLit{Value: 1}}},
+			},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	// x is read (in the conditions) before any assignment in this
+	// snippet, but sema (not codegen) is what enforces that — Generate
+	// itself doesn't validate, so this is fine as a pure codegen shape test.
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	labelsBalance(t, ir)
+	if strings.Count(ir, "IF\t") != 2 {
+		t.Errorf("expected 2 IFs (one per if/elif condition), got:\n%s", ir)
+	}
+}
+
+func TestGenerate_WhileBreakContinueTargetInnermostLoop(t *testing.T) {
+	// while true { while true { break; continue } }
+	// the inner break/continue must target the INNER loop's labels.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.WhileStmt{
+				Cond: &ast.BoolLit{Value: true},
+				Body: []ast.Stmt{&ast.WhileStmt{
+					Cond: &ast.BoolLit{Value: true},
+					Body: []ast.Stmt{&ast.BreakStmt{}, &ast.ContinueStmt{}},
+				}},
+			},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	labelsBalance(t, ir)
+
+	// There must be two distinct while_start/while_end pairs (outer,
+	// inner). break's GOTO must target the *second* (inner) while_end,
+	// and continue's GOTO must target the *second* (inner) while_start —
+	// not the outer loop's.
+	lines := strings.Split(ir, "\n")
+	var whileStarts, whileEnds []string
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "LABEL" {
+			if strings.HasPrefix(fields[1], "#while_start") {
+				whileStarts = append(whileStarts, fields[1])
+			}
+			if strings.HasPrefix(fields[1], "#while_end") {
+				whileEnds = append(whileEnds, fields[1])
+			}
+		}
+	}
+	if len(whileStarts) != 2 || len(whileEnds) != 2 {
+		t.Fatalf("expected 2 while_start and 2 while_end labels, got %v / %v", whileStarts, whileEnds)
+	}
+	// The two GOTOs immediately following break/continue's position:
+	// find them by locating the two consecutive GOTO lines inside the
+	// innermost body.
+	var gotos []string
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "GOTO" {
+			gotos = append(gotos, fields[1])
+		}
+	}
+	// last two GOTOs before the innermost while's closing GOTO-to-start
+	// are break's and continue's targets, in that order.
+	foundBreak, foundContinue := false, false
+	for _, g := range gotos {
+		if g == whileEnds[1] {
+			foundBreak = true
+		}
+		if g == whileStarts[1] {
+			foundContinue = true
+		}
+	}
+	if !foundBreak {
+		t.Errorf("expected a GOTO to the inner while_end (%s) for break, gotos: %v", whileEnds[1], gotos)
+	}
+	if !foundContinue {
+		t.Errorf("expected a GOTO to the inner while_start (%s) for continue, gotos: %v", whileStarts[1], gotos)
+	}
+}
+
+func TestGenerate_ShortCircuitAndSkipsRHSOnFalse(t *testing.T) {
+	fg := newFuncGen()
+	got, err := genExpr(fg, &ast.BinaryExpr{Op: "&&", X: &ast.Ident{Name: "a"}, Y: &ast.Ident{Name: "b"}})
+	if err != nil {
+		t.Fatalf("genExpr: %v", err)
+	}
+	body := fg.body.String()
+	if !strings.Contains(body, "CALL\t"+got+"\t:\t?weavert.CheckBool\t%a\n") {
+		t.Errorf("expected the left operand to be checked first, got:\n%s", body)
+	}
+	if !strings.Contains(body, "CALL\t"+got+"\t:\t?weavert.CheckBool\t%b\n") {
+		t.Errorf("expected the right operand to be checked (in the true branch), got:\n%s", body)
+	}
+	labelsBalance(t, "FUNC\t!f\t:\n"+body+"ENDFUNC\n")
+}
+
+func TestGenerate_ShortCircuitOrSkipsRHSOnTrue(t *testing.T) {
+	fg := newFuncGen()
+	_, err := genExpr(fg, &ast.BinaryExpr{Op: "||", X: &ast.Ident{Name: "a"}, Y: &ast.Ident{Name: "b"}})
+	if err != nil {
+		t.Fatalf("genExpr: %v", err)
+	}
+	labelsBalance(t, "FUNC\t!f\t:\n"+fg.body.String()+"ENDFUNC\n")
+}
+
+func TestGenerate_ConditionRoutesThroughCheckBool(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.WhileStmt{Cond: &ast.Ident{Name: "cond"}, Body: nil},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.CheckBool\t%cond\n") {
+		t.Errorf("expected the while condition to route through weavert.CheckBool, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "VAR\t%__t0\t^bool\n") {
+		t.Errorf("expected the condition temp to be declared ^bool, got:\n%s", ir)
+	}
+}

@@ -80,23 +80,35 @@ func TestLt_MixedTypesPanics(t *testing.T) {
 	Lt(1.0, "b")
 }
 
-func TestAnd_Or_Not(t *testing.T) {
-	if And(true, false) != false {
-		t.Error("And(true, false) should be false")
-	}
-	if Or(true, false) != true {
-		t.Error("Or(true, false) should be true")
-	}
+func TestNot(t *testing.T) {
 	if Not(true) != false {
 		t.Error("Not(true) should be false")
 	}
+	if Not(false) != true {
+		t.Error("Not(false) should be true")
+	}
 }
 
-func TestAnd_NonBoolPanics(t *testing.T) {
+func TestNot_NonBoolPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Fatal("expected And(1.0, true) to panic")
+			t.Fatal("expected Not(1.0) to panic")
 		}
 	}()
-	And(1.0, true)
+	Not(1.0)
+}
+
+func TestCheckBool(t *testing.T) {
+	if CheckBool(true) != true || CheckBool(false) != false {
+		t.Error("CheckBool should return its bool argument unchanged")
+	}
+}
+
+func TestCheckBool_NonBoolPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected CheckBool(1.0) to panic")
+		}
+	}()
+	CheckBool(1.0)
 }

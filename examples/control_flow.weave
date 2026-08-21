@@ -1,0 +1,42 @@
+func main(): int {
+	x = 100
+	if x == 100 {
+		y = 100
+		print(y)
+	} elif x == 200 {
+		z = 200
+		print(z)
+	} else {
+		x = x + 1
+	}
+	print(x)
+
+	i = 0
+	while i < 10 {
+		i = i + 1
+	}
+	print(i)
+
+	count = 0
+	j = 0
+	while j < 20 {
+		j = j + 1
+		if j % 2 == 0 {
+			continue
+		}
+		if j > 15 {
+			break
+		}
+		count = count + 1
+	}
+	print(count)
+
+	print(true && false)
+	print(true || false)
+	a = false
+	b = true
+	print(a && b)
+	print(a || b)
+
+	return count
+}
