@@ -1,0 +1,16 @@
+func main(): int {
+	print("say \"hi\" now")           // named escape: \"
+	print("tab\tbetween\twords")      // named escape: \t
+	print("line one\nline two")       // named escape: \n
+	print("backslash: \\")            // named escape: \\
+
+	print("hex byte: \x41\x42\x43")   // \xHH (2 hex digits, byte value) -> "ABC"
+	print("octal byte: \101\102\103") // \NNN (3 octal digits, byte value) -> "ABC"
+	print("unicode escape: \u00E9")   // \uXXXX (4 hex digits, code point) -> "e with acute accent"
+	print("emoji: \U0001F600")        // \UXXXXXXXX (8 hex digits, code point)
+	print("raw non-ASCII works too: é") // no escape needed at all
+
+	print(len("a\tb")) // 3 -- the tab decodes to one real byte, not two
+
+	return len("say \"hi\"")
+}

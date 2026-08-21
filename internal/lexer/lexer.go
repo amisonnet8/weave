@@ -2,6 +2,7 @@ package lexer
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -158,6 +159,15 @@ func (l *Lexer) lexNumber(line int) Token {
 	return Token{Kind: Number, Literal: string(l.src[start:l.pos]), Line: line}
 }
 
+// lexString scans a double-quoted string literal (weave_spec.md §3),
+// decoding backslash escapes as it goes so that ast.StringLit.Value
+// always holds the true runtime string content — never the raw escaped
+// source text. This mirrors Go's own lexer (which decodes an interpreted
+// string literal's escapes at parse time, not at compile time), and is
+// what lets codegen.go's `strconv.Quote(e.Value)` round-trip correctly:
+// Quote re-escapes whatever the decoded value actually contains (e.g. a
+// real newline byte becomes `\n` again in the emitted IR token), rather
+// than double-escaping already-literal backslash text.
 func (l *Lexer) lexString(line int) (Token, error) {
 	l.pos++ // consume opening '"'
 	var b strings.Builder
@@ -173,8 +183,134 @@ func (l *Lexer) lexString(line int) (Token, error) {
 		if r == '\n' {
 			return Token{}, fmt.Errorf("line %d: unterminated string literal", line)
 		}
+		if r == '\\' {
+			if err := l.lexEscape(line, &b); err != nil {
+				return Token{}, err
+			}
+			continue
+		}
 		b.WriteRune(r)
 		l.pos++
+	}
+}
+
+// lexEscape decodes one backslash escape sequence inside a string
+// literal, starting at the '\' itself. The accepted forms match Go's own
+// escape rules for interpreted (double-quoted) string literals exactly
+// — `\'` (valid only in Go *rune* literals) is deliberately not accepted
+// here, since Weave has no rune/char literal type to share it with (§2:
+// Weave's only textual value is `string`). AMIVM's own string-literal
+// token classification (amivm_spec.md §5, "'\'に続く任意の1文字'"、
+// 個々のエスケープの妥当性はgo/typesの再パースに委ねる) is intentionally
+// permissive and leaves real validation to Go — Weave does the opposite,
+// rejecting anything Go itself wouldn't accept right here at lex time,
+// so a typo like `\q` becomes a clear Weave-level error instead of a
+// confusing amivm/go/types failure downstream (weave_spec.md §1 and
+// CLAUDE.md's "意味検証の責任分担": IR-facing syntactic correctness is
+// Weave's own job, not amivm's).
+func (l *Lexer) lexEscape(line int, b *strings.Builder) error {
+	l.pos++ // consume '\'
+	if l.pos >= len(l.src) {
+		return fmt.Errorf("line %d: unterminated string literal", line)
+	}
+	switch r := l.peekRune(); r {
+	case 'a':
+		b.WriteByte('\a')
+		l.pos++
+	case 'b':
+		b.WriteByte('\b')
+		l.pos++
+	case 'f':
+		b.WriteByte('\f')
+		l.pos++
+	case 'n':
+		b.WriteByte('\n')
+		l.pos++
+	case 'r':
+		b.WriteByte('\r')
+		l.pos++
+	case 't':
+		b.WriteByte('\t')
+		l.pos++
+	case 'v':
+		b.WriteByte('\v')
+		l.pos++
+	case '\\':
+		b.WriteByte('\\')
+		l.pos++
+	case '"':
+		b.WriteByte('"')
+		l.pos++
+	case 'x':
+		l.pos++
+		v, err := l.readFixedDigits(line, 2, 16, "hex")
+		if err != nil {
+			return err
+		}
+		b.WriteByte(byte(v))
+	case 'u':
+		l.pos++
+		v, err := l.readFixedDigits(line, 4, 16, "hex")
+		if err != nil {
+			return err
+		}
+		b.WriteRune(rune(v))
+	case 'U':
+		l.pos++
+		v, err := l.readFixedDigits(line, 8, 16, "hex")
+		if err != nil {
+			return err
+		}
+		b.WriteRune(rune(v))
+	case '0', '1', '2', '3', '4', '5', '6', '7':
+		v, err := l.readFixedDigits(line, 3, 8, "octal")
+		if err != nil {
+			return err
+		}
+		if v > 255 {
+			return fmt.Errorf("line %d: octal escape value %d exceeds 255", line, v)
+		}
+		b.WriteByte(byte(v))
+	default:
+		return fmt.Errorf("line %d: unknown escape sequence \\%c in string literal", line, r)
+	}
+	return nil
+}
+
+// readFixedDigits reads exactly n digits in the given base (16 for
+// \x/\u/\U, 8 for octal \NNN — Go requires the exact count in every
+// case, not "as many as match"), returning their combined value.
+func (l *Lexer) readFixedDigits(line int, n, base int, kind string) (int64, error) {
+	start := l.pos
+	for i := 0; i < n; i++ {
+		if l.pos >= len(l.src) || l.peekRune() == '\n' {
+			return 0, fmt.Errorf("line %d: unterminated string literal", line)
+		}
+		if digitValue(l.peekRune()) >= base {
+			return 0, fmt.Errorf("line %d: invalid %s escape (need %d digits)", line, kind, n)
+		}
+		l.pos++
+	}
+	v, err := strconv.ParseInt(string(l.src[start:l.pos]), base, 64)
+	if err != nil {
+		return 0, fmt.Errorf("line %d: invalid %s escape: %w", line, kind, err)
+	}
+	return v, nil
+}
+
+// digitValue returns r's value as a base-36 digit (0-9, then a-z/A-Z),
+// or a value >= 36 if r isn't a digit at all — callers only care whether
+// the result is below their own base.
+func digitValue(r rune) int {
+	switch {
+	case r >= '0' && r <= '9':
+		return int(r - '0')
+	case r >= 'a' && r <= 'z':
+		return int(r-'a') + 10
+	case r >= 'A' && r <= 'Z':
+		return int(r-'A') + 10
+	default:
+		return 99
 	}
 }
 
