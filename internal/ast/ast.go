@@ -2,14 +2,27 @@ package ast
 
 // File is the root of a parsed Weave source file.
 //
-// Step 1 scope: a File holds only the entry point (weave_spec.md §12).
-// Weave's top level also allows ordinary statements outside of func main
-// (e.g. §17's gotype/gofunc/object declarations), but nothing before
-// Step 5 (functions) and Step 6 (objects) can produce one, so File is
-// deliberately narrow for now — it grows into a general top-level
-// statement list once those constructs exist.
+// TopLevel holds ordinary statements written outside `func main`
+// (weave_spec.md §15.3, §17: gotype/gofunc declarations, prototype
+// object definitions, ...), in source order, regardless of where `func
+// main` itself appears among them. Main is always exactly one
+// `func main(): int {...}` (weave_spec.md §12) — parser.go's parseFile
+// rejects a second one.
+//
+// codegen.Generate and sema.Check both simply process TopLevel and
+// Main.Body in order against the *same* scope/funcGen — Weave has no
+// other top-level function to isolate TopLevel's bindings from (every
+// other Weave "function" is a `fn(a) {...}` closure, independently
+// compiled and only ever reachable through a value, never by name at
+// the top level), so there is currently no need for AMIVM's GVAR
+// (global variable) mechanism: TopLevel's statements behave exactly as
+// if they were the first statements written inside main() itself (see
+// CLAUDE.md's 後半 Step 5 "確定した設計判断" for the full reasoning,
+// including what would have to change if Weave ever grew a second
+// top-level function).
 type File struct {
-	Main *FuncDecl
+	TopLevel []Stmt
+	Main     *FuncDecl
 }
 
 // FuncDecl is the `func main(): int { ... }` entry point (weave_spec.md

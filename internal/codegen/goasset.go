@@ -74,32 +74,38 @@ func genGoFuncDecl(fg *funcGen, name string, call *ast.CallExpr) {
 	fg.ctx.goFuncs[name] = &GoFuncInfo{GoName: goName, Proto: proto}
 }
 
-// genGoFuncCall lowers a call to a gofunc(...)-declared name directly to
-// its real Go function, bypassing weavert.Call's dynamic dispatch
-// entirely (weave_spec.md §16: "動的なプロトタイプ検索を一切経由せず
-// ...ネイティブ命令の速さ・単純さ" for gofunc/gomethod). Arguments are
-// passed positionally, matching the wrapped Go function's own native
-// arity — not curried the way an ordinary Weave call is, since the
-// whole point of gofunc is to mirror the real Go signature rather than
-// force it through Weave's 1-argument convention.
+// genGoFuncCall lowers a call to a gofunc(...)-declared name to its real
+// Go function via weavert.CallGoFunc, bypassing weavert.Call's dynamic
+// prototype-chain dispatch entirely (weave_spec.md §16: "動的な
+// プロトタイプ検索を一切経由せず...ネイティブ命令の速さ・単純さ" for
+// gofunc/gomethod). Arguments are passed positionally, matching the
+// wrapped Go function's own native arity — not curried the way an
+// ordinary Weave call is, since the whole point of gofunc is to mirror
+// the real Go signature rather than force it through Weave's
+// 1-argument convention.
+//
+// This used to emit a literal `CALL raw : ?pkg.Func arg1 arg2` — a
+// direct native call. That only worked when every argument was a
+// literal Weave constant (an untyped Go constant is assignable to
+// whatever concrete parameter type the real function wants); the
+// moment an argument is an ordinary `any`-typed Weave value (a
+// variable, an object property, ...) go/types rejects it outright
+// ("cannot use v (variable of type any) as string value"). Routing
+// through weavert.CallGoFunc — passing info.GoName itself as a plain
+// value argument, which amivm's `value` operand category accepts
+// (amivm_spec.md §5's `?xxx_123` entry) — fixes this the same way
+// CallGoMethod already bridges the analogous gap for method calls: see
+// CLAUDE.md's 後半 Step 5 "確定した設計判断" for how this was found
+// (a spawn/gofunc integration example that passes an object property
+// to a gofunc call).
 //
 // Scope limitation: this assumes the wrapped Go function returns
 // exactly one value. weave_spec.md never addresses multi-value Go
 // returns (§17's own os.Open example actually returns (*File, error) in
-// real Go, which this can't express) — deferred to when Step 5's
-// integration sample actually needs it; see CLAUDE.md's 後半 Step 3
-// "確定した設計判断".
-//
-// The raw result is routed through weavert.NormalizeGoValue — a Go
-// asset function can return a native numeric type (int, uint32, ...),
-// which weave_spec.md §15.2 says should just work as an ordinary Weave
-// number; without normalizing it to float64 (Weave's own unified
-// number representation, CLAUDE.md's Step 2 "確定した設計判断"), it
-// would silently break the first Weave-native operation it touched
-// (caught by CallGoMethod's own doc comment — same underlying issue,
-// discovered via examples/gomethods.weave).
+// real Go, which this can't express) — deferred until an example
+// actually needs it; see CLAUDE.md's 後半 Step 3 "確定した設計判断".
 func genGoFuncCall(fg *funcGen, info *GoFuncInfo, call *ast.CallExpr) (string, error) {
-	var argVals []string
+	argVals := []string{info.GoName}
 	for _, arg := range call.Args {
 		v, err := genExpr(fg, arg)
 		if err != nil {
@@ -107,10 +113,8 @@ func genGoFuncCall(fg *funcGen, info *GoFuncInfo, call *ast.CallExpr) (string, e
 		}
 		argVals = append(argVals, v)
 	}
-	raw := fg.newTemp("^any")
-	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t%s%s\n", raw, info.GoName, argSuffix(argVals))
 	tmp := fg.newTemp("^any")
-	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.NormalizeGoValue\t%s\n", tmp, raw)
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.CallGoFunc%s\n", tmp, argSuffix(argVals))
 	return tmp, nil
 }
 

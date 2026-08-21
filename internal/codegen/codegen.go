@@ -135,6 +135,9 @@ func Generate(file *ast.File) (string, error) {
 	ctx := &codegenCtx{}
 	fg := newFuncGen(ctx)
 	fg.isMain = true
+	if err := genBlock(fg, file.TopLevel); err != nil {
+		return "", err
+	}
 	if err := genBlock(fg, file.Main.Body); err != nil {
 		return "", err
 	}

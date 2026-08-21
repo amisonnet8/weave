@@ -373,7 +373,7 @@ func TestFreeVars_ParamIsNotFree(t *testing.T) {
 	lit := &ast.FuncLit{Param: "a", Body: []ast.Stmt{
 		&ast.ReturnStmt{Value: &ast.Ident{Name: "a"}},
 	}}
-	if got := freeVars(lit); len(got) != 0 {
+	if got := freeVars(lit, nil); len(got) != 0 {
 		t.Errorf("freeVars = %v, want none (a is the param)", got)
 	}
 }
@@ -382,7 +382,7 @@ func TestFreeVars_OuterVariableIsFree(t *testing.T) {
 	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
 		&ast.ReturnStmt{Value: &ast.BinaryExpr{Op: "+", X: &ast.Ident{Name: "x"}, Y: &ast.Ident{Name: "base"}}},
 	}}
-	got := freeVars(lit)
+	got := freeVars(lit, nil)
 	if len(got) != 1 || got[0] != "base" {
 		t.Errorf("freeVars = %v, want [base]", got)
 	}
@@ -393,7 +393,7 @@ func TestFreeVars_LocallyAssignedNameIsNotFree(t *testing.T) {
 		&ast.AssignStmt{Name: "y", Value: &ast.NumberLit{Value: 1}},
 		&ast.ReturnStmt{Value: &ast.Ident{Name: "y"}},
 	}}
-	if got := freeVars(lit); len(got) != 0 {
+	if got := freeVars(lit, nil); len(got) != 0 {
 		t.Errorf("freeVars = %v, want none (y is assigned locally before use)", got)
 	}
 }
@@ -410,7 +410,7 @@ func TestFreeVars_NameOnlyBoundInsideIfIsStillFreeAfter(t *testing.T) {
 		}}},
 		&ast.ReturnStmt{Value: &ast.Ident{Name: "y"}},
 	}}
-	got := freeVars(lit)
+	got := freeVars(lit, nil)
 	if len(got) != 1 || got[0] != "y" {
 		t.Errorf("freeVars = %v, want [y]", got)
 	}
@@ -428,11 +428,11 @@ func TestFreeVars_NestedFuncLitCapturesTransitively(t *testing.T) {
 	}}
 	outer := &ast.FuncLit{Param: "a", Body: []ast.Stmt{&ast.ReturnStmt{Value: inner}}}
 
-	innerFree := freeVars(inner)
+	innerFree := freeVars(inner, nil)
 	if len(innerFree) != 2 || innerFree[0] != "a" || innerFree[1] != "outer" {
 		t.Errorf("inner freeVars = %v, want [a outer]", innerFree)
 	}
-	outerFree := freeVars(outer)
+	outerFree := freeVars(outer, nil)
 	if len(outerFree) != 1 || outerFree[0] != "outer" {
 		t.Errorf("outer freeVars = %v, want [outer] (a is outer's own param)", outerFree)
 	}
@@ -609,7 +609,7 @@ func TestFreeVars_ObjectLitFieldValuesAreWalked(t *testing.T) {
 			{Name: "b", Value: &ast.Ident{Name: "base"}},
 		}}},
 	}}
-	got := freeVars(lit)
+	got := freeVars(lit, nil)
 	if len(got) != 1 || got[0] != "base" {
 		t.Errorf("freeVars = %v, want [base] (x is the param)", got)
 	}
@@ -619,7 +619,7 @@ func TestFreeVars_PropExprObjIsWalked(t *testing.T) {
 	lit := &ast.FuncLit{Param: "x", Body: []ast.Stmt{
 		&ast.ReturnStmt{Value: &ast.PropExpr{Obj: &ast.Ident{Name: "outer"}, Prop: "field"}},
 	}}
-	got := freeVars(lit)
+	got := freeVars(lit, nil)
 	if len(got) != 1 || got[0] != "outer" {
 		t.Errorf("freeVars = %v, want [outer]", got)
 	}
@@ -799,7 +799,7 @@ func TestGenerate_GoFuncDeclEmitsNoIR(t *testing.T) {
 	}
 }
 
-func TestGenerate_GoFuncCallCompilesToDirectNativeCall(t *testing.T) {
+func TestGenerate_GoFuncCallRoutesThroughCallGoFunc(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
 		Body: []ast.Stmt{
@@ -821,11 +821,14 @@ func TestGenerate_GoFuncCallCompilesToDirectNativeCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if !strings.Contains(ir, "?strings.ToUpper\t\"hi\"\n") {
-		t.Errorf("expected a direct CALL to ?strings.ToUpper, got:\n%s", ir)
+	// weavert.CallGoFunc, not a literal native CALL, is what makes an
+	// `any`-typed argument (not just a literal) legal — see genGoFuncCall's
+	// doc comment.
+	if !strings.Contains(ir, "?weavert.CallGoFunc\t?strings.ToUpper\t\"hi\"\n") {
+		t.Errorf("expected a CALL to ?weavert.CallGoFunc passing ?strings.ToUpper as a value, got:\n%s", ir)
 	}
-	if strings.Contains(ir, "weavert.Call") {
-		t.Errorf("a gofunc(...) call must not go through weavert.Call, got:\n%s", ir)
+	if strings.Contains(ir, "weavert.Call\t") {
+		t.Errorf("a gofunc(...) call must not go through weavert.Call (ordinary closure dispatch), got:\n%s", ir)
 	}
 }
 
@@ -883,6 +886,10 @@ func goReaderDeclStmts() []ast.Stmt {
 }
 
 func TestGenerate_GoFuncCallNormalizesResult(t *testing.T) {
+	// weavert.CallGoFunc folds NormalizeGoValue in internally (see its
+	// own doc comment) — there is no separate visible CALL to
+	// NormalizeGoValue in the emitted IR any more; this just confirms
+	// the gofunc call itself is still routed through CallGoFunc.
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
 		Body: append(goReaderDeclStmts(), &ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}),
@@ -891,11 +898,8 @@ func TestGenerate_GoFuncCallNormalizesResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if !strings.Contains(ir, "?strings.NewReader\t\"hi\"\n") {
-		t.Errorf("expected a direct CALL to ?strings.NewReader, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?weavert.NormalizeGoValue\t") {
-		t.Errorf("expected the gofunc result to be routed through NormalizeGoValue, got:\n%s", ir)
+	if !strings.Contains(ir, "?weavert.CallGoFunc\t?strings.NewReader\t\"hi\"\n") {
+		t.Errorf("expected a CALL to ?weavert.CallGoFunc passing ?strings.NewReader as a value, got:\n%s", ir)
 	}
 }
 
@@ -936,5 +940,78 @@ func TestGenerate_OrdinaryObjectMethodStillUsesDynamicDispatch(t *testing.T) {
 	}
 	if !strings.Contains(ir, "?weavert.ObjGet\t%obj\t\"greet\"\n") {
 		t.Errorf("expected ordinary dynamic dispatch via ObjGet, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_TopLevelStatementsPrecedeMainBody(t *testing.T) {
+	// TopLevel statements are prepended into the same weave_main
+	// funcGen as Main.Body (see ast.File's doc comment): a name bound
+	// at top level must already be SET before main's own statements
+	// run, and both must land inside the single FUNC !weave_main block.
+	file := &ast.File{
+		TopLevel: []ast.Stmt{
+			&ast.AssignStmt{Name: "greeting", Value: &ast.StringLit{Value: "hi"}},
+		},
+		Main: &ast.FuncDecl{
+			Name: "main", ReturnType: "int",
+			Body: []ast.Stmt{
+				&ast.ExprStmt{X: &ast.CallExpr{
+					Callee: &ast.Ident{Name: "print"},
+					Args:   []ast.Expr{&ast.Ident{Name: "greeting"}},
+				}},
+				&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+			},
+		},
+	}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	setIdx := strings.Index(ir, `SET	%greeting	"hi"`)
+	printIdx := strings.Index(ir, "?weavert.Print")
+	if setIdx == -1 || printIdx == -1 || setIdx > printIdx {
+		t.Errorf("expected top-level SET before main's print CALL, got:\n%s", ir)
+	}
+	if strings.Count(ir, "FUNC\t!weave_main") != 1 {
+		t.Errorf("expected exactly one FUNC !weave_main block, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_GoFuncCallInsideClosureDoesNotCaptureGoFuncName(t *testing.T) {
+	// A closure calling a gofunc(...)-declared name (e.g. an actor
+	// message handler constructing a Go asset) must not treat that name
+	// as a free variable to capture — gofunc(...) declarations emit no
+	// VAR/SET at all, so an AGET/ASET pair referencing it would name an
+	// undeclared variable (see freeVars' doc comment; caught via a
+	// spawn/gofunc integration example).
+	file := &ast.File{
+		TopLevel: append(goReaderDeclStmts()[:2], // GoReader + newReader decls only
+			&ast.AssignStmt{Name: "measure", Value: &ast.FuncLit{
+				Param: "self",
+				Body: []ast.Stmt{
+					&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
+						Callee: &ast.Ident{Name: "newReader"},
+						Args:   []ast.Expr{&ast.PropExpr{Obj: &ast.Ident{Name: "self"}, Prop: "text"}},
+					}},
+					&ast.ReturnStmt{Value: &ast.CallExpr{
+						Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
+					}},
+				},
+			}},
+		),
+		Main: &ast.FuncDecl{
+			Name: "main", ReturnType: "int",
+			Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
+		},
+	}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(ir, "%newReader") {
+		t.Errorf("gofunc(...)-declared name must never be captured as a closure free variable, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.CallGoFunc\t?strings.NewReader\t") {
+		t.Errorf("expected the closure body to still compile the gofunc call itself, got:\n%s", ir)
 	}
 }

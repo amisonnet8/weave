@@ -1,0 +1,29 @@
+// 後半 Step 5: 統合サンプル — トップレベル宣言・アクター・Go資産連携を
+// 組み合わせる(weave_spec.md §17相当)。
+//
+// §17自身の例(self.file = goOpen(path)というプロパティ経由でのGo資産の
+// 永続化、os.Openの2値戻り値)は、Step4で確定した静的型追跡の範囲(プレーン
+// な変数への直接代入のみ)を超えるため、そのままは実装しない。ここでは
+// 「Go資産はメッセージハンドラ1つの中で完結して使う」形に適応させ、単一
+// 戻り値のstrings.NewReaderを使う(CLAUDE.md 後半Step5「確定した設計判断」
+// 参照)。
+
+GoReader = gotype("?strings.Reader", {
+	len: gomethod("Len")
+})
+newReader = gofunc("?strings.NewReader", GoReader)
+
+readerProto = {
+	measure: fn(self, replyTo) {
+		r = newReader(self.text)
+		reply(replyTo, r.len())
+	}
+}
+
+func main(): int {
+	a = spawn({ __proto__: readerProto, text: "hello, weave" })
+	n = ask(a)("measure")
+	print(n)
+
+	return n
+}

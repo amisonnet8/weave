@@ -685,3 +685,41 @@ func TestCheck_ReassignedVarLosesStaticGoType(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 }
+
+func TestCheck_TopLevelStatementsShareScopeWithMain(t *testing.T) {
+	// A name bound at top level (outside func main) must be visible
+	// inside main's body — TopLevel and Main.Body are checked against
+	// the same root scope (see ast.File's doc comment).
+	file := &ast.File{
+		TopLevel: []ast.Stmt{
+			&ast.AssignStmt{Name: "proto", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+				{Name: "x", Value: &ast.NumberLit{Value: 1}},
+			}}},
+		},
+		Main: &ast.FuncDecl{
+			Name: "main", ReturnType: "int",
+			Body: []ast.Stmt{
+				&ast.ExprStmt{X: &ast.PropExpr{Obj: &ast.Ident{Name: "proto"}, Prop: "x"}},
+				&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+			},
+		},
+	}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_TopLevelUndefinedNameIsAnError(t *testing.T) {
+	file := &ast.File{
+		TopLevel: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.Ident{Name: "undefined"}},
+		},
+		Main: &ast.FuncDecl{
+			Name: "main", ReturnType: "int",
+			Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
+		},
+	}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error referencing an undefined top-level name")
+	}
+}

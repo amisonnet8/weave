@@ -28,7 +28,7 @@ import (
 // %-token already sitting in that scope by the time the inner literal's
 // call site runs. No special-casing is needed for arbitrary curry depth.
 func genFuncLit(fg *funcGen, lit *ast.FuncLit) (string, error) {
-	captured := freeVars(lit)
+	captured := freeVars(lit, fg.ctx.goFuncs)
 
 	inner := newFuncGen(fg.ctx)
 	inner.declare(lit.Param, "^any")
@@ -94,10 +94,24 @@ const envType = "WeaveEnv"
 // bound vs. free: by the time codegen runs, sema has already guaranteed
 // every identifier resolves somewhere, so unlike sema this never needs
 // to report an error.
-func freeVars(lit *ast.FuncLit) []string {
+//
+// goFuncs is fg.ctx.goFuncs (the gofunc(...)-declared names visible so
+// far): a name used only as a direct call callee matching this set is
+// never a free variable, exactly like a builtin name — a gofunc(...)
+// declaration is compile-time-only (goasset.go's genGoFuncDecl emits no
+// VAR/SET at all, weave_spec.md §16), so there is no `%name` variable to
+// AGET from an outer scope in the first place. Without this exclusion, a
+// closure calling a gofunc(...)-declared function (e.g. an actor message
+// handler calling a Go asset constructor) generates an AGET/ASET pair
+// referencing a %-variable that was never declared, which go/types
+// rejects as `undefined` — caught running a spawn/gofunc integration
+// example through the real pipeline (CLAUDE.md's 後半 Step 5 "確定した
+// 設計判断").
+func freeVars(lit *ast.FuncLit, goFuncs map[string]*GoFuncInfo) []string {
 	w := &freeVarWalker{
-		bound: []map[string]bool{{lit.Param: true}},
-		seen:  map[string]bool{},
+		bound:   []map[string]bool{{lit.Param: true}},
+		seen:    map[string]bool{},
+		goFuncs: goFuncs,
 	}
 	for _, stmt := range lit.Body {
 		w.stmt(stmt)
@@ -106,9 +120,10 @@ func freeVars(lit *ast.FuncLit) []string {
 }
 
 type freeVarWalker struct {
-	bound []map[string]bool // scope chain, innermost last
-	free  []string
-	seen  map[string]bool
+	bound   []map[string]bool // scope chain, innermost last
+	free    []string
+	seen    map[string]bool
+	goFuncs map[string]*GoFuncInfo
 }
 
 func (w *freeVarWalker) isBound(name string) bool {
@@ -182,7 +197,7 @@ func (w *freeVarWalker) expr(expr ast.Expr) {
 	case *ast.NumberLit, *ast.StringLit, *ast.BoolLit, *ast.NilLit:
 		// no identifiers
 	case *ast.CallExpr:
-		if callee, ok := e.Callee.(*ast.Ident); !ok || !builtinNames[callee.Name] {
+		if callee, ok := e.Callee.(*ast.Ident); !ok || !(builtinNames[callee.Name] || w.goFuncs[callee.Name] != nil) {
 			w.expr(e.Callee)
 		}
 		for _, a := range e.Args {
@@ -198,7 +213,7 @@ func (w *freeVarWalker) expr(expr ast.Expr) {
 		// finds already bound at this point, are free variables of THIS
 		// literal too — the transitive capture that makes arbitrarily
 		// deep currying work (see genFuncLit's doc comment).
-		for _, name := range freeVars(e) {
+		for _, name := range freeVars(e, w.goFuncs) {
 			w.markFree(name)
 		}
 	case *ast.ObjectLit:

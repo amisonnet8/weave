@@ -158,6 +158,11 @@ func Check(file *ast.File) error {
 
 	c := &checker{}
 	root := newScope(nil)
+	for _, stmt := range file.TopLevel {
+		if err := c.checkStmt(stmt, root); err != nil {
+			return err
+		}
+	}
 	for _, stmt := range file.Main.Body {
 		if err := c.checkStmt(stmt, root); err != nil {
 			return err

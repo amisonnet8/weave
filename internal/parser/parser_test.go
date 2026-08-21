@@ -445,3 +445,42 @@ func TestParse_ForInMissingCommaIsAnError(t *testing.T) {
 		t.Fatal("expected an error for a missing ',' between k and v")
 	}
 }
+
+func TestParse_TopLevelStatementsBeforeMain(t *testing.T) {
+	file, err := Parse("proto = { x: 1 }\nfunc main(): int {\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(file.TopLevel) != 1 {
+		t.Fatalf("got %d top-level statements, want 1", len(file.TopLevel))
+	}
+	a, ok := file.TopLevel[0].(*ast.AssignStmt)
+	if !ok || a.Name != "proto" {
+		t.Fatalf("TopLevel[0] = %#v, want AssignStmt(proto)", file.TopLevel[0])
+	}
+	if file.Main == nil || len(file.Main.Body) != 1 {
+		t.Fatalf("Main = %#v, want a 1-statement body", file.Main)
+	}
+}
+
+func TestParse_TopLevelStatementsAfterMain(t *testing.T) {
+	file, err := Parse("func main(): int {\n\treturn 0\n}\nunused = 2\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(file.TopLevel) != 1 {
+		t.Fatalf("got %d top-level statements, want 1", len(file.TopLevel))
+	}
+}
+
+func TestParse_TwoFuncMainIsAnError(t *testing.T) {
+	if _, err := Parse("func main(): int {\n\treturn 0\n}\nfunc main(): int {\n\treturn 1\n}\n"); err == nil {
+		t.Fatal("expected an error for a second `func main`")
+	}
+}
+
+func TestParse_MissingMainIsAnError(t *testing.T) {
+	if _, err := Parse("x = 1\n"); err == nil {
+		t.Fatal("expected an error for a file with no `func main`")
+	}
+}

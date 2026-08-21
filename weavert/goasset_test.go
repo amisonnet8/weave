@@ -22,6 +22,24 @@ func TestCallGoMethod_UnknownMethodPanics(t *testing.T) {
 	CallGoMethod(strings.NewReader("hi"), "NoSuchMethod")
 }
 
+func TestCallGoFunc_InvokesRealFunction(t *testing.T) {
+	got := CallGoFunc(strings.NewReader, "hello")
+	r, ok := got.(*strings.Reader)
+	if !ok {
+		t.Fatalf("CallGoFunc(strings.NewReader, ...) = %v (%T), want *strings.Reader", got, got)
+	}
+	if r.Len() != 5 {
+		t.Errorf("r.Len() = %d, want 5", r.Len())
+	}
+}
+
+func TestCallGoFunc_NormalizesNumericResult(t *testing.T) {
+	got := CallGoFunc(func(s string) int { return len(s) }, "hello")
+	if got != 5.0 {
+		t.Fatalf("CallGoFunc(...) = %v (%T), want 5.0 (normalized from int)", got, got)
+	}
+}
+
 func TestNormalizeGoValue(t *testing.T) {
 	tests := []struct {
 		name string

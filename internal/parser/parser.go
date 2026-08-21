@@ -56,22 +56,39 @@ func (p *parser) expect(k lexer.Kind, what string) (lexer.Token, error) {
 	return p.advance(), nil
 }
 
-// parseFile parses the single top-level construct Step 1 understands:
-// exactly one `func main(): int {...}` declaration. General top-level
-// statements (weave_spec.md §17's gotype/gofunc/object declarations)
-// arrive once Step 5 (functions) and Step 6 (objects) exist to produce
-// them — see ast.File's doc comment.
+// parseFile parses a Weave source file: an interleaving of ordinary
+// top-level statements (weave_spec.md §17's gotype/gofunc declarations,
+// prototype object literals, ...) and exactly one `func main(): int
+// {...}` declaration, in any order. See ast.File's doc comment for why
+// top-level statements need no dedicated codegen/sema treatment beyond
+// being processed against the same scope as main's body.
 func (p *parser) parseFile() (*ast.File, error) {
 	p.skipNewlines()
-	fn, err := p.parseFuncDecl()
-	if err != nil {
-		return nil, err
+	var topLevel []ast.Stmt
+	var main *ast.FuncDecl
+	for p.peek().Kind != lexer.EOF {
+		if p.peek().Kind == lexer.KwFunc {
+			fn, err := p.parseFuncDecl()
+			if err != nil {
+				return nil, err
+			}
+			if main != nil {
+				return nil, fmt.Errorf("line %d: only one `func main` is allowed per file", fn.Line)
+			}
+			main = fn
+		} else {
+			stmt, err := p.parseSimpleStmt()
+			if err != nil {
+				return nil, err
+			}
+			topLevel = append(topLevel, stmt)
+		}
+		p.skipNewlines()
 	}
-	p.skipNewlines()
-	if p.peek().Kind != lexer.EOF {
-		return nil, fmt.Errorf("line %d: unexpected token %q after func main (top-level statements are not yet supported)", p.peek().Line, p.peek().Literal)
+	if main == nil {
+		return nil, fmt.Errorf("missing entry point: expected `func main(): int { ... }`")
 	}
-	return &ast.File{Main: fn}, nil
+	return &ast.File{TopLevel: topLevel, Main: main}, nil
 }
 
 func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {

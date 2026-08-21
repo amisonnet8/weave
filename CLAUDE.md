@@ -214,7 +214,9 @@ Weaveは3本柱(動的型付け・プロトタイプOOP・カリー化/アクタ
 | 2 ✅ | 並行性の実地検証+CLI仕上げ | 複数アクターが真に並行動作すること、同一アクター内では逐次処理されること(6.4節)をより厳密に実地検証。README作成・`go install`での配布確認 | — |
 | 3 ✅ | `gotype`/`gofunc`宣言 | コンパイル時のGo型・Go関数宣言、識別子解決の「動的プロトタイプオブジェクト」と「静的なGo参照」の区別 | **7. Go資産の静的解決** |
 | 4 ✅ | `gomethod`(メソッドの静的解決) | 宣言済みGo型のメソッド呼び出しを、動的なプロトタイプ検索を経由せず直接展開する | 7の続き |
-| 5 | 統合サンプル | 17節のサンプル(アクター+Go資産を組み合わせた「ファイルを読むアクター」)を実地検証 | — |
+| 5 ✅ | 統合サンプル | 真のトップレベル文サポートを実装し、17節のサンプル(アクター+Go資産を組み合わせた「ファイルを読むアクター」)を適応の上で実地検証 | Step3が持ち越した「真のトップレベル」課題、5(アクター)・7(Go資産)の組み合わせ実証 |
+
+**後半終了時点のゴール**: アクターモデル(6節)・Go資産連携(15〜16節)・真のトップレベル文を、前半で固めたプロトタイプ継承・カリー化・動的型の基盤の上に組み合わせて動かせる状態。**Step5完了時点でこのゴールを達成した**(`examples/integration.weave`が、トップレベルの`gotype`/`gofunc`宣言・トップレベルのプロトタイプオブジェクト・`spawn`/`ask`・オブジェクトプロパティ経由のGo資産呼び出しを全て組み合わせて実地検証済み)。次のステップ分けはこの時点から改めて設計する。
 
 ## 確定した設計判断
 
@@ -428,6 +430,33 @@ sema・codegenはそれぞれ独立に`goTypes`/`goFuncs`という宣言順の�
 `examples/gomethods.weave`(`(*strings.Reader).Len()`を`return`する)を実地検証した際、`weavert.ExitCode`が「数値ではない、`int`型だ」という`panic`を起こして発覚した。**`(*strings.Reader).Len()`はGoのネイティブな`int`を返すが、Weaveは数値を常に`float64`として扱う**(2節の確定判断)ため、Go資産から返ってきた値がWeave自身の演算(`weavert.Add`・`weavert.Lt`・`weavert.ExitCode`等)とそのまま噛み合わない。
 
 15.2節は「数値・文字列・真偽値はそのまま...自動的に変換される」と明記しており、この自動変換が欠けていたことが原因だった。対策として`weavert.NormalizeGoValue(v any) any`を新設し、Goの各種整数型(`int`/`int8`/.../`uint64`)・`float32`を`float64`へ変換し、それ以外(文字列・真偽値・構造体・ポインタ・`nil`)はそのまま通す関数にした。**`weavert.CallGoMethod`の戻り値と`genGoFuncCall`が生成するネイティブ`CALL`の結果の両方**をこの関数経由にすることで、Go資産由来の数値がWeave自身の演算子・比較・`main`の終了コードと問題なく組み合わさることを実地検証で確認した(`r.len() + 8`、`r.len() > 10`等)。
+
+### トップレベル文はGVAR不要——`main`と同じ`funcGen`/スコープで処理するだけで足りた(後半Step 5で確定)
+
+Step3が持ち越した「真のトップレベル」課題(`gotype`/`gofunc`宣言や`readerProto = {...}`のようなプロトタイプ定義を`func main`の外に書けるようにする)は、着手前は「AMIVMの`GVAR`(グローバル変数)機構が必要になるはず」と想定していたが、**実装してみるとGVARは一切不要だった。** 理由: Weaveには現状`main`以外のトップレベル関数が存在せず(他の全ての「関数」は`fn(a) {...}`クロージャーであり、値経由でしか到達できず、トップレベルで名前束縛されることもない)、トップレベル文の束縛を`main`から隔離する対象そのものが無い。**`ast.File`に`TopLevel []Stmt`を追加し、`sema.Check`・`codegen.Generate`の両方が`TopLevel`を`Main.Body`の直前に同じ`root`スコープ・同じ`funcGen`で処理するだけ**で、トップレベル文は「`main`の先頭に書いたのと全く同じ」意味論になった。パーサ側も`parseFile`を「`func main`が現れるまで`parseSimpleStmt`をループで読み、`func main`をちょうど1回だけ要求する」形に変えるだけで済み、ASTレベルの新設ノードは不要だった。将来Weaveに2つ目のトップレベル関数(仕様上想定されていない)が生えた場合は、この前提が崩れるため設計の再検討が必要になる。
+
+### 17節サンプルの適応: プロパティ経由の永続化を避け、Go資産はメッセージハンドラ1つに閉じ込める(後半Step 5で確定)
+
+Step3・4で持ち越した2つの制約(`self.file = goOpen(path)`のようなオブジェクトプロパティ経由でのGo資産の永続化は非対応、`gofunc`は単一戻り値のみ対応)は、そのままでは17節の`readerProto`サンプル(`open`メッセージで`self.file`にGo資産を保存し、後続の`finish`メッセージで使う)を再現できない。Step7で`alice.greet(alice)`を`alice.greet()`に適応させたのと同じ方針で、**サンプル側を制約に合わせて適応させた**(ランタイム側を無理に拡張しない):
+
+- 2つのメッセージに分けて`self.file`へ永続化する代わりに、**`measure`という1つのメッセージハンドラの中で`gofunc`呼び出し・`gomethod`呼び出しを完結させる**(`examples/integration.weave`)
+- `os.Open`(2値戻り値)の代わりに、**単一戻り値の`strings.NewReader`**を使う(Step4で確立済み)
+
+`examples/integration.weave`は、トップレベルの`gotype`/`gofunc`宣言・トップレベルの`readerProto`オブジェクト定義・`spawn`・`ask`・オブジェクトプロパティ(`self.text`)からのGo資産呼び出しを組み合わせ、amivm→go build→実行まで実地検証済み(`"hello, weave"`の長さ`12`を返す)。
+
+### 発見: `gofunc`呼び出しをアクターのメッセージハンドラ内で使うと、自由変数解析がgofunc名を誤って捕捉しようとする(後半Step 5で発見した実装バグ)
+
+`examples/integration.weave`の`measure: fn(self, replyTo) { r = newReader(self.text); ... }`をamivm→go buildした際、`undefined: weave_main_amivm_function_newReader`というGoコンパイルエラーで発覚。**Step5(前半)の`freeVars`(`internal/codegen/closure.go`)は、クロージャー本体で参照されている識別子のうち`builtinNames`(`print`等)だけを「自由変数として捕捉しない」対象から除外していたが、`gofunc(...)`宣言済みの名前(`newReader`)は対象外だった。** `gofunc`宣言は`weave_spec.md`§16よりコンパイル時専用で`VAR`/`SET`を一切生成しないため(後半Step 3の確定判断)、`newReader`という`%`変数はそもそも存在せず、それを外側スコープから`AGET`で捕捉しようとする生成コードが未定義変数を参照してしまっていた。
+
+対策として`freeVars`に`goFuncs map[string]*GoFuncInfo`(`fg.ctx.goFuncs`)を引き回し、`CallExpr`のcallee識別子が`builtinNames`または`goFuncs`のいずれかに含まれる場合は自由変数として扱わないよう統一した。ビルトイン名の除外と全く同じ理由(「実際にはWeaveの通常の変数として存在しない、特別な呼び出し対象」)であり、扱いを合わせるのが自然な設計だった。
+
+### 発見: `gofunc`呼び出しに`any`型の値(リテラルでない引数)を渡すとgo/typesが拒否する——`weavert.CallGoFunc`でreflect経由に切り替え(後半Step 5で発見した実装バグ・設計変更)
+
+上記のバグを直すと次に踏んだ地雷: `newReader(self.text)`という呼び出し自体(`self.text`は`ObjGet`が返す`^any`型の一時変数)が、`go/types`から`cannot use v (variable of type any) as string value in argument to strings.NewReader: need type assertion`という型エラーで拒否された。**Step3で確立した`genGoFuncCall`は`CALL raw : ?pkg.Func arg1 arg2`という直接ネイティブ呼び出しを生成していたが、これが今まで動いていたのは既存の実行例(`examples/goassets.weave`・`examples/gomethods.weave`)が引数に文字列リテラルしか渡していなかったから**(Goの無型定数はどんな具体的な型のパラメータにも暗黙に代入できるため、たまたま問題が表面化しなかった)。変数・オブジェクトプロパティなど`^any`型の値を渡す一般的なケースでは、Goの型システムは`any`から具体的なパラメータ型への暗黙変換を許さない。
+
+対策として、`weavert.CallGoMethod`(既存)と全く同じreflectパターンを`gofunc`呼び出しにも適用する`weavert.CallGoFunc(fn any, args ...any) any`を新設した。ポイントは**Go関数値自体を文字列名ではなく`?pkg.Func`という値トークンとして直接引数に渡せる**こと——amivmのオペランドカテゴリ表(5節)を確認したところ、`callname`だけでなく`value`カテゴリにも`?xxx_123`/`?xxx_123.xxx_123`が含まれており(実装前に見落としていた)、`CALL result : ?weavert.CallGoFunc ?strings.NewReader arg1 arg2`が構文上有効で、生成されるGoコードは`weavert.CallGoFunc(strings.NewReader, arg1, arg2)`という「関数値を第一級の値として渡す」ごく普通のGo式になる。`CallGoFunc`内部は`reflect.ValueOf(fn).Call(...)`で各引数を`reflect.Value.Convert`により実際のパラメータ型へ変換してから呼び出す(Weaveの数値は常に`float64`のため、たとえば`float64→int`のような妥当な変換のみが起こり、Seed/Cascadeが踏んだ「int→stringのルーン変換」の地雷とは無関係——`float64`から`string`への`Convert`はGoの型システム上そもそも失敗するため安全側)。`NormalizeGoValue`による戻り値の正規化も`CallGoFunc`内に統合し、`genGoFuncCall`から個別の`CALL`が消えた。
+
+これにより「16節が謳う“動的なプロトタイプ検索を経由しない”は名前解決の静的さを指すのであってGo呼び出し自体のネイティブさではない」という後半Step4の教訓(`weavert.CallGoMethod`の節参照)が、`gofunc`の直接呼び出しにもそのまま当てはまることが判明した——**Step3で「`gofunc`は前半の“weavertへ一元化”傾向の意図的な例外」と記録したが、この記録は不正確だったと修正する**: 引数がリテラルだけの限定的なケースでのみネイティブ呼び出しが成立していただけで、一般のケースでは`gofunc`も結局reflect経由のweavertヘルパーを要した。「例外」ではなく、Go資産呼び出し全般(`gofunc`・`gomethod`)が同じreflectパターンに帰着する、という方がより正確な理解。
 
 ## 開発の進め方
 

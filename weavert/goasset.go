@@ -40,6 +40,43 @@ func CallGoMethod(target any, methodName string, args ...any) any {
 	return NormalizeGoValue(out[0].Interface())
 }
 
+// CallGoFunc implements a direct call to a gofunc(...)-declared Go
+// function (weave_spec.md §16), invoked via reflection instead of a
+// literal Go call expression. internal/codegen/goasset.go's genGoFuncCall
+// used to emit a literal `CALL raw : ?pkg.Func arg1 arg2` — which works
+// when every argument is a literal Weave constant (an untyped Go
+// constant is assignable to whatever concrete parameter type the real
+// function wants), but fails go/types the moment an argument is an
+// ordinary `any`-typed Weave value (a variable, an object property, ...:
+// `cannot use v (variable of type any) as string value`, caught running
+// a spawn/gofunc integration example through the real pipeline — see
+// CLAUDE.md's 後半 Step 5 "確定した設計判断"). fn is the real Go
+// function passed as a value (amivm's `value` operand category accepts
+// a bare `?pkg.Func` token, per amivm_spec.md §5 — unlike a `CALL`
+// callname, this needs no wrapping), so this can use the exact same
+// reflection-based argument coercion CallGoMethod already established
+// for the same underlying reason (target's static Go type only exists
+// at codegen time, never in the generated source itself).
+func CallGoFunc(fn any, args ...any) any {
+	fv := reflect.ValueOf(fn)
+	fType := fv.Type()
+
+	argVals := make([]reflect.Value, len(args))
+	for i, a := range args {
+		if a == nil {
+			argVals[i] = reflect.Zero(fType.In(i))
+		} else {
+			argVals[i] = reflect.ValueOf(a).Convert(fType.In(i))
+		}
+	}
+
+	out := fv.Call(argVals)
+	if len(out) == 0 {
+		return nil
+	}
+	return NormalizeGoValue(out[0].Interface())
+}
+
 // NormalizeGoValue converts a raw Go numeric result to Weave's own
 // unified number representation (weave_spec.md §2: every Weave number
 // is a float64, integers and floats aren't distinguished — CLAUDE.md's
