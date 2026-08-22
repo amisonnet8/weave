@@ -434,7 +434,7 @@ sema・codegenはそれぞれ独立に`goTypes`/`goFuncs`という宣言順の�
 
 15.3節・17節のサンプルは`gotype`/`gofunc`宣言を**真のトップレベル(モジュールスコープ、`func main`の外)** に置いているが、Weaveの文法は現時点で`func main(): int {...}`以外のトップレベル文をサポートしていない(`ast.File`は`Main`しか保持しない設計のまま)。トップレベル文には変数がGVAR(グローバル変数)として`main`をまたいで見える必要があり、これは前半・後半のどのステップでも踏み込んでいない新しい実装領域のため、**Step3では`gotype`/`gofunc`宣言を`main`関数の内側で使える形に留め、真のトップレベル対応はStep5(統合サンプル)へ持ち越すことにした。**
 
-また、`gofunc`で宣言したGo関数は**戻り値が1個であることを前提にしている**(Weave自身が複数戻り値の概念を持たないため)。実装後に気づいたが、**17節の`os.Open`は実際のGoでは`(*os.File, error)`という2値を返す**ため、この制約と厳密には矛盾する。仕様はGo資産呼び出しにおけるエラー処理・複数戻り値について一切触れていないため、これも仕様の欠落として扱い、Step5で`os.Open`を使った統合サンプルに実際に取り組む際に改めて対処方針を検討する(スカラー1値を返す`strings.ToUpper`等では問題なく動作することは実地検証済み)。
+また、`gofunc`で宣言したGo関数は**戻り値が1個であることを前提にしている**(Weave自身が複数戻り値の概念を持たないため)。実装後に気づいたが、**17節の`os.Open`は実際のGoでは`(*os.File, error)`という2値を返す**ため、この制約と厳密には矛盾する。仕様はGo資産呼び出しにおけるエラー処理・複数戻り値について一切触れていないため、これも仕様の欠落として扱い、Step5で`os.Open`を使った統合サンプルに実際に取り組む際に改めて対処方針を検討する(スカラー1値を返す`strings.ToUpper`等では問題なく動作することは実地検証済み)。**この制約は後日「Go資産境界への型ヒント」の後、`(値, error)`という最も一般的な多値パターンに限り解消した——下記「`gofunc`の`(値, error)`対応」節参照。**
 
 ### `gomethod`の静的解決は「変数への直接代入」のみに絞った(後半Step 4で確定)
 
@@ -638,6 +638,20 @@ checkShape(PointShape, p)
 **`package(...)`との関係も実地検証した。** `shape`/`checkShape`は`gotype`/`gofunc`と全く同じ「`name = 予約呼び出し(...)`」パターンなので、`internal/modloader`が特別扱いする必要は無いはずだと予測し、実際に非ルートパッケージで`shape(...)`宣言を行い、ルート側から`パッケージ名.ShapeName`という形で`checkShape`に渡すサンプルを実地検証したところ、**modloader側の変更を一切加えずに動作した**——トップレベル束縛の機械的なリネーム(`collectRenames`)がshape宣言にも無差別に適用され、`修飾子.名前`のASTレベル書き換え(`rewrite.go`)もそのまま効くため。Go資産の型ヒント(gotype/gomethod/gofunc)も同じ理屈でパッケージをまたいで動くはずだと今回の検証で確認できた(明示的なテストは無かったが、同じメカニズムに依拠しているため今回のshapeの検証がその裏付けにもなる)。
 
 `examples/shapes.weave`を新設し、number/string/bool/object/functionの全種類を含むshapeを`amivm`→`go build`→実行まで実地検証した。number型不一致・function型不一致・プロパティ欠落(`nil`として`ObjGet`されるため型不一致になる)の3つの失敗ケースも個別に実地検証し、いずれも`weave: property "x" of shape PointShape: expected ^float64, got string`のような分かりやすいエラーで意図通り停止することを確認した。
+
+### `gofunc`の`(値, error)`対応(shape/checkShapeの後に追加)
+
+ユーザーから「`os.ReadFile`を使うには?」と問われて、`gofunc`が「戻り値は1個」を前提にしている制約(15.2節で仕様の欠落として記録済み)に実際に突き当たった。`os.ReadFile(name string) ([]byte, error)`はGo標準ライブラリで最も一般的な「値+error」の多値パターンであり、これに限定して対応することにした。
+
+**新しい構文は一切追加していない。** `weavert.CallGoFunc`/`CallGoMethod`(reflect経由の未型付き経路)を直接拡張し、戻り値の**型**(reflectで取得できる`reflect.Type`)が`error`インタフェースを実装しているかどうかで判定する——値の個数だけを見るのではなく、型で判定するのが要点(`(int, int)`のような「2値だがどちらもerrorではない」ケースを誤って特別扱いしないため)。`error`型の最後の戻り値が`nil`でなければ`panic`、`nil`なら先頭の値だけを返す(Weaveには複数戻り値という概念が無いため、両方を返す方法が無い——単一戻り値言語がこのGoのイディオムを橋渡しする際の最も自然な形と判断した)。
+
+**`weavert.NormalizeGoValue`に`[]byte`→`string`の変換も追加した。** `os.ReadFile`を実際に動かしてみたところ、戻り値が生の`[]byte`のままだと`print`/`string(...)`が`%v`のバイト配列表示(`[104 101 108 108 111 ...]`)になってしまい、実用にならないと判明した(実地検証で発見)。Weaveには「バイト列」という独立した概念が無く、文字列表現しか無いため(2節)、数値系Goの型をfloat64へ寄せているのと全く同じ発想で、`[]byte`もGo自身の`string(b)`変換相当のものへ寄せることにした。
+
+**この修正は`gomethod`(`CallGoMethod`)にも対称的に適用した。** `gofunc`だけの問題ではなく、Goのメソッドも`(値, error)`を返すことは普通にある(`(*bufio.Reader).ReadString(delim byte) (string, error)`等)ため、ユーザーからの依頼の直接対象では無かったが一貫性のため合わせて直した——`panicIfTrailingError`という共通ヘルパーへ切り出し、`CallGoFunc`/`CallGoMethod`の両方から呼ぶ形にした。
+
+**型付き(`ASSERT`+ネイティブ)経路には今回は手を付けていない。** `gomethod`/`gofunc`の型ヒント付き経路(`genNativeGoMethodCall`/`genGoFuncCall`の型付き分岐)は、戻り値の個数をコンパイル時に`FNTYPE`や`CALL`の代入先の数として決め打ちする必要があり、動的な`(値, error)`判定とは相性が良くない——多値のGo関数を型ヒント付きで使おうとすると、今のところ`go/types`のエラーとして表面化する(未対応というだけで、誤動作はしない)。`os.ReadFile`は今回`nil`(未型付き)で使う想定に留め、型付き多値対応は必要になった時点で改めて設計する。
+
+`examples/goassets.weave`に`os.ReadFile`の実例(`examples/testdata.txt`を読んで表示)を追加し、`amivm`→`go build`→実行まで実地検証した。存在しないファイルを渡した場合も個別に検証し、`weave: open does-not-exist.txt: no such file or directory`という実際のGoのエラーメッセージがそのままpanicすることを確認した(`(int, int)`のような非error多値もテストで確認: 先頭の値だけが黙って返る、という限定的な既存動作を維持)。
 
 ## 開発の進め方
 

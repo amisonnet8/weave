@@ -10,5 +10,15 @@ func main(): int {
 
 	print(toUpper("hello, weave"))
 	print(trimSpace("  padded  "))
+
+	// os.ReadFile(name string) ([]byte, error) — a real Go stdlib
+	// function returning Go's common (value, error) shape. weavert.CallGoFunc
+	// panics with the real error on failure and normalizes the []byte on
+	// success into a plain Weave string (weavert/goasset.go's
+	// panicIfTrailingError/NormalizeGoValue).
+	readFile = gofunc("?os.ReadFile", nil)
+	contents = readFile("examples/testdata.txt")
+	print(contents)
+
 	return 0
 }

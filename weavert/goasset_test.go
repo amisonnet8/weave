@@ -1,6 +1,9 @@
 package weavert
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,6 +42,69 @@ func TestCallGoFunc_NormalizesNumericResult(t *testing.T) {
 		t.Fatalf("CallGoFunc(...) = %v (%T), want 5.0 (normalized from int)", got, got)
 	}
 }
+
+// TestCallGoFunc_ValueErrorIdiom_Success exercises the real motivating
+// case (Go's `os.ReadFile(name string) ([]byte, error)`): on success,
+// only the leading value comes back (normalized from []byte to a plain
+// Weave string, NormalizeGoValue's own job) — the trailing nil error is
+// dropped, not panicked on.
+func TestCallGoFunc_ValueErrorIdiom_Success(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello.txt")
+	if err := os.WriteFile(path, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := CallGoFunc(os.ReadFile, path)
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("CallGoFunc(os.ReadFile, ...) = %v (%T), want string", got, got)
+	}
+	if s != "hi" {
+		t.Errorf("got %q, want %q", s, "hi")
+	}
+}
+
+// TestCallGoFunc_ValueErrorIdiom_ErrorPanics exercises the failure half
+// of the same idiom: a non-nil trailing error panics with a message
+// derived from the error itself, rather than being silently dropped.
+func TestCallGoFunc_ValueErrorIdiom_ErrorPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected CallGoFunc to panic on a non-nil trailing error")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "no such file") {
+			t.Errorf("panic value = %v, want a message mentioning the real os error", r)
+		}
+	}()
+	CallGoFunc(os.ReadFile, filepath.Join(t.TempDir(), "does-not-exist.txt"))
+}
+
+// TestCallGoFunc_TwoNonErrorValuesStillReturnsFirst documents the
+// narrower, still-open limitation: a multi-value return whose last
+// value is *not* an error is left alone — only the first value is ever
+// visible to Weave, silently.
+func TestCallGoFunc_TwoNonErrorValuesStillReturnsFirst(t *testing.T) {
+	got := CallGoFunc(func() (int, int) { return 1, 2 })
+	if got != 1.0 {
+		t.Errorf("CallGoFunc(...) = %v, want 1.0 (the first of two non-error return values)", got)
+	}
+}
+
+func TestCallGoMethod_ValueErrorIdiom(t *testing.T) {
+	r := &namedErrorMethod{}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected CallGoMethod to panic on a non-nil trailing error")
+		}
+	}()
+	CallGoMethod(r, "Fail")
+}
+
+type namedErrorMethod struct{}
+
+func (namedErrorMethod) Fail() (string, error) { return "", errors.New("boom") }
 
 func TestTypeError_PanicsWithClearMessage(t *testing.T) {
 	defer func() {
@@ -93,6 +159,7 @@ func TestNormalizeGoValue(t *testing.T) {
 		{"string unchanged", "hi", "hi"},
 		{"bool unchanged", true, true},
 		{"nil unchanged", nil, nil},
+		{"[]byte becomes string", []byte("hi"), "hi"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
