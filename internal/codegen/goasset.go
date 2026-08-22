@@ -8,19 +8,27 @@ import (
 	"github.com/amisonnet8/weave/internal/ast"
 )
 
-// GoTypeInfo/GoFuncInfo mirror sema's own (internal/sema/goasset.go) —
-// a separate copy per the established pattern of codegen re-deriving
-// its own view of the AST rather than consuming sema's internal state
-// (see CLAUDE.md's "確定した設計判断" on manually-synced tables, e.g.
-// builtinNames/reservedName).
+// GoTypeInfo/GoMethodInfo/GoFuncInfo mirror sema's own (internal/sema/
+// goasset.go) — a separate copy per the established pattern of codegen
+// re-deriving its own view of the AST rather than consuming sema's
+// internal state (see CLAUDE.md's "確定した設計判断" on manually-synced
+// tables, e.g. builtinNames/reservedName). See sema's copies for the
+// full reasoning behind the typed vs. untyped shapes.
 type GoTypeInfo struct {
 	GoName  string
-	Methods map[string]string
+	Methods map[string]*GoMethodInfo
+}
+
+type GoMethodInfo struct {
+	GoName     string
+	ReturnType string // "" means untyped/reflect-dispatched
+	ParamTypes []string
 }
 
 type GoFuncInfo struct {
-	GoName string
-	Proto  string
+	GoName     string
+	Proto      string
+	ParamTypes []string // nil means untyped/reflect-dispatched
 }
 
 // genGoDecl mirrors sema's own recognition of `name = gotype(...)` /
@@ -51,15 +59,31 @@ func genGoDecl(fg *funcGen, name string, call *ast.CallExpr) (bool, error) {
 func genGoTypeDecl(fg *funcGen, name string, call *ast.CallExpr) {
 	goName := call.Args[0].(*ast.StringLit).Value
 	members := call.Args[1].(*ast.ObjectLit)
-	methods := map[string]string{}
+	methods := map[string]*GoMethodInfo{}
 	for _, field := range members.Fields {
 		mcall := field.Value.(*ast.CallExpr)
-		methods[field.Name] = mcall.Args[0].(*ast.StringLit).Value
+		methods[field.Name] = goMethodInfoFromArgs(mcall.Args)
 	}
 	if fg.ctx.goTypes == nil {
 		fg.ctx.goTypes = map[string]*GoTypeInfo{}
 	}
 	fg.ctx.goTypes[name] = &GoTypeInfo{GoName: goName, Methods: methods}
+}
+
+// goMethodInfoFromArgs re-derives one gomethod(...) call's info — sema
+// has already validated the shape (checkGoMethodArgs), so this doesn't
+// re-check anything, just extracts it.
+func goMethodInfoFromArgs(args []ast.Expr) *GoMethodInfo {
+	goName := args[0].(*ast.StringLit).Value
+	if len(args) == 1 {
+		return &GoMethodInfo{GoName: goName}
+	}
+	returnType := args[1].(*ast.StringLit).Value
+	paramTypes := make([]string, len(args)-2)
+	for i, a := range args[2:] {
+		paramTypes[i] = a.(*ast.StringLit).Value
+	}
+	return &GoMethodInfo{GoName: goName, ReturnType: returnType, ParamTypes: paramTypes}
 }
 
 func genGoFuncDecl(fg *funcGen, name string, call *ast.CallExpr) {
@@ -68,54 +92,73 @@ func genGoFuncDecl(fg *funcGen, name string, call *ast.CallExpr) {
 	if id, ok := call.Args[1].(*ast.Ident); ok {
 		proto = id.Name
 	}
+	var paramTypes []string
+	if len(call.Args) > 2 {
+		paramTypes = make([]string, len(call.Args)-2)
+		for i, a := range call.Args[2:] {
+			paramTypes[i] = a.(*ast.StringLit).Value
+		}
+	}
 	if fg.ctx.goFuncs == nil {
 		fg.ctx.goFuncs = map[string]*GoFuncInfo{}
 	}
-	fg.ctx.goFuncs[name] = &GoFuncInfo{GoName: goName, Proto: proto}
+	fg.ctx.goFuncs[name] = &GoFuncInfo{GoName: goName, Proto: proto, ParamTypes: paramTypes}
 }
 
-// genGoFuncCall lowers a call to a gofunc(...)-declared name to its real
-// Go function via weavert.CallGoFunc, bypassing weavert.Call's dynamic
-// prototype-chain dispatch entirely (weave_spec.md §16: "動的な
-// プロトタイプ検索を一切経由せず...ネイティブ命令の速さ・単純さ" for
-// gofunc/gomethod). Arguments are passed positionally, matching the
-// wrapped Go function's own native arity — not curried the way an
-// ordinary Weave call is, since the whole point of gofunc is to mirror
-// the real Go signature rather than force it through Weave's
-// 1-argument convention.
+// genGoFuncCall lowers a call to a gofunc(...)-declared name. Without
+// declared parameter types (info.ParamTypes == nil) it routes through
+// weavert.CallGoFunc exactly as before — see that function's own doc
+// comment in weavert/goasset.go for why reflect is unavoidable there
+// (an arbitrary `any` argument can't be passed to a specific concrete Go
+// parameter type without either a type assertion or reflect.Convert).
 //
-// This used to emit a literal `CALL raw : ?pkg.Func arg1 arg2` — a
-// direct native call. That only worked when every argument was a
-// literal Weave constant (an untyped Go constant is assignable to
-// whatever concrete parameter type the real function wants); the
-// moment an argument is an ordinary `any`-typed Weave value (a
-// variable, an object property, ...) go/types rejects it outright
-// ("cannot use v (variable of type any) as string value"). Routing
-// through weavert.CallGoFunc — passing info.GoName itself as a plain
-// value argument, which amivm's `value` operand category accepts
-// (amivm_spec.md §5's `?xxx_123` entry) — fixes this the same way
-// CallGoMethod already bridges the analogous gap for method calls: see
-// CLAUDE.md's 後半 Step 5 "確定した設計判断" for how this was found
-// (a spawn/gofunc integration example that passes an object property
-// to a gofunc call).
-//
-// Scope limitation: this assumes the wrapped Go function returns
-// exactly one value. weave_spec.md never addresses multi-value Go
-// returns (§17's own os.Open example actually returns (*File, error) in
-// real Go, which this can't express) — deferred until an example
-// actually needs it; see CLAUDE.md's 後半 Step 3 "確定した設計判断".
+// With declared parameter types, each argument is ASSERTed from `^any`
+// down to its declared concrete type (weave_spec.md's "型を書けばASSERT
+// でネイティブ・厳格に" rule — CLAUDE.md's design-decision note), and the
+// real Go function is then called *directly* — no weavert.CallGoFunc, no
+// reflect at all for the call itself. The result variable is declared
+// `^any` and the raw call result is assigned straight into it (Go freely
+// boxes any concrete return value into an `any`-typed variable via plain
+// `=`, unlike the any->concrete direction ASSERT is needed for) — so,
+// unlike genNativeGoMethodCall, there is no need to know the *return*
+// type at all here: weavert.NormalizeGoValue (a plain type switch, not
+// reflect) still handles the "was it actually a numeric Go type, box as
+// float64" step generically. See GoFuncInfo's own doc comment for why
+// this asymmetry with gomethod (which does need FNTYPE's return type) is
+// real, not an oversight.
 func genGoFuncCall(fg *funcGen, info *GoFuncInfo, call *ast.CallExpr) (string, error) {
-	argVals := []string{info.GoName}
-	for _, arg := range call.Args {
+	if info.ParamTypes == nil {
+		argVals := []string{info.GoName}
+		for _, arg := range call.Args {
+			v, err := genExpr(fg, arg)
+			if err != nil {
+				return "", err
+			}
+			argVals = append(argVals, v)
+		}
+		tmp := fg.newTemp("^any")
+		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.CallGoFunc%s\n", tmp, argSuffix(argVals))
+		return tmp, nil
+	}
+
+	if len(call.Args) != len(info.ParamTypes) {
+		return "", fmt.Errorf("line %d: %s expects %d argument(s), got %d", call.Line, info.GoName, len(info.ParamTypes), len(call.Args))
+	}
+	concreteArgs := make([]string, len(call.Args))
+	for i, arg := range call.Args {
 		v, err := genExpr(fg, arg)
 		if err != nil {
 			return "", err
 		}
-		argVals = append(argVals, v)
+		desc := fmt.Sprintf("argument %d to %s", i+1, info.GoName)
+		concreteArgs[i] = genAssertOrTypeError(fg, v, info.ParamTypes[i], desc)
 	}
-	tmp := fg.newTemp("^any")
-	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.CallGoFunc%s\n", tmp, argSuffix(argVals))
-	return tmp, nil
+
+	raw := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t%s%s\n", raw, info.GoName, argSuffix(concreteArgs))
+	result := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.NormalizeGoValue\t%s\n", result, raw)
+	return result, nil
 }
 
 func argSuffix(args []string) string {
@@ -145,22 +188,26 @@ func trackGoStaticVar(fg *funcGen, name string, value ast.Expr) {
 	delete(fg.goStaticVars, name)
 }
 
-// genGoMethodCall lowers `f.Method(args...)` directly to
-// weavert.CallGoMethod when f is a statically Go-typed variable
-// (trackGoStaticVar) — bypassing the dynamic prototype-chain dispatch
-// genMethodCall otherwise uses (weave_spec.md §16: "gomethodで宣言した
-// メソッド呼び出しも...動的なプロトタイプ検索を経由せず"). The method
-// name itself is resolved here, at compile time, from gotype(...)'s own
-// declared table — never looked up dynamically. Reflection is still
-// needed at the actual call site despite that: f's *generated* Go code
-// only ever sees it as `any` (the same reason every other Go-asset/
-// closure/actor value routes through weavert — see weavert/goasset.go's
-// CallGoMethod doc comment for the full reasoning), so "static
-// resolution" here means the method *name*, not the Go call itself.
+// genGoMethodCall lowers `f.Method(args...)` when f is a statically
+// Go-typed variable (trackGoStaticVar) — bypassing the dynamic
+// prototype-chain dispatch genMethodCall otherwise uses (weave_spec.md
+// §16). The method name itself is resolved here, at compile time, from
+// gotype(...)'s own declared table — never looked up dynamically.
+//
+// Without a declared signature (weave_spec.md §15.1's plain
+// `gomethod("Name")`), the call still goes through weavert.CallGoMethod
+// (reflect) exactly as before: f's *generated* Go code only ever sees it
+// as `any`, so "static resolution" without a signature means the method
+// *name* is known, not that the Go call itself can skip reflect.
+//
+// With a declared signature (genNativeGoMethodCall), the call becomes
+// fully native — ASSERT extracts f's concrete receiver type, FNTYPE+FGET
+// extract the method as a real Go method value, and CALL invokes it
+// directly. No reflect anywhere in this path.
 //
 // The bool result tells genGeneralCall whether this applied at all —
-// prop.Obj not being a tracked static variable is the ordinary case
-// (an ordinary Weave object), not an error.
+// prop.Obj not being a tracked static variable is the ordinary case (an
+// ordinary Weave object), not an error.
 func genGoMethodCall(fg *funcGen, prop *ast.PropExpr, args []ast.Expr) (bool, string, error) {
 	id, ok := prop.Obj.(*ast.Ident)
 	if !ok {
@@ -170,24 +217,143 @@ func genGoMethodCall(fg *funcGen, prop *ast.PropExpr, args []ast.Expr) (bool, st
 	if !ok {
 		return false, "", nil
 	}
-	info := fg.ctx.goTypes[typeName]
-	goMethodName := info.Methods[prop.Prop]
+	typeInfo := fg.ctx.goTypes[typeName]
+	methodInfo := typeInfo.Methods[prop.Prop]
 
 	objVal, err := genExpr(fg, prop.Obj)
 	if err != nil {
 		return true, "", err
 	}
-	var argVals []string
-	for _, arg := range args {
+	argVals := make([]string, len(args))
+	for i, arg := range args {
 		v, err := genExpr(fg, arg)
 		if err != nil {
 			return true, "", err
 		}
-		argVals = append(argVals, v)
+		argVals[i] = v
 	}
 
+	if methodInfo.ReturnType == "" {
+		tmp := fg.newTemp("^any")
+		callArgs := append([]string{objVal, strconv.Quote(methodInfo.GoName)}, argVals...)
+		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.CallGoMethod\t%s\n", tmp, strings.Join(callArgs, "\t"))
+		return true, tmp, nil
+	}
+
+	result, err := genNativeGoMethodCall(fg, typeInfo, methodInfo, objVal, argVals, prop.Line)
+	return true, result, err
+}
+
+// genNativeGoMethodCall lowers a typed gomethod(...) call to a fully
+// native ASSERT+FNTYPE+FGET+CALL sequence — see genGoMethodCall's doc
+// comment. Every step down to the final CALL only ever deals in
+// concretely-typed AMIVM values (never `^any`), matching amivm's own
+// method-call pattern (amivm_instruction_spec.md §8) exactly.
+func genNativeGoMethodCall(fg *funcGen, typeInfo *GoTypeInfo, methodInfo *GoMethodInfo, objVal string, argVals []string, line int) (string, error) {
+	if len(argVals) != len(methodInfo.ParamTypes) {
+		return "", fmt.Errorf("line %d: %s.%s expects %d argument(s), got %d", line, typeInfo.GoName, methodInfo.GoName, len(methodInfo.ParamTypes), len(argVals))
+	}
+
+	recv := genAssertOrTypeError(fg, objVal, typeInfo.GoName, "method receiver")
+
+	concreteArgs := make([]string, len(argVals))
+	for i, av := range argVals {
+		desc := fmt.Sprintf("argument %d to %s.%s", i+1, typeInfo.GoName, methodInfo.GoName)
+		concreteArgs[i] = genAssertOrTypeError(fg, av, methodInfo.ParamTypes[i], desc)
+	}
+
+	paramTypeTokens := make([]string, len(methodInfo.ParamTypes))
+	for i, pt := range methodInfo.ParamTypes {
+		paramTypeTokens[i] = goTypeToken(pt)
+	}
+	retType := goTypeToken(methodInfo.ReturnType)
+	fnType := fg.ctx.newGoFnType(paramTypeTokens, retType)
+
+	methodVal := fg.newTemp(fnType)
+	fmt.Fprintf(&fg.body, "\tFGET\t%s\t%s\t>%s\n", methodVal, recv, methodInfo.GoName)
+
+	raw := fg.newTemp(retType)
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t%s%s\n", raw, methodVal, argSuffix(concreteArgs))
+
+	result := fg.newTemp("^any")
+	if isNumericGoType(retType) {
+		casted := fg.newTemp("^float64")
+		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?float64\t%s\n", casted, raw)
+		fmt.Fprintf(&fg.body, "\tSET\t%s\t%s\n", result, casted)
+	} else {
+		fmt.Fprintf(&fg.body, "\tSET\t%s\t%s\n", result, raw)
+	}
+	return result, nil
+}
+
+// genAssertOrTypeError ASSERTs anyVal (an `^any` value token) down to
+// goRef's concrete AMIVM type (goRef is a "?pkg.Type"-shaped string, as
+// written in a gotype(...)/gomethod(...)/gofunc(...) declaration —
+// goTypeToken converts it to the `^`-prefixed IR form), using the
+// comma-ok form so a mismatch never produces a raw Go "interface
+// conversion" panic — instead it calls weavert.TypeError with desc (a
+// human-readable location, e.g. "argument 1 to strings.Reader.Len") for
+// a clear, Weave-flavored message. Returns the token of the now
+// concretely-typed value, valid to use directly as a native CALL/FGET
+// argument.
+func genAssertOrTypeError(fg *funcGen, anyVal, goRef, desc string) string {
+	anyVal = ensureVariable(fg, anyVal)
+	concreteType := goTypeToken(goRef)
+	concrete := fg.newTemp(concreteType)
+	ok := fg.newTemp("^bool")
+	fmt.Fprintf(&fg.body, "\tASSERT\t%s\t%s\t%s\t%s\n", concrete, ok, anyVal, concreteType)
+	notOk := fg.newTemp("^bool")
+	fmt.Fprintf(&fg.body, "\tNOT\t%s\t%s\n", notOk, ok)
+	fmt.Fprintf(&fg.body, "\tIF\t%s\n", notOk)
+	fmt.Fprintf(&fg.body, "\tCALL\t:\t?weavert.TypeError\t%s\t%s\t%s\n", strconv.Quote(desc), strconv.Quote(concreteType), anyVal)
+	fg.body.WriteString("\tENDIF\n")
+	return concrete
+}
+
+// ensureVariable materializes val (an AMIVM `value` token, possibly a
+// literal) into a fresh `^any` variable if it isn't one already —
+// ASSERT's `variable` operand category (amivm_spec.md §5) accepts only
+// $N/&N/%xxx/@xxx/@xxx.yyy references, never a literal directly, unlike
+// most other operand categories (which accept both). genExpr only ever
+// returns a non-variable token for the four literal AST kinds (number/
+// string/bool/nil) — every other expression already resolves to a %-temp
+// or a %/@-prefixed reference.
+func ensureVariable(fg *funcGen, val string) string {
+	if val != "" {
+		switch val[0] {
+		case '$', '&', '%', '@':
+			return val
+		}
+	}
 	tmp := fg.newTemp("^any")
-	callArgs := append([]string{objVal, strconv.Quote(goMethodName)}, argVals...)
-	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.CallGoMethod\t%s\n", tmp, strings.Join(callArgs, "\t"))
-	return true, tmp, nil
+	fmt.Fprintf(&fg.body, "\tSET\t%s\t%s\n", tmp, val)
+	return tmp
+}
+
+// goTypeToken converts a "?pkg.Type"/"?*pkg.Type"-shaped declaration
+// string (gotype/gomethod/gofunc's own argument shape, weave_spec.md
+// §15.1) into the `^`-prefixed AMIVM type token it names — the two
+// prefixes line up with amivm's own type category (amivm_spec.md §7)
+// one swap away: `?strings.Reader` -> `^strings.Reader`, `?*os.File` ->
+// `^*os.File`.
+func goTypeToken(goRef string) string {
+	return "^" + strings.TrimPrefix(goRef, "?")
+}
+
+// numericGoTypeNames mirrors weavert.NormalizeGoValue's own switch
+// (weavert/goasset.go) — every Go numeric kind that needs boxing as
+// float64 to match weave_spec.md §2's "numbers are always float64"
+// rule. float64 itself is deliberately absent: it's already the target
+// representation, so no cast is needed for it.
+var numericGoTypeNames = map[string]bool{
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"float32": true,
+}
+
+// isNumericGoType reports whether typeToken (a `^`-prefixed AMIVM type
+// token, e.g. "^int" or "^*int") names one of the Go numeric kinds
+// genNativeGoMethodCall must cast to float64 before boxing into `^any`.
+func isNumericGoType(typeToken string) bool {
+	return numericGoTypeNames[strings.TrimPrefix(typeToken, "^")]
 }

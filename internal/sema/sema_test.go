@@ -657,6 +657,83 @@ func TestCheck_StaticGoMethodCallRejectsUnknownMember(t *testing.T) {
 	}
 }
 
+// typedGomethodExpr builds `gomethod(goMethodName, returnType, paramTypes...)`
+// (weave_spec.md §15.1's typed form — see GoMethodInfo's doc comment).
+func typedGomethodExpr(goMethodName, returnType string, paramTypes ...string) ast.Expr {
+	args := []ast.Expr{&ast.StringLit{Value: goMethodName}, &ast.StringLit{Value: returnType}}
+	for _, pt := range paramTypes {
+		args = append(args, &ast.StringLit{Value: pt})
+	}
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "gomethod"}, Args: args}
+}
+
+func TestCheck_TypedGomethodAndGofuncDeclAreValid(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
+				{Name: "len", Value: typedGomethodExpr("Len", "?int")},
+			})},
+			&ast.AssignStmt{Name: "newReader", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gofunc"},
+				Args: []ast.Expr{
+					&ast.StringLit{Value: "?strings.NewReader"},
+					&ast.Ident{Name: "GoReader"},
+					&ast.StringLit{Value: "?string"},
+				},
+			}},
+			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "newReader"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_TypedGomethodWrongArgCountIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
+				{Name: "len", Value: typedGomethodExpr("Len", "?int")}, // 0 params declared
+			})},
+			&ast.AssignStmt{Name: "newReader", Value: goFuncDeclExpr("?strings.NewReader", &ast.Ident{Name: "GoReader"})},
+			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "newReader"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
+				Args:   []ast.Expr{&ast.NumberLit{Value: 1}}, // len takes none
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: len(...) declared 0 params but was called with 1")
+	}
+}
+
+func TestCheck_GomethodTypeArgMissingQuestionMarkIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
+				{Name: "len", Value: typedGomethodExpr("Len", "int")}, // missing '?'
+			})},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: return type must start with '?'")
+	}
+}
+
 func TestCheck_ReassignedVarLosesStaticGoType(t *testing.T) {
 	// r starts Go-typed, then gets reassigned to an ordinary object —
 	// r.someProp() afterward must be treated as an ordinary dynamic
@@ -764,6 +841,84 @@ func TestCheck_MutualRecursionIsStillAnError(t *testing.T) {
 	}}
 	if err := Check(file); err == nil {
 		t.Fatal("expected an error referencing isOdd before it's assigned")
+	}
+}
+
+// shapeDeclExpr builds `shape({ field: "hint", ... })` (weave_spec.md
+// §4.3).
+func shapeDeclExpr(fields map[string]string) *ast.CallExpr {
+	var objFields []ast.ObjectField
+	for name, hint := range fields {
+		objFields = append(objFields, ast.ObjectField{Name: name, Value: &ast.StringLit{Value: hint}})
+	}
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "shape"}, Args: []ast.Expr{&ast.ObjectLit{Fields: objFields}}}
+}
+
+func TestCheck_ShapeDeclAndCheckShapeCallAreValid(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "PointShape", Value: shapeDeclExpr(map[string]string{"x": "number", "y": "number"})},
+			&ast.AssignStmt{Name: "p", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+				{Name: "x", Value: &ast.NumberLit{Value: 1}},
+				{Name: "y", Value: &ast.NumberLit{Value: 2}},
+			}}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "checkShape"},
+				Args:   []ast.Expr{&ast.Ident{Name: "PointShape"}, &ast.Ident{Name: "p"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_ShapeUnknownHintIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "S", Value: shapeDeclExpr(map[string]string{"x": "integer"})}, // not a recognized hint
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: \"integer\" is not a recognized shape hint")
+	}
+}
+
+func TestCheck_CheckShapeFirstArgMustBeShapeDeclared(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "notAShape", Value: &ast.NumberLit{Value: 1}},
+			&ast.AssignStmt{Name: "p", Value: &ast.ObjectLit{}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "checkShape"},
+				Args:   []ast.Expr{&ast.Ident{Name: "notAShape"}, &ast.Ident{Name: "p"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: checkShape's first argument must be a shape(...) declared name")
+	}
+}
+
+func TestCheck_ShapeOutsideDeclarationShapeIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "print"},
+				Args:   []ast.Expr{shapeDeclExpr(map[string]string{"x": "number"})},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: shape(...) used outside `name = shape(...)`")
 	}
 }
 

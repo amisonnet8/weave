@@ -90,6 +90,36 @@ func CallGoFunc(fn any, args ...any) any {
 // has no Weave equivalent to convert to) all pass through unchanged.
 // Both CallGoMethod and genGoFuncCall's direct native calls
 // (internal/codegen/goasset.go) route their results through this.
+// TypeError panics with a clear, Weave-flavored message for a failed
+// static Go type check (internal/codegen/goasset.go's genAssertOrTypeError)
+// — the one place a typed gotype/gomethod/gofunc declaration's ASSERT
+// still needs a helper at all: everywhere else on that path is fully
+// native (ASSERT/FGET/CALL), but formatting a message that includes the
+// mismatched value's own dynamic type (%T) can't be done with a fixed
+// set of native instructions. desc names where the check happened (e.g.
+// "argument 1 to strings.Reader.Len"), want is the AMIVM type token that
+// was expected (e.g. "^*strings.Reader"), and got is the value that
+// failed to match it.
+func TypeError(desc, want string, got any) {
+	panic(fmt.Sprintf("weave: %s: expected %s, got %T", desc, want, got))
+}
+
+// IsWeaveFunc reports whether v holds a Weave closure — every closure is
+// a bare Go func(any) any value (closure.go's genFuncLit), which Go's
+// own interface type assertion can't check directly: an unnamed func
+// type never satisfies an assertion to any named type, regardless of
+// its signature (internal/codegen/shape.go's genCheckShapeCall explains
+// why in full). reflect.Kind() sidesteps that without needing the value
+// to ever actually be called — unlike CallGoMethod/CallGoFunc's
+// reflection, there's no equivalent "reflect tax" here, just one cheap
+// Kind() check. Used by checkShape(...)'s "function" type hint.
+func IsWeaveFunc(v any) bool {
+	if v == nil {
+		return false
+	}
+	return reflect.TypeOf(v).Kind() == reflect.Func
+}
+
 func NormalizeGoValue(v any) any {
 	switch x := v.(type) {
 	case int:

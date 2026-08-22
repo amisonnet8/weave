@@ -100,18 +100,18 @@ func ordCmp(op string, a, b any) int {
 // right operand entirely along the branch where it doesn't matter),
 // which a Go function call can't do — every argument is evaluated
 // before the call happens. codegen.genShortCircuit lowers them directly
-// to IF/GOTO/LABEL branching instead, using CheckBool below at each
+// to amivm's block-form IF/ENDIF instead, using CheckBool below at each
 // operand it actually does evaluate. (Step 3 first tried plain And/Or
 // functions and flagged the missing short-circuiting as a gap — see
 // CLAUDE.md's Step 3 "確定した設計判断" — Step 4 removed them once
 // genShortCircuit existed to replace them.)
 
 // CheckBool asserts v is a Weave bool and returns it as Go's native
-// bool. AMIVM's IF instruction compiles to a bare Go `if cond { goto
-// label }`, which requires cond to be concretely bool-typed — an `any`
+// bool. AMIVM's IF/ELIF (and its LOOP-based conditional-break pattern)
+// require their operand to already be concretely bool-typed — an `any`
 // holding a bool doesn't satisfy that — so every branch condition
-// (if/elif/while, and each operand genShortCircuit actually evaluates)
-// routes through this.
+// (if/elif/while/for-in, and each operand genShortCircuit actually
+// evaluates) routes through this.
 func CheckBool(v any) bool {
 	b, ok := v.(bool)
 	if !ok {

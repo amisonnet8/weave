@@ -192,39 +192,58 @@ func TestGenerate_MissingReturnIsAnError(t *testing.T) {
 	}
 }
 
-// labelsBalance is a light structural check for control-flow codegen:
-// every GOTO/IF target must have a matching LABEL, and vice versa.
-func labelsBalance(t *testing.T, ir string) {
+// blocksBalance is a light structural check for control-flow codegen:
+// every IF/ENDIF and LOOP/ENDLOOP must nest correctly (a stack-based
+// check — ELSE/ENDIF must close the innermost still-open IF, ENDLOOP
+// must close the innermost still-open LOOP), and every BREAK/CONTINUE
+// must sit inside at least one open LOOP — amivm's block-form control
+// flow (amivm_spec.md §4.10-4.11) replaced the old GOTO/LABEL-based
+// scheme this helper used to check.
+func blocksBalance(t *testing.T, ir string) {
 	t.Helper()
-	defined := map[string]bool{}
-	referenced := map[string]bool{}
+	var stack []string // "IF" or "LOOP", innermost last
 	for _, line := range strings.Split(ir, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) == 0 {
 			continue
 		}
 		switch fields[0] {
-		case "LABEL":
-			defined[fields[1]] = true
-		case "GOTO":
-			referenced[fields[1]] = true
 		case "IF":
-			referenced[fields[2]] = true
+			stack = append(stack, "IF")
+		case "LOOP":
+			stack = append(stack, "LOOP")
+		case "ELSE":
+			if len(stack) == 0 || stack[len(stack)-1] != "IF" {
+				t.Fatalf("ELSE outside an open IF:\n%s", ir)
+			}
+		case "ENDIF":
+			if len(stack) == 0 || stack[len(stack)-1] != "IF" {
+				t.Fatalf("ENDIF without a matching open IF:\n%s", ir)
+			}
+			stack = stack[:len(stack)-1]
+		case "ENDLOOP":
+			if len(stack) == 0 || stack[len(stack)-1] != "LOOP" {
+				t.Fatalf("ENDLOOP without a matching open LOOP:\n%s", ir)
+			}
+			stack = stack[:len(stack)-1]
+		case "BREAK", "CONTINUE":
+			inLoop := false
+			for _, s := range stack {
+				if s == "LOOP" {
+					inLoop = true
+				}
+			}
+			if !inLoop {
+				t.Fatalf("%s outside any open LOOP:\n%s", fields[0], ir)
+			}
 		}
 	}
-	for label := range referenced {
-		if !defined[label] {
-			t.Errorf("label %s is referenced but never defined:\n%s", label, ir)
-		}
-	}
-	for label := range defined {
-		if !referenced[label] {
-			t.Errorf("label %s is defined but never referenced:\n%s", label, ir)
-		}
+	if len(stack) != 0 {
+		t.Fatalf("unclosed block(s) %v:\n%s", stack, ir)
 	}
 }
 
-func TestGenerate_IfElifElseLabelsBalance(t *testing.T) {
+func TestGenerate_IfElifElseBlocksBalance(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
 		Body: []ast.Stmt{
@@ -247,15 +266,19 @@ func TestGenerate_IfElifElseLabelsBalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	labelsBalance(t, ir)
+	blocksBalance(t, ir)
 	if strings.Count(ir, "IF\t") != 2 {
 		t.Errorf("expected 2 IFs (one per if/elif condition), got:\n%s", ir)
 	}
 }
 
-func TestGenerate_WhileBreakContinueTargetInnermostLoop(t *testing.T) {
+func TestGenerate_NestedWhileBreakContinueBlocksBalance(t *testing.T) {
 	// while true { while true { break; continue } }
-	// the inner break/continue must target the INNER loop's labels.
+	// Native BREAK/CONTINUE always target the innermost enclosing LOOP
+	// by construction (Go's own for-loop semantics) — there's no label
+	// bookkeeping left to assert on directly; blocksBalance's own
+	// "BREAK/CONTINUE must be inside an open LOOP" check plus the
+	// exact-nesting-count checks below are what's left to verify.
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
 		Body: []ast.Stmt{
@@ -273,54 +296,17 @@ func TestGenerate_WhileBreakContinueTargetInnermostLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	labelsBalance(t, ir)
-
-	// There must be two distinct while_start/while_end pairs (outer,
-	// inner). break's GOTO must target the *second* (inner) while_end,
-	// and continue's GOTO must target the *second* (inner) while_start —
-	// not the outer loop's.
-	lines := strings.Split(ir, "\n")
-	var whileStarts, whileEnds []string
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[0] == "LABEL" {
-			if strings.HasPrefix(fields[1], "#while_start") {
-				whileStarts = append(whileStarts, fields[1])
-			}
-			if strings.HasPrefix(fields[1], "#while_end") {
-				whileEnds = append(whileEnds, fields[1])
-			}
-		}
+	blocksBalance(t, ir)
+	if strings.Count(ir, "\tLOOP\n") != 2 || strings.Count(ir, "\tENDLOOP\n") != 2 {
+		t.Errorf("expected 2 nested LOOP/ENDLOOP pairs, got:\n%s", ir)
 	}
-	if len(whileStarts) != 2 || len(whileEnds) != 2 {
-		t.Fatalf("expected 2 while_start and 2 while_end labels, got %v / %v", whileStarts, whileEnds)
+	// 3 BREAKs total: one per while's own genBreakUnless (loop-exit
+	// check) plus the user's explicit `break` statement.
+	if strings.Count(ir, "\tBREAK\n") != 3 {
+		t.Errorf("expected exactly 3 BREAKs (2 loop-exit checks + 1 user break), got:\n%s", ir)
 	}
-	// The two GOTOs immediately following break/continue's position:
-	// find them by locating the two consecutive GOTO lines inside the
-	// innermost body.
-	var gotos []string
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[0] == "GOTO" {
-			gotos = append(gotos, fields[1])
-		}
-	}
-	// last two GOTOs before the innermost while's closing GOTO-to-start
-	// are break's and continue's targets, in that order.
-	foundBreak, foundContinue := false, false
-	for _, g := range gotos {
-		if g == whileEnds[1] {
-			foundBreak = true
-		}
-		if g == whileStarts[1] {
-			foundContinue = true
-		}
-	}
-	if !foundBreak {
-		t.Errorf("expected a GOTO to the inner while_end (%s) for break, gotos: %v", whileEnds[1], gotos)
-	}
-	if !foundContinue {
-		t.Errorf("expected a GOTO to the inner while_start (%s) for continue, gotos: %v", whileStarts[1], gotos)
+	if strings.Count(ir, "\tCONTINUE\n") != 1 {
+		t.Errorf("expected exactly one CONTINUE, got:\n%s", ir)
 	}
 }
 
@@ -337,7 +323,7 @@ func TestGenerate_ShortCircuitAndSkipsRHSOnFalse(t *testing.T) {
 	if !strings.Contains(body, "CALL\t"+got+"\t:\t?weavert.CheckBool\t%b\n") {
 		t.Errorf("expected the right operand to be checked (in the true branch), got:\n%s", body)
 	}
-	labelsBalance(t, "FUNC\t!f\t:\n"+body+"ENDFUNC\n")
+	blocksBalance(t, "FUNC\t!f\t:\n"+body+"ENDFUNC\n")
 }
 
 func TestGenerate_ShortCircuitOrSkipsRHSOnTrue(t *testing.T) {
@@ -346,7 +332,7 @@ func TestGenerate_ShortCircuitOrSkipsRHSOnTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("genExpr: %v", err)
 	}
-	labelsBalance(t, "FUNC\t!f\t:\n"+fg.body.String()+"ENDFUNC\n")
+	blocksBalance(t, "FUNC\t!f\t:\n"+fg.body.String()+"ENDFUNC\n")
 }
 
 func TestGenerate_ConditionRoutesThroughCheckBool(t *testing.T) {
@@ -698,7 +684,7 @@ func TestGenerate_LenAndStringBuiltins(t *testing.T) {
 	}
 }
 
-func TestGenerate_ForInLabelsBalanceAndUseKeyValueVars(t *testing.T) {
+func TestGenerate_ForInBlocksBalanceAndUseKeyValueVars(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
 		Body: []ast.Stmt{
@@ -715,7 +701,7 @@ func TestGenerate_ForInLabelsBalanceAndUseKeyValueVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	labelsBalance(t, ir)
+	blocksBalance(t, ir)
 	if !strings.Contains(ir, "?weavert.ObjKeys\t%o\n") {
 		t.Errorf("expected ObjKeys(o), got:\n%s", ir)
 	}
@@ -727,24 +713,15 @@ func TestGenerate_ForInLabelsBalanceAndUseKeyValueVars(t *testing.T) {
 	}
 }
 
-func TestGenerate_ForInContinueLabelAlwaysReferenced(t *testing.T) {
-	// A for-in body with no `continue` at all must still reference its
-	// continueLabel via an explicit GOTO — Go treats a label reachable
-	// only by fallthrough as unused (the exact bug examples/builtins.weave
-	// caught — see CLAUDE.md's Step 8 "確定した設計判断").
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
-		Body: []ast.Stmt{
-			&ast.ForStmt{Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	labelsBalance(t, ir)
-}
+// A for-in body with no `continue` at all used to need special care
+// under the old GOTO/LABEL scheme (a continue-label reachable only by
+// fallthrough is "declared and not used" to go/types — CLAUDE.md's old
+// Step 8 "確定した設計判断"). Under the current LOOP-based design
+// (forin.go's genForStmt doc comment) there is no such label to begin
+// with — the index advance sits at the top of the loop body and is
+// always reached by ordinary fallthrough or a native CONTINUE alike —
+// so this bug class no longer exists; blocksBalance already covers the
+// remaining structural correctness via TestGenerate_ForInBlocksBalanceAndUseKeyValueVars.
 
 func TestGenerate_ForInInsideClosureUsesPrefixedKeyValueTokens(t *testing.T) {
 	// A regression test for a real bug: genForStmt used to declare k/v
@@ -930,6 +907,115 @@ func TestGenerate_StaticGoMethodCallBypassesWeavertObjGet(t *testing.T) {
 	}
 }
 
+// typedGoReaderDeclStmts mirrors goReaderDeclStmts but declares Len's
+// signature (return type only, no params) and newReader's own single
+// parameter type — the shape that turns both calls into fully native
+// ASSERT/FNTYPE/FGET/CALL dispatch (weave_spec.md §15.1/§15.2, see
+// genNativeGoMethodCall/genGoFuncCall's own doc comments).
+func typedGoReaderDeclStmts() []ast.Stmt {
+	return []ast.Stmt{
+		&ast.AssignStmt{Name: "GoReader", Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "gotype"},
+			Args: []ast.Expr{
+				&ast.StringLit{Value: "?*strings.Reader"},
+				&ast.ObjectLit{Fields: []ast.ObjectField{
+					{Name: "len", Value: &ast.CallExpr{
+						Callee: &ast.Ident{Name: "gomethod"},
+						Args:   []ast.Expr{&ast.StringLit{Value: "Len"}, &ast.StringLit{Value: "?int"}},
+					}},
+				}},
+			},
+		}},
+		&ast.AssignStmt{Name: "newReader", Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "gofunc"},
+			Args: []ast.Expr{
+				&ast.StringLit{Value: "?strings.NewReader"},
+				&ast.Ident{Name: "GoReader"},
+				&ast.StringLit{Value: "?string"},
+			},
+		}},
+		&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "newReader"},
+			Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+		}},
+	}
+}
+
+func TestGenerate_TypedGoFuncCallIsFullyNative(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: append(typedGoReaderDeclStmts(), &ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}),
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(ir, "?weavert.CallGoFunc") {
+		t.Errorf("a typed gofunc(...) call must not go through weavert.CallGoFunc, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "ASSERT\t") {
+		t.Errorf("expected the argument to be ASSERTed to its declared type, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "CALL\t") || !strings.Contains(ir, "\t?strings.NewReader\t") {
+		t.Errorf("expected a direct native CALL to ?strings.NewReader, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.NormalizeGoValue\t") {
+		t.Errorf("expected the raw result to still pass through NormalizeGoValue, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_TypedGoMethodCallIsFullyNative(t *testing.T) {
+	body := append(typedGoReaderDeclStmts(),
+		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	)
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(ir, "?weavert.CallGoMethod") {
+		t.Errorf("a typed gomethod(...) call must not go through weavert.CallGoMethod, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "FNTYPE\t^GoFn0\t:\t^int\n") {
+		t.Errorf("expected a top-level FNTYPE declaring Len's signature, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "ASSERT\t") || !strings.Contains(ir, "^*strings.Reader\n") {
+		t.Errorf("expected the receiver to be ASSERTed to ^*strings.Reader, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "FGET\t") || !strings.Contains(ir, "\t>Len\n") {
+		t.Errorf("expected a native FGET extracting the Len method value, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?float64\t") {
+		t.Errorf("expected the int result to be cast to float64 before boxing into ^any, got:\n%s", ir)
+	}
+	// The FNTYPE line must appear before FUNC !weave_main — amivm requires
+	// TYPE-series declarations outside any FUNC (amivm_spec.md §2).
+	if strings.Index(ir, "FNTYPE\t") > strings.Index(ir, "FUNC\t!weave_main") {
+		t.Errorf("expected FNTYPE to precede FUNC !weave_main, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_UntypedGoMethodCallStillUsesReflectFallback(t *testing.T) {
+	// Backward compatibility: a bare gomethod("Name") (no signature) must
+	// keep using weavert.CallGoMethod exactly as before this feature.
+	body := append(goReaderDeclStmts(),
+		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	)
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.CallGoMethod\t%r\t\"Len\"\n") {
+		t.Errorf("expected the untyped path to still route through weavert.CallGoMethod, got:\n%s", ir)
+	}
+	if strings.Contains(ir, "FNTYPE\t") || strings.Contains(ir, "ASSERT\t") {
+		t.Errorf("an untyped gomethod call must not emit any FNTYPE/ASSERT, got:\n%s", ir)
+	}
+}
+
 func TestGenerate_OrdinaryObjectMethodStillUsesDynamicDispatch(t *testing.T) {
 	// A variable that was never assigned from a gofunc(...) call must
 	// keep using the ordinary dynamic obj.method() path.
@@ -1054,5 +1140,64 @@ func TestGenerate_SelfRecursiveFuncLitReferencesOwnHoistedVar(t *testing.T) {
 	}
 	if !strings.Contains(ir, "SET\t%fact\t%__t0\n") {
 		t.Errorf("expected the closure value to still be assigned to %%fact after compiling it, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_ShapeDeclEmitsNoIR(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "PointShape", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "shape"},
+				Args: []ast.Expr{&ast.ObjectLit{Fields: []ast.ObjectField{
+					{Name: "x", Value: &ast.StringLit{Value: "number"}},
+				}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(ir, "PointShape") {
+		t.Errorf("shape(...) declaration must emit no IR referencing the Weave name itself, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_CheckShapeUsesAssertForScalarFieldsAndIsWeaveFuncForFunctions(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "S", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "shape"},
+				Args: []ast.Expr{&ast.ObjectLit{Fields: []ast.ObjectField{
+					{Name: "x", Value: &ast.StringLit{Value: "number"}},
+					{Name: "cb", Value: &ast.StringLit{Value: "function"}},
+				}}},
+			}},
+			&ast.AssignStmt{Name: "p", Value: &ast.ObjectLit{}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "checkShape"},
+				Args:   []ast.Expr{&ast.Ident{Name: "S"}, &ast.Ident{Name: "p"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.ObjGet\t%p\t\"cb\"\n") || !strings.Contains(ir, "?weavert.ObjGet\t%p\t\"x\"\n") {
+		t.Errorf("expected both fields to be read via ObjGet, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "ASSERT\t") || !strings.Contains(ir, "^float64\n") {
+		t.Errorf("expected the number field to be checked via a real ASSERT, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.IsWeaveFunc\t") {
+		t.Errorf("expected the function field to be checked via weavert.IsWeaveFunc, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.TypeError\t") {
+		t.Errorf("expected a TypeError call on the failure path, got:\n%s", ir)
 	}
 }

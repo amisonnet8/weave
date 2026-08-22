@@ -100,15 +100,20 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | 論理演算 | `AND` `OR` `NOT` |
 | 比較 | `EQ` `NEQ` `LT` `LTE` `GT` `GTE` |
 | 文字列連結 | `CONCAT single slice1 slice2 ...` |
-| ラベル・分岐 | `LABEL label` / `GOTO label` / `IF boolean1 label` |
+| ラベル・GOTO | `LABEL label` / `GOTO label`(構造化された`IF`/`LOOP`で表現できないジャンプ専用。後述) |
+| 条件分岐(ブロック形) | `IF boolean1` `ELIF boolean1` `ELSE` `ENDIF` |
+| ループ(ブロック形) | `LOOP` `BREAK` `CONTINUE` `ENDLOOP` |
+| 型アサーション | `ASSERT multi1 (multi2) variable type1` |
 | 関数定義 | `FUNC defname type1 ... : type3 ...` / `RET` / `ENDFUNC` |
 | 関数呼び出し | `CALL multi1 ... : callname value1 ...` / `DEFER` / `SPAWN` |
 | チャネル | `CHTYPE` `CHMAKE` `CHSEND` `CHRECV` |
-| select | `SEL` `CASESEND` `CASERECV` `DEFAULT` `ENDSEL` |
+| select | `SEL` `CASESEND` `CASERECV` `DEFAULT` `ENDSEL`(ケース本体はブロック形、`label`は取らない) |
 | スライス | `SLTYPE` `SLMAKE` `SLICE` |
 | 構造体 | `STTYPE` `FIELD` `ENDSTTYPE` `FSET` `FGET` |
 | map | `MPTYPE` `MPMAKE` `MSET` `MGET` `MPKEYS` |
 | クロージャー・関数型 | `FNTYPE` `CLOS` `ENDCLOS` |
+
+`IF`/`LOOP`/`CLOS`/`SEL`はいずれもネストできる(`FUNC`/`STTYPE`はネスト不可のまま)。`IF`〜`ENDIF`は`ELIF`(0個以上)・`ELSE`(0個または1個、あれば最後)を伴うブロックで、Goの`if`/`else if`/`else`にそのまま対応する。`LOOP`〜`ENDLOOP`はGoの無限`for {}`に対応し、条件付きループ(`while`相当)は`LOOP`の中で`IF`と`BREAK`を組み合わせて表現する(`amivm_spec.md`4.10〜4.11節)。旧仕様の単一行`IF boolean1 label`(`if boolean1 { goto label }`という条件付き`goto`)は**廃止され、後方互換は無い**——Weave側の対応は下記「制御構文をamivmのブロック形IF/LOOPへ全面移行」節を参照。
 
 `type1`等の「型」オペランドは`^xxx_123`のようなGo型名トークンなら何でも許容される(5節オペランドカテゴリ)。**`^any`はGoの組み込み型`any`としてそのまま通る**ため、`MPTYPE ^string ^any`という宣言自体は構文上問題なく成立する(実地検証済み)。ただしWeaveのオブジェクト表現(14節の当初案)としては、結局`MPTYPE`ではなく`weavert.Object`(`map[string]any`)へ完全に一元化することになった——構文が通ることと、Weaveの`^any`変数からネイティブにmapアクセスできることは別問題だったため(詳細は下記「オブジェクトもAMIVMのネイティブ命令を使わずweavertへ一元化」Step 6の節)。
 
@@ -565,6 +570,74 @@ amivm本体に文字列・ルーンリテラルのエスケープシーケンス
 **不正なエスケープ(`\q`、桁数不足の`\x4`、255を超える`\777`等)はWeave自身のレキサーがコンパイル時に検出し、明確なエラーメッセージで拒否する。** amivm自身の`reStringLit`はエスケープの正当性を検証せず(`\`+任意の1文字を無条件に受理し、妥当性は`go/types`の再パースに委ねる設計)、不正なエスケープをそのまま通すとamivmの`go/types`エラーという分かりにくい形でしか発覚しない。「IR生成そのものの構文的正しさはamivm呼び出し前にWeave側で検査する」という既存原則(意味検証の責任分担)を、字句解析の時点まで一段早めて適用した形。
 
 Goの実際の挙動を直接probeで確認しながら実装した点(`\'`が文字列リテラル内では`unknown escape`になる、8進エスケープは常に3桁ぴったり必要で255を超えるとエラーになる、等)は、仕様書の記憶だけに頼らず実地で裏取りする、というこのプロジェクト全体の一貫した進め方をレキサーの実装でも踏襲した。`examples/escapes.weave`で`amivm`→`go build`→実行まで実地検証済み(名前付きエスケープ・`\\`・`\"`・`\xHH`・8進・`\u`・`\U`・生の非ASCII文字を全て網羅し、`len("a\tb")`が`3`になる——エスケープが本当に1バイトへデコードされていることの確認——ことも含む)。
+
+### 制御構文をamivmのブロック形IF/LOOPへ全面移行(amivm改修を受けて追加)
+
+amivm本体に破壊的変更が入った——旧仕様の単一行`IF boolean1 label`(`if boolean1 { goto label }`という条件付き`goto`)が廃止され、`IF`/`ELIF`/`ELSE`/`ENDIF`というブロック形に置き換えられた(後方互換無し)。同時に`LOOP`/`BREAK`/`CONTINUE`/`ENDLOOP`(Goの無限`for {}`に対応)が新設され、`SEL`の`CASESEND`/`CASERECV`/`DEFAULT`も`label`を取らないブロック形になり、`IF`/`LOOP`/`CLOS`/`SEL`が全てネスト可能になった。型アサーション専用の`ASSERT`命令も追加された。Weaveの`if`/`elif`/`else`・`while`・`for-in`・`&&`/`||`短絡評価は全て旧`IF boolean1 label`+`GOTO`/`LABEL`の組み合わせで実装していたため、この変更はWeave側の**必須の追従**だった(「変えなければ動かなくなる」変更であり、「変えたほうがいい」改善ではない)。
+
+**移行方針は`ignored/seed_implementation_notes.md`・`ignored/cascade_implementation_notes.md`(ユーザーが先にSeed/Cascadeを同じ変更へ追従させ、知見をまとめておいてくれたもの)を先に読んでから設計した。** 2つの独立した言語実装が同じ移行を経験していたため、実装してから壁にぶつかるパターン(前半・後半で何度も踏んだ)を避け、既知の落とし穴を避けながら設計できた——このプロジェクトで初めて「参考実装のnotesを移行の設計フェーズで直接活用する」ケースになった。
+
+**`elif`はamivmの`ELIF`命令を使わず、`ELSE`の中に次の`IF`をネストする自前の展開にした(Seed/Cascade共通のパターンをそのまま踏襲)。** `ELIF boolean1`のオペランドは既に計算済みの値でなければならず、Weaveの`genCond`(`weavert.CheckBool`を経由するCALLが最低1つ必要)を差し込む余地が無い。全ての`elif`条件を`IF`チェーンの手前で先に計算してしまうと、elifの条件式を**遅延評価**(前の条件が偽だった場合にのみ評価する、他の言語のelifが普通に持つ意味論)する保証が失われる——副作用のある条件式で意図しない実行を招く。そこで`genIfClauses`という再帰関数で、2つ目以降の各clauseを「前のclauseの`ELSE`本体の中に丸ごとネストしたIF」として展開する(amivm自身のパーサが`ELIF`を内部でこう展開しているのと同じ形——`amivm_instruction_spec.md`16節に経緯の記載あり)。これにより各条件は「それより前の条件が全て偽だった場合にのみ」計算される、元通りの遅延評価が自然に保たれる。
+
+**`while`は`LOOP`+条件反転+`BREAK`という、amivm自身のドキュメントが示す変換パターン(`amivm_spec.md`4.11節)をそのまま採用した。** `genCond`で条件を`^bool`へ変換した後、ネイティブな`NOT`命令(`weavert`を経由しない——値は既に`^bool`のため)で反転し、`IF !cond { BREAK } ENDIF`という短い前置チェックにした(`genBreakUnless`という共有ヘルパーに切り出し、`for-in`からも再利用)。条件の再チェックが毎周回の**先頭**に来るため、ネイティブな`CONTINUE`(ループ先頭に戻る)がそのまま正しく「条件を再チェックしてから続行」という意味になる——ループ制御に`LABEL`/`GOTO`は一切不要になった。
+
+**`for-in`は、インデックスの前進を(ループ末尾ではなく)ループ先頭・境界チェックの直前に置くという構成にし、Seed/Cascadeが必要としていた`continueLabel`(`LABEL`/`GOTO`によるcontinue専用ジャンプ先)を完全に不要にした——2つの参考実装のどちらにも無かった改善。** Seed/Cascadeの`for-in`はインデックス前進をループ**末尾**(本体の後)に置く構成だったため、ネイティブな`CONTINUE`だとその前進処理を素通りしてしまい(無限ループの原因になる)、専用の`continueLabel`+`LABEL`/`GOTO`が必要だった(さらに「本体に`continue`が一度も無いとラベルが未参照になり`go/types`エラーになる」という、両実装で独立に2回踏まれたバグの温床でもあった——前半Step8で自分自身も一度踏んだのと同じ罠)。Weaveでは`idx`を`-1.0`から始め、`LOOP`の**先頭**で真っ先に`idx = idx + 1`してから境界チェック(`IF idx>=count BREAK`)する構成に変えた。これにより`continue`でループ先頭へ戻ると必ずインデックス前進を通ってから次の境界チェックに入るため、`for-in`の`break`/`continue`もネイティブな`BREAK`/`CONTINUE`だけで完結し、`continueLabel`という概念自体が発生しない。Seed/Cascadeのnotesを先に読んでいたからこそ「両実装が同じ罠を独立に踏んだ」という事実に気づけ、それを踏まえて設計段階で回避策(インデックス前進の位置をずらすだけ)を先回りできた——実装してから壁にぶつかるのではなく、他言語の実装経験を読んでから自分の設計を1段階良くできた初めての例。
+
+**`&&`/`||`の短絡評価も、`elif`と同じ「`IF`〜`ENDIF`に条件付きで右辺の評価を封じ込める」パターンへ書き直した。** 旧実装は「左辺が確定した時点でGOTOで結果ラベルへ飛ぶ/飛ばない」という分岐だったが、新実装は`IF <左辺が右辺の評価を要する条件> { <右辺を計算しCheckBoolで上書き> } ENDIF`という単純な形になった(`&&`は左が真の時だけ、`||`は左が偽の時だけ右辺を評価——後者はネイティブ`NOT`で反転してから`IF`に渡す)。**Seed/Cascadeのnotesは`&&`/`||`の真の短絡評価についてはノーヒントだった**(両実装とも短絡評価を必要とせず、amivmネイティブの`AND`/`OR`命令——両オペランドを無条件evalしてからGoの`&&`/`||`へ委譲するだけ——をそのまま使っていたため)。Weaveはこの一点だけ、`elif`の「`ELSE`へネストする」トリックを式レベルに応用するという自前の設計が必要だった。
+
+**VARの巻き上げ(`funcGen.decls`、関数/CLOS本体の先頭へ全`VAR`をまとめる仕組み)は、Seed/Cascade同様、意図的に維持した——ただし維持する理由そのものが変わった、という点を正確に記録しておく。** 従来この仕組みは「`goto`が変数宣言を飛び越えられない」というGoの制約を避けるためだった(seed_implementation_notes.md §1、このプロジェクト最重要の地雷として長らく記録されてきたもの)。`IF`/`LOOP`が実在するGoのネストしたブロックになった今、この意味での`goto`回避はもう起きない(ブロック内で`VAR`を宣言してもgotoに飛び越えられる心配が無い)。**しかし別の理由で巻き上げは依然として必要と判断した**: `funcGen`は元々「1つの`funcGen`につき1つのフラットな`declared`集合」というモデルで、Weaveの代入セマンティクス(§10「代入は既存を再代入優先」——`if`分岐の中で初めて代入された名前を、その`if`を抜けた後の兄弟ブロックや後続の文からも同じGo変数として再代入できる)を実現していた。もし`VAR`を巻き上げず宣言位置にそのまま置いてしまうと、`IF`/`LOOP`が今や本物のGoブロックスコープを作る以上、そのブロックの外からは`go/types`が「undefined」を返す——巻き上げていた頃には存在しなかった、新しい壊れ方をする。**巻き上げを外す(=Weave自身のスコープ実装をブロックスコープ対応に作り直す)のは今回のスコープ外と判断し、Seed/Cascade両方の notes・CLAUDE.mdが下した同じ結論(「理論上は不要になったが、外すコストに対して得られるものが薄い」)をそのまま踏襲した**。
+
+**`break`/`continue`は`funcGen`の`breakStack`/`continueStack`/`newLabel`/`labelCount`を丸ごと削除し、常にネイティブな`BREAK`/`CONTINUE`を直接出力するだけになった。** 「最も内側のループを対象にする」という`weave_spec.md`7節の意味論が、Go自身の`break`/`continue`の意味論とちょうど一致するため、どのループを対象にするかを追跡するスタック自体が丸ごと不要になった(above の`for-in`改善と合わせて、Weaveには`LABEL`/`GOTO`を要する制御構文が現時点で一つも無い——Seed/Cascadeは`switch`相当の構文やGOTO必須の`for-in`が残っていたが、Weaveの言語仕様にそもそも`switch`が無く、`for-in`もインデックス前進の位置替えで解消できたため)。
+
+**`ASSERT`(型アサーション)は今回未使用のまま。** Weaveの値は全て`^any`だが、演算子・比較・プロパティアクセスは全て`weavert`のランタイム関数(`any`引数のまま動く)に一元化する設計(Step 3等)であり、`ASSERT`で`any`から具体的なGo型を取り出す動機がそもそも無い。Seed/Cascadeも(`any`相当の型を持たないため)未使用——3言語ともここまでは同じ結論に至っている。**この判断はこの直後の「Go資産境界への型ヒント」節で覆ることになる——ただし演算子側(`ADD`/`EQ`等)ではなく、Go資産境界(`gotype`/`gomethod`/`gofunc`)の方でだった。** 経緯は次節参照。
+
+実地検証: `examples/`直下14個の単一ファイルサンプル・`examples/modules/`を`amivm`(新バージョン)→`go build`→実行まで全て再実行し、移行前と出力が完全一致することを確認した(`control_flow.weave`のような`if`/`elif`/`else`/`while`/`&&`/`||`を最も密に使うサンプルも含む)。単体テストも、旧`labelsBalance`ヘルパー(`LABEL`/`GOTO`の対応関係を検査)を`blocksBalance`(`IF`/`ELSE`/`ENDIF`・`LOOP`/`ENDLOOP`のネスト対応、および`BREAK`/`CONTINUE`が必ず開いた`LOOP`の中にあることを検査するスタックベースの検査)へ全面的に書き換えて、同水準の構造検証を維持した。
+
+### Go資産境界への型ヒント(`ASSERT`の初活用、ブロック形IF/LOOP移行の直後に追加)
+
+ユーザーとの設計協議(「`ASSERT`は使えないか」という問いかけから始まり、複数回の設計見直しを経た)を受けて、`gotype`/`gomethod`/`gofunc`(15節)に**任意の型ヒント**を追加した(weave_spec.md §15.4)。
+
+**目的は速度ではなく安全性・保守性——TypeScriptに対するJavaScript、Pythonの型ヒントと同じ位置づけ、という点を明確にした上で設計した。** 検討の初期段階では「`ASSERT`でreflectを避けられれば速くなるはず」という前提で始まったが、ユーザーからの指摘で前提そのものを訂正した:`weavert.CallGoMethod`のシグネチャ(`target any`)を見ると、呼び出し側でレシーバーを`ASSERT`しておいても関数境界を越える時点で`any`に戻ってしまい、内部のreflectは消えない。速度を主目的にするなら「メソッドのシグネチャそのものをamivmの`FNTYPE`として宣言し、呼び出しをネイティブな`FGET`+`CALL`に置き換える」という、もっと大掛かりな変更が要る——という指摘を受けて、目的を「速度」から「安全性(間違った型を渡した時に、reflectの生の失敗ではなく分かりやすいWeaveのエラーで即座に落ちる)」へ転換した。
+
+**検討過程で2つの代替案を評価し、どちらも見送った。**
+
+1. **Weave自身のオブジェクト(`{x:1,y:2}`)への型ヒントの拡張**: 見送り。`ASSERT`はGoの具体的な型を判定する命令であり、Weaveのオブジェクトは常に`weavert.Object`という単一のGo型でしか無い(中身の"形"は`map[string]any`の値の違いでしかなく、Go型としては区別が無い)。`ASSERT`で何かを検証しようとしても、常に成功する自明な検査にしかならない
+2. **`gomethod`のシグネチャ指定を必須化(任意ではなく)**: 見送り。任意指定と比べて得られる安全性上の利益は同じ(どのみち指定した場合だけ検証するので)。違いは「シグネチャを書かなくていい今の書き味」を全ユーザーに強制的に失わせるだけで、得るものが無く失うものだけがある
+
+**最終的に採用したのは「型を書けば`ASSERT`でネイティブ・厳格に、書かなければ今まで通りreflectで緩く」という、`gotype`/`gomethod`/`gofunc`共通の1つのルールだった。**
+
+- `gotype`の第1引数(`"?pkg.Type"`)に、ポインタなら`*`を追加できるようにした(`"?*strings.Reader"`)。これまで`GoTypeInfo.GoName`は宣言時に保存されるだけで**どこからも参照されない死んだフィールド**だったと判明し(実装前の調査で発見)、今回初めて`ASSERT`の対象型として使われるようになった
+- `gomethod(名前, 戻り値型, 引数型1, ...)`という2引数以上の形を追加。**戻り値の型を宣言するかどうかが「型ヒント経路に入るかどうか」の判定基準**になる(`GoMethodInfo.ReturnType != ""`)。宣言された場合、`internal/codegen/goasset.go`の`genNativeGoMethodCall`が、レシーバーを`ASSERT`→各引数を`ASSERT`→`FNTYPE`(呼び出しごとに一意な名前を新規発行、重複排除はしない——コストが低いため)→`FGET`でメソッド値取得→ネイティブ`CALL`、という完全にreflectを経由しない列を生成する。数値系の戻り値は`CALL ?float64`でキャストしてから`^any`へ`SET`、それ以外はそのまま`SET`する(戻り値の型が静的に分かっているので、`weavert.NormalizeGoValue`の実行時type-switchが丸ごと不要になる)
+- `gofunc(関数名, プロトタイプ, 引数型1, ...)`という3引数以上の形を追加。**`gomethod`と違い、戻り値の型は宣言不要——これは意図的な非対称性であり、見落としではない。** `gofunc`が呼ぶのは`?pkg.Func`という実在のGo関数参照そのものであり、`FNTYPE`+`FGET`のような「型付きメソッド値を事前に取り出す」手順が要らず、`CALL %result : ?pkg.Func arg1 arg2`と直接呼べる(`%result`を`^any`で宣言しておけば、Goは具体型の戻り値を`any`へ暗黙にボックスしてくれるため、戻り値の型を知らなくても呼び出し自体は成立する)。戻り値の数値正規化だけは、型が分からない以上`weavert.NormalizeGoValue`(reflect不使用、ただの型switch)に頼る——**`gomethod`が`FNTYPE`のために戻り値の型を要求するのに対し、`gofunc`は直接呼べる実在の関数参照だからこそ要求しない**、という構造的な違いを実装前の分析で見抜けた
+
+**実装中に見つけた実装バグ: `ASSERT`の`variable`オペランドはリテラルを受け付けない。** `ASSERT %concrete %ok "リテラル文字列" ^string`のように、引数がWeaveの文字列リテラルそのものだった場合、amivmが「変数参照にこの形式は使えません」とエラーを返した——`ASSERT`の第3オペランド(`variable`カテゴリ)は`$N`/`&N`/`%xxx`/`@xxx`/`@xxx.yyy`のみを許し、他の多くのカテゴリと違ってリテラルを含まないため(amivm_spec.md 5節)。対策として`ensureVariable`ヘルパーを新設し、ASSERTする値がまだ`%`/`@`/`$`/`&`で始まる変数参照でなければ、まず`^any`の一時変数へ`SET`してからASSERTするようにした——`genExpr`が非変数トークンを返すのは数値・文字列・真偽値・nilの4つのリテラルケースだけと分かっていたので、判定は先頭1文字を見るだけで済んだ。実地検証(`examples/gomethods.weave`を`amivm`→`go build`→実行)で初めて発覚し、修正後は正常に動作した。
+
+**エラーメッセージ整形だけは`weavert`に残した(`weavert.TypeError`)。** ASSERTが失敗した場合の分岐(`NOT`+`IF`+`ENDIF`、今回のIF/LOOPブロック化の恩恵でここも素直に書けた)自体はネイティブだが、「期待した型・実際の値の動的型を含む分かりやすいメッセージを組み立てる」処理は、`%T`のようなGoのformat verbを使わない限りネイティブ命令だけでは実現できない(`print`/`string(...)`が`weavert`を要するのと全く同じ理由)。この1点だけは「ネイティブ命令だけでは原理的にできない仕事」として`weavert`に残した——「型が分かっている場合はASSERT+ネイティブ、わからない場合(またはエラー整形のような原理的にネイティブ化できない仕事)だけweavert」という、このプロジェクト全体を貫く判断軸がここでも一貫して働いた。
+
+`examples/gomethods.weave`を型ヒント付きの形(`"?*strings.Reader"`・`gomethod("Len", "?int")`・`gofunc(..., "?string")`)へ書き換え、`amivm`→`go build`→実行まで再検証(`12`/`20`/`true`/終了コード`12`、旧実装時と出力一致)。型が一致しない引数を渡すケース(数値をGoの`string`引数へ渡す)も個別に実地検証し、`weave: argument 1 to ?strings.NewReader: expected ^string, got float64`という意図通りの分かりやすいエラーで停止することを確認した。型ヒントを書かない既存の書き方(`examples/goassets.weave`・`examples/integration.weave`)は無変更で動作継続を確認済み(完全な後方互換)。
+
+### Weave自身のオブジェクトへの型ヒント: `shape`/`checkShape`(Go資産境界の型ヒントの直後に追加)
+
+上記のGo資産境界向け型ヒントを実装した直後、ユーザーから「Weave自身のオブジェクトにも同じことをしたい」という要望があった。当初(このユーザーとの協議より前の段階)は「`ASSERT`はGoの具体的な型を判定する命令であり、Weaveのオブジェクトは常に`weavert.Object`という単一のGo型でしかないので効かない」と判断し、`checkShape`を`weavert`の汎用ヘルパー関数だけで実装する設計を出したが、**この判断は誤りだった**——ユーザーから「本当にASSERTは使えないのか」と再度問われて再検討したところ、次の点を見落としていたと判明した。
+
+**「オブジェクトのコンテナ自体の型」と「プロパティ1つ1つの値の型」を混同していた。** `weavert.Object`という単一のGo型しか持たないのは事実だが(コンテナレベルでは`ASSERT`は意味を持たない)、**各プロパティの値**(`ObjGet`で取り出した`any`)は、実際には数値・文字列・真偽値・別のオブジェクト・関数のいずれかであり、これは`gomethod`の引数チェックと全く同じ「`any`→具体型」の判定問題である。つまり`ASSERT %px %ok %pxAny ^float64`のような、プロパティ単位での`ASSERT`はそのまま成立する。実装前に`weavert.Object`が本物の名前付きGo型(`type Object map[string]any`)であることを確認し(`NewObject`が一貫して`Object{}`を返すため、Weaveの全オブジェクトは実行時に確実にこの型を持つ)、`ASSERT ... ^weavert.Object`(ネストしたオブジェクトの検証)も自明にならない、意味のある検査だと確認できた。
+
+**唯一、本当に`ASSERT`が効かないのは`function`(関数プロパティ)だった。** Weaveのクロージャーは`internal/codegen/closure.go`の`genFuncLit`が`CLOS %x ^any : ^any`という**無名の**`func(any) any`型として生成する(事前に`FNTYPE`で名前付き型を宣言することはしていない)。Goの型アサーションは「インタフェースの動的型が厳密に一致するか」を見るため、無名の関数型を持つ値を名前付き型(`^WeaveFn`のような)へ`ASSERT`しようとしても常に失敗する——シグネチャの形が合っていても、名前付き型と無名型は別物として扱われる。これを直すには全クロージャーの生成方式(`CLOS`の型宣言)自体を変える必要があり、shapeチェック1つのために持ち出す変更としては影響範囲が大きすぎると判断し、`function`だけは`weavert.IsWeaveFunc`という最小限のヘルパー(`reflect.TypeOf(v).Kind() == reflect.Func`だけを見る、値を実際に呼び出さない)で代替した。**これは`CallGoMethod`が避けようとしていた「reflectコスト」とは性質が違う**——`reflect.Value.Call`(実際に呼び出す、コストが高い)ではなく`reflect.Kind()`(種別を尋ねるだけ、ほぼノーコスト)なので、Go資産境界の型ヒントが目指した「reflectの重い経路を避ける」という原則には抵触しないと判断した。
+
+**設計:**
+
+```
+PointShape = shape({ x: "number", y: "number" })
+checkShape(PointShape, p)
+```
+
+- `shape({プロパティ名: "種類", ...})`は`gotype`と同じく実行時のIRを一切生成しない、コンパイル時のみの宣言(`internal/sema/shape.go`・`internal/codegen/shape.go`)。種類は`number`/`string`/`bool`/`object`/`function`の5つの固定語彙(Weave自身の値の種類、weave_spec.md §2に対応——Go型の生の文字列を書く`gotype`とは対照的)
+- `checkShape(shape宣言名, 値)`は、`gomethod`/`gofunc`と違って**動的フォールバックが存在しない**——`shape(...)`自体が実行時の値を一切持たない(`gotype`と同じ)ため、第1引数が常にコンパイル時に`shape(...)`宣言だと確定できなければ、そもそもエラーにする以外の選択肢が無い。sema側では`checkShape`の第1引数を通常のスコープ(`sc`)ではなく専用のテーブル(`c.shapes`)で検証する——`gofunc`の`proto`引数(`GoReader`)が`sc`を経由せず`c.goTypes`で検証されるのと全く同じパターン
+- `internal/codegen/shape.go`の`genCheckShapeCall`が、宣言された各プロパティを`ObjGet`で取り出し→`number`/`string`/`bool`/`object`は`goasset.go`の`genAssertOrTypeError`をそのまま再利用(Go資産境界と全く同じヘルパー)→`function`だけ`weavert.IsWeaveFunc`+手動の`NOT`/`IF`/`ENDIF`、という列を生成する。フィールドの列挙順はGoのmapイテレーションがランダムなため`sort.Strings`で固定した(Step8の`ObjKeys`が同じ理由でソートしているのと同じ判断)
+
+**`package(...)`との関係も実地検証した。** `shape`/`checkShape`は`gotype`/`gofunc`と全く同じ「`name = 予約呼び出し(...)`」パターンなので、`internal/modloader`が特別扱いする必要は無いはずだと予測し、実際に非ルートパッケージで`shape(...)`宣言を行い、ルート側から`パッケージ名.ShapeName`という形で`checkShape`に渡すサンプルを実地検証したところ、**modloader側の変更を一切加えずに動作した**——トップレベル束縛の機械的なリネーム(`collectRenames`)がshape宣言にも無差別に適用され、`修飾子.名前`のASTレベル書き換え(`rewrite.go`)もそのまま効くため。Go資産の型ヒント(gotype/gomethod/gofunc)も同じ理屈でパッケージをまたいで動くはずだと今回の検証で確認できた(明示的なテストは無かったが、同じメカニズムに依拠しているため今回のshapeの検証がその裏付けにもなる)。
+
+`examples/shapes.weave`を新設し、number/string/bool/object/functionの全種類を含むshapeを`amivm`→`go build`→実行まで実地検証した。number型不一致・function型不一致・プロパティ欠落(`nil`として`ObjGet`されるため型不一致になる)の3つの失敗ケースも個別に実地検証し、いずれも`weave: property "x" of shape PointShape: expected ^float64, got string`のような分かりやすいエラーで意図通り停止することを確認した。
 
 ## 開発の進め方
 

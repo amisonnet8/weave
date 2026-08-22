@@ -124,6 +124,7 @@ type checker struct {
 	loopDepth int
 	goTypes   map[string]*GoTypeInfo
 	goFuncs   map[string]*GoFuncInfo
+	shapes    map[string]*ShapeInfo // shape.go's shape(...) declarations
 
 	// goStaticVars tracks the narrow case Step 4 actually resolves
 	// statically: a plain variable's most recent assignment came
@@ -189,6 +190,9 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 	case *ast.AssignStmt:
 		if call, ok := s.Value.(*ast.CallExpr); ok {
 			if handled, err := c.checkGoDecl(s.Name, call, s.Line); handled {
+				return err
+			}
+			if handled, err := c.checkShapeDecl(s.Name, call, s.Line); handled {
 				return err
 			}
 		}
@@ -281,6 +285,14 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 	case *ast.NumberLit, *ast.StringLit, *ast.BoolLit, *ast.NilLit:
 		return nil
 	case *ast.CallExpr:
+		if callee, ok := e.Callee.(*ast.Ident); ok && callee.Name == "checkShape" {
+			// checkShape's first argument is a shape(...) name, never an
+			// ordinary in-scope value (shape.go's checkCheckShapeCall
+			// validates it directly) — handled entirely separately from
+			// the generic arg-checking loop below, which would otherwise
+			// reject it as an undefined name.
+			return c.checkCheckShapeCall(e, sc)
+		}
 		switch callee := e.Callee.(type) {
 		case *ast.Ident:
 			if why, ok := goAssetReservedName(callee.Name); ok {
@@ -294,7 +306,7 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 				}
 			}
 		case *ast.PropExpr:
-			if err := c.checkGoMethodCall(callee, sc); err != nil {
+			if err := c.checkGoMethodCall(callee, e.Args, sc); err != nil {
 				return err
 			}
 		default:

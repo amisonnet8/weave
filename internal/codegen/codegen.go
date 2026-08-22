@@ -55,12 +55,41 @@ type codegenCtx struct {
 	// references — see genGoDecl's doc comment.
 	goTypes map[string]*GoTypeInfo
 	goFuncs map[string]*GoFuncInfo
+
+	// shapes are populated as `shape(...)` declarations are compiled
+	// (shape.go) and consulted by later checkShape(...) calls.
+	shapes map[string]*ShapeInfo
+
+	// goFnTypeCount mints unique names for the FNTYPE declarations a
+	// typed gomethod(...) call needs (goasset.go's genNativeGoMethodCall)
+	// — one per call site, never deduplicated by signature (simpler, and
+	// the cost of a handful of extra top-level type decls is negligible).
+	goFnTypeCount int
+
+	// topLevelDecls collects IR lines that must sit outside any FUNC —
+	// currently only the FNTYPE lines above. Emitted by Generate() before
+	// FUNC !weave_main, since funcGen.body/decls are both scoped inside
+	// one FUNC/CLOS and have nowhere to put a package-level declaration.
+	topLevelDecls []string
+}
+
+// newGoFnType mints and records a fresh top-level FNTYPE declaration
+// (paramTypes -> returnType, all already-converted `^`-prefixed AMIVM
+// type tokens) and returns its deftype name, ready to use in an FGET.
+func (ctx *codegenCtx) newGoFnType(paramTypes []string, returnType string) string {
+	name := fmt.Sprintf("^GoFn%d", ctx.goFnTypeCount)
+	ctx.goFnTypeCount++
+	ctx.topLevelDecls = append(ctx.topLevelDecls,
+		fmt.Sprintf("FNTYPE\t%s%s\t:\t%s\n", name, argSuffix(paramTypes), returnType))
+	return name
 }
 
 // funcGen accumulates one AMIVM FUNC or CLOS body's VAR declarations
 // (hoisted to the top, in first-declared order) and its
-// SET/CALL/GOTO/LABEL/IF/RET instructions (left in source order).
-// weave_main's own funcGen (parent == nil) maps to the top-level FUNC;
+// SET/CALL/IF/LOOP/RET instructions (left in source order, nested
+// IF/ELSE/ENDIF and LOOP/BREAK/CONTINUE/ENDLOOP blocks included — see
+// genIfStmt/genWhileStmt/genForStmt). weave_main's own funcGen (parent
+// == nil) maps to the top-level FUNC;
 // every closure literal (weave_spec.md §5) gets its own funcGen (see
 // genFuncLit) mapping to a CLOS nested inline at the point the literal
 // appears, parented at whichever funcGen was active there — arbitrarily
@@ -86,24 +115,34 @@ type codegenCtx struct {
 // itself uses. See genFuncLit's doc comment for the closure-compilation
 // side of this.
 //
-// Every VAR — no matter how deeply nested the if/while that introduces
-// it — ends up hoisted ahead of any GOTO/LABEL in the *same* funcGen,
-// which is required by Go's "goto cannot jump over a variable
-// declaration" rule (seed_implementation_notes.md §1); crossing into a
-// nested CLOS starts a fresh hoisting region, since that's a separate Go
-// func literal with its own goto/label namespace.
+// Every VAR — no matter how deeply nested the if/while/for that
+// introduces it — is still hoisted to the very top of its funcGen,
+// ahead of any IF/LOOP block. This is no longer required to dodge Go's
+// "goto cannot jump over a variable declaration" rule (amivm's IF/LOOP
+// are real nested Go blocks now, not goto-based — see genIfStmt/
+// genWhileStmt's own doc comments, and ignored/weave_implementation_notes.md's
+// note on the AMIVM block-form migration) — but it is still required
+// for a different reason: the flat, single `declared` set this funcGen
+// doc comment describes above (needed for Weave's own "reassign
+// whichever enclosing binding is visible" scoping, §10) only stays
+// correct if every VAR it tracks is *actually* reachable as a plain Go
+// variable from anywhere else in the same funcGen. A VAR declared
+// in-place inside a nested IF/LOOP body would be confined to that
+// block's own Go scope, making it invisible (a go/types "undefined")
+// from a later sibling block that Weave's own scoping rules say should
+// still see it. Hoisting to the function top keeps every VAR in one
+// scope broad enough for the flat reuse scheme to keep working; crossing
+// into a nested CLOS starts a fresh hoisting region, since that's a
+// separate Go func literal with its own scope.
 type funcGen struct {
-	ctx           *codegenCtx
-	parent        *funcGen // nil only for weave_main's own top-level funcGen
-	namePrefix    string   // unique per funcGen instance; "" for weave_main itself
-	isMain        bool     // true only for weave_main's own funcGen — see genReturnStmt
-	decls         []string
-	declared      map[string]bool // names (bare, unprefixed) declared directly in THIS funcGen
-	body          strings.Builder
-	tempCount     int
-	labelCount    int
-	breakStack    []string // target label for `break`, innermost last
-	continueStack []string // target label for `continue`, innermost last
+	ctx        *codegenCtx
+	parent     *funcGen // nil only for weave_main's own top-level funcGen
+	namePrefix string   // unique per funcGen instance; "" for weave_main itself
+	isMain     bool     // true only for weave_main's own funcGen — see genReturnStmt
+	decls      []string
+	declared   map[string]bool // names (bare, unprefixed) declared directly in THIS funcGen
+	body       strings.Builder
+	tempCount  int
 
 	// goStaticVars mirrors sema's own tracking (internal/sema/goasset.go's
 	// trackGoStaticVar) — kept per-funcGen, not on codegenCtx, since it
@@ -166,16 +205,6 @@ func (fg *funcGen) newTemp(irType string) string {
 	return "%" + fg.declare(name, irType)
 }
 
-// newLabel returns a fresh, unique `#name` label token prefixed with
-// prefix (e.g. "if_then3"). Labels need no VAR-style hoisting or
-// reservation: they're never user-facing (weave_spec.md has no goto),
-// so they can't collide with anything sema tracks.
-func (fg *funcGen) newLabel(prefix string) string {
-	name := fmt.Sprintf("%s%d", prefix, fg.labelCount)
-	fg.labelCount++
-	return name
-}
-
 // Generate lowers a checked *ast.File into AMIVM-IR text.
 func Generate(file *ast.File) (string, error) {
 	ctx := &codegenCtx{}
@@ -189,6 +218,11 @@ func Generate(file *ast.File) (string, error) {
 	}
 
 	var b strings.Builder
+	// FNTYPE declarations (typed gomethod(...) calls, goasset.go's
+	// newGoFnType) must sit outside any FUNC — emit them first.
+	for _, d := range ctx.topLevelDecls {
+		b.WriteString(d)
+	}
 	// Every closure literal compiled while generating weave_main is now
 	// an inline, nested CLOS block already sitting inside fg.body (see
 	// genFuncLit) — nothing to emit separately here.
@@ -236,10 +270,14 @@ func genStmt(fg *funcGen, stmt ast.Stmt) error {
 	case *ast.ForStmt:
 		return genForStmt(fg, s)
 	case *ast.BreakStmt:
-		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", fg.breakStack[len(fg.breakStack)-1])
+		// Native BREAK/CONTINUE (amivm's LOOP/ENDLOOP block form) always
+		// target the innermost enclosing LOOP, exactly matching
+		// weave_spec.md §7's own semantics — no label bookkeeping needed
+		// at all (see genWhileStmt/genForStmt's doc comments).
+		fg.body.WriteString("\tBREAK\n")
 		return nil
 	case *ast.ContinueStmt:
-		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", fg.continueStack[len(fg.continueStack)-1])
+		fg.body.WriteString("\tCONTINUE\n")
 		return nil
 	case *ast.PropAssignStmt:
 		return genPropAssignStmt(fg, s)
@@ -249,74 +287,83 @@ func genStmt(fg *funcGen, stmt ast.Stmt) error {
 }
 
 // genIfStmt lowers `if cond {...} elif cond2 {...} else {...}`
-// (weave_spec.md §7). Each clause becomes: evaluate its condition,
-// jump into its body if true, otherwise fall through to the next
-// clause's check; every body ends by jumping to the shared end label.
-// Mirrors Seed/Cascade's genIfStmt pattern (cascade_implementation_notes.md
-// "パーサの実装方式" / Step 5 note).
+// (weave_spec.md §7) to amivm's block-form IF/ELSE/ENDIF (never the
+// ELIF token): each further clause becomes a nested IF inside the
+// previous one's ELSE, exactly mirroring how amivm's own parser
+// desugars ELIF internally. This is deliberate, not just a style
+// choice — ELIF's own condition operand must already be a plain value
+// by the time that line is reached, with no room to emit the CALL
+// instructions Weave's genCond always needs (even `if true {}` routes
+// through weavert.CheckBool). Nesting instead means each clause's
+// condition is only computed once every earlier one's ELSE branch is
+// actually entered, preserving elif's normal lazy/short-circuit
+// evaluation (ignored/seed_implementation_notes.md §2.1).
 func genIfStmt(fg *funcGen, s *ast.IfStmt) error {
-	endLabel := fg.newLabel("if_end")
-	for _, clause := range s.Clauses {
-		cond, err := genCond(fg, clause.Cond)
-		if err != nil {
-			return err
-		}
-		thenLabel := fg.newLabel("if_then")
-		nextLabel := fg.newLabel("if_next")
-		fmt.Fprintf(&fg.body, "\tIF\t%s\t#%s\n", cond, thenLabel)
-		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", nextLabel)
-		fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", thenLabel)
-		if err := genBlock(fg, clause.Body); err != nil {
-			return err
-		}
-		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", endLabel)
-		fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", nextLabel)
+	return genIfClauses(fg, s.Clauses, s.Else)
+}
+
+func genIfClauses(fg *funcGen, clauses []ast.IfClause, elseBody []ast.Stmt) error {
+	if len(clauses) == 0 {
+		return genBlock(fg, elseBody)
 	}
-	if s.Else != nil {
-		if err := genBlock(fg, s.Else); err != nil {
+	cond, err := genCond(fg, clauses[0].Cond)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(&fg.body, "\tIF\t%s\n", cond)
+	if err := genBlock(fg, clauses[0].Body); err != nil {
+		return err
+	}
+	rest := clauses[1:]
+	if len(rest) > 0 || elseBody != nil {
+		fg.body.WriteString("\tELSE\n")
+		if err := genIfClauses(fg, rest, elseBody); err != nil {
 			return err
 		}
 	}
-	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", endLabel)
+	fg.body.WriteString("\tENDIF\n")
 	return nil
 }
 
-// genWhileStmt lowers `while cond {...}` (weave_spec.md §7). break/
-// continue targets are pushed for the body and popped afterward, so
-// nested loops each resolve to their own innermost labels.
+// genWhileStmt lowers `while cond {...}` (weave_spec.md §7) to amivm's
+// block-form LOOP: the condition is (re)checked at the very top of each
+// iteration, so a native CONTINUE landing back at LOOP's start re-enters
+// exactly there — no GOTO/LABEL needed for either break or continue
+// (contrast genForStmt, which needs its own per-iteration bookkeeping
+// done *before* the check for the same reason to stay label-free too).
 func genWhileStmt(fg *funcGen, s *ast.WhileStmt) error {
-	startLabel := fg.newLabel("while_start")
-	bodyLabel := fg.newLabel("while_body")
-	endLabel := fg.newLabel("while_end")
-
-	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", startLabel)
+	fg.body.WriteString("\tLOOP\n")
 	cond, err := genCond(fg, s.Cond)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(&fg.body, "\tIF\t%s\t#%s\n", cond, bodyLabel)
-	fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", endLabel)
-	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", bodyLabel)
-
-	fg.breakStack = append(fg.breakStack, endLabel)
-	fg.continueStack = append(fg.continueStack, startLabel)
-	err = genBlock(fg, s.Body)
-	fg.breakStack = fg.breakStack[:len(fg.breakStack)-1]
-	fg.continueStack = fg.continueStack[:len(fg.continueStack)-1]
-	if err != nil {
+	genBreakUnless(fg, cond)
+	if err := genBlock(fg, s.Body); err != nil {
 		return err
 	}
-
-	fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", startLabel)
-	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", endLabel)
+	fg.body.WriteString("\tENDLOOP\n")
 	return nil
 }
 
+// genBreakUnless emits `IF !cond { BREAK } ENDIF` — the `while cond
+// {...}` -> `LOOP { <check> ... } ENDLOOP` translation amivm's own docs
+// show for expressing a conditional loop with LOOP's unconditional
+// `for {}` (amivm_spec.md §4.11). cond must already be a Go-native
+// ^bool (genCond's job) — NOT is the plain native negation, no weavert
+// call needed since the value is already boolean-typed.
+func genBreakUnless(fg *funcGen, cond string) {
+	notCond := fg.newTemp("^bool")
+	fmt.Fprintf(&fg.body, "\tNOT\t%s\t%s\n", notCond, cond)
+	fmt.Fprintf(&fg.body, "\tIF\t%s\n", notCond)
+	fg.body.WriteString("\tBREAK\n")
+	fg.body.WriteString("\tENDIF\n")
+}
+
 // genCond lowers a condition expression and asserts it down to a
-// Go-native ^bool temp via weavert.CheckBool. AMIVM's IF instruction
-// compiles to a bare Go `if cond { goto label }`, which requires cond to
-// be concretely bool-typed — an `any` holding a bool does not
-// type-check there, so every branch condition (if/elif/while, and the
+// Go-native ^bool temp via weavert.CheckBool. amivm's IF/ELIF (and
+// LOOP's own break-unless check) require their operand to already be
+// concretely bool-typed — an `any` holding a bool does not type-check
+// there, so every branch condition (if/elif/while/for-in, and the
 // short-circuit && / || in genShortCircuit) must go through this.
 func genCond(fg *funcGen, expr ast.Expr) (string, error) {
 	val, err := genExpr(fg, expr)
@@ -361,6 +408,9 @@ func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 		if handled, err := genGoDecl(fg, s.Name, call); handled {
 			return err
 		}
+		if handled, err := genShapeDecl(fg, s.Name, call); handled {
+			return err
+		}
 	}
 	tok, bound := fg.resolve(s.Name)
 	if !bound {
@@ -395,6 +445,9 @@ func genExprStmt(fg *funcGen, s *ast.ExprStmt) error {
 // (genBuiltinCall) and a general call to a Weave function value
 // (genGeneralCall) — see builtinNames.
 func genCallExpr(fg *funcGen, call *ast.CallExpr) (string, error) {
+	if callee, ok := call.Callee.(*ast.Ident); ok && callee.Name == "checkShape" {
+		return genCheckShapeCall(fg, call)
+	}
 	if callee, ok := call.Callee.(*ast.Ident); ok && builtinNames[callee.Name] {
 		return genBuiltinCall(fg, callee.Name, call)
 	}
@@ -722,41 +775,41 @@ func genBinaryExpr(fg *funcGen, e *ast.BinaryExpr) (string, error) {
 }
 
 // genShortCircuit lowers `&&`/`||` with real short-circuit evaluation:
-// the right operand's code only runs along the branch where it actually
-// matters. This replaces the eager weavert.And/Or call Step 3 used (see
-// CLAUDE.md's Step 3 "確定した設計判断", which flagged this as a known
-// gap to fix once branching existed) — And/Or were removed from
-// weavert/ops.go since nothing calls them anymore.
+// the right operand's code (and any side effects it has) only runs
+// along the branch where it actually matters — using amivm's block-form
+// IF/ENDIF (there is no native AND/OR-with-short-circuit instruction:
+// amivm's own AND/OR always evaluate both operands first, see
+// amivm_spec.md §4.6). This replaces the eager weavert.And/Or call
+// Step 3 used (see CLAUDE.md's Step 3 "確定した設計判断", which flagged
+// this as a known gap to fix once branching existed) — And/Or were
+// removed from weavert/ops.go since nothing calls them anymore.
 //
 // The result temp doubles as the left operand's already-checked ^bool:
 // genCond leaves `x`'s truth value sitting in a fresh temp, and
 // whichever branch below is taken either leaves it alone (the
-// short-circuited case) or overwrites it with the right operand's
-// checked value.
+// short-circuited case, IF's condition false) or overwrites it with the
+// right operand's checked value (IF's condition true, body runs).
 func genShortCircuit(fg *funcGen, e *ast.BinaryExpr) (string, error) {
 	result, err := genCond(fg, e.X)
 	if err != nil {
 		return "", err
 	}
 
-	endLabel := fg.newLabel("sc_end")
-	if e.Op == "&&" {
-		// x false -> short-circuit to false (skip evaluating y entirely).
-		rhsLabel := fg.newLabel("sc_rhs")
-		fmt.Fprintf(&fg.body, "\tIF\t%s\t#%s\n", result, rhsLabel)
-		fmt.Fprintf(&fg.body, "\tGOTO\t#%s\n", endLabel)
-		fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", rhsLabel)
-	} else {
-		// x true -> short-circuit to true (skip evaluating y entirely).
-		fmt.Fprintf(&fg.body, "\tIF\t%s\t#%s\n", result, endLabel)
+	// `&&`: only evaluate y (and possibly flip result to false) when x
+	// was true. `||`: only evaluate y (and possibly flip result to true)
+	// when x was false — so guard on NOT result instead.
+	guard := result
+	if e.Op == "||" {
+		guard = fg.newTemp("^bool")
+		fmt.Fprintf(&fg.body, "\tNOT\t%s\t%s\n", guard, result)
 	}
-
+	fmt.Fprintf(&fg.body, "\tIF\t%s\n", guard)
 	y, err := genExpr(fg, e.Y)
 	if err != nil {
 		return "", err
 	}
 	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.CheckBool\t%s\n", result, y)
-	fmt.Fprintf(&fg.body, "\tLABEL\t#%s\n", endLabel)
+	fg.body.WriteString("\tENDIF\n")
 	return result, nil
 }
 
