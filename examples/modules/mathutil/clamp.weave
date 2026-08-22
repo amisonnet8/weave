@@ -1,11 +1,11 @@
-pub clamp = fn(v, lo, hi) {
+Clamp = fn(v, lo, hi) {
     if v < lo { return lo }
     if v > hi { return hi }
     return v
 }
 
-square = fn(x) { return x * x }   // pub が無いので他パッケージから見えない
+square = fn(x) { return x * x }   // 小文字始まりなので他パッケージから見えない
 
-pub clampSquare = fn(v, lo, hi) {
-    return square(clamp(v, lo, hi))
+ClampSquare = fn(v, lo, hi) {
+    return square(Clamp(v, lo, hi))
 }

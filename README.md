@@ -6,7 +6,7 @@ A dynamically-typed programming language, implemented in Go, that unifies proper
 
 ## Status
 
-Weave's front end (lexer, parser, semantic checker, and AMIVM-IR code generator) implements the full language described in [`weave_spec.md`](weave_spec.md): dynamic values (numbers, strings, booleans, `nil`), operators, control flow, functions/closures/currying (including self-recursion), prototype-based objects and method dispatch, built-in functions, `for`-`in`, the actor model (`spawn`/`send`/`ask`/`reply`), static Go-asset integration (`gotype`/`gofunc`/`gomethod`, §15–16), and multi-file/multi-package modules (`import`/`pub`, §17).
+Weave's front end (lexer, parser, semantic checker, and AMIVM-IR code generator) implements the full language described in [`weave_spec.md`](weave_spec.md): dynamic values (numbers, strings, booleans, `nil`), operators, control flow, functions/closures/currying (including self-recursion), prototype-based objects and method dispatch, built-in functions, `for`-`in`, the actor model (`spawn`/`send`/`ask`/`reply`), static Go-asset integration (`gotype`/`gofunc`/`gomethod`, §15–16), and multi-file/multi-package modules (`package(...)`, §17), including `.wvz` (zip-archived) packages.
 
 ## Pipeline
 
@@ -39,10 +39,10 @@ Both land in `$GOBIN` (or `$GOPATH/bin` if unset) — make sure that directory i
 ## Usage
 
 ```
-weave <command> [flags] <file.weave | package-dir>
+weave <command> [flags] <file.weave | package-dir | package.wvz>
 ```
 
-A package directory compiles every `.weave` file in it as one package (`import`/`pub`, §17 of the spec); a single file compiles only that file, ignoring any siblings in the same directory.
+A package directory (or a `.wvz` archive of one, §17.6 of the spec) compiles every `.weave` file in it as one package (`package(...)`, §17.2); a single file compiles only that file, ignoring any siblings in the same directory.
 
 | Command | Output |
 |---|---|
@@ -50,6 +50,7 @@ A package directory compiles every `.weave` file in it as one package (`import`/
 | `run` | compiles and immediately runs, streaming its stdin/stdout/stderr |
 | `emit-ir` | the AMIVM-IR |
 | `emit-go` | the Go source (via amivm) |
+| `wvz` | verifies a directory builds (discarding the build output), then packages its `.weave` files into a `.wvz` archive |
 | `help` | this command list |
 
 `build`, `emit-ir`, and `emit-go` accept:
@@ -58,6 +59,8 @@ A package directory compiles every `.weave` file in it as one package (`import`/
 |---|---|
 | `-o <file>` | output file path (default: derived from the input path, e.g. `foo.weave` → `foo`/`foo.ir`/`foo.go`) |
 | `-v` | show each pipeline stage's output as it runs (the generated IR, amivm's own `-v` trace, the final Go source) |
+
+`wvz` accepts `-o <file>` (default: `<directory-name>.wvz`).
 
 ## Example
 
@@ -95,8 +98,9 @@ cmd/weave/           CLI entry point (this README's `weave` commands)
 internal/lexer/      tokenizing
 internal/parser/     parsing → AST
 internal/ast/        AST definitions
-internal/modloader/  resolves multi-file packages and imports (§17) into one flat AST
-                      before sema/codegen ever run — see CLAUDE.md
+internal/modloader/  resolves multi-file/multi-package `package(...)` declarations (§17,
+                      directories or .wvz archives) into one flat AST before sema/codegen
+                      ever run — see CLAUDE.md
 internal/sema/       semantic analysis (scope resolution, syntax-level checks — Weave's
                       dynamic typing means most value-type errors are a runtime concern
                       instead; see CLAUDE.md)

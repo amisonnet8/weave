@@ -12,9 +12,12 @@ const (
 
 	// structural keywords (weave_spec.md §13). Builtin function names
 	// (print, string, len, has, remove, list, spawn, send, ask, reply,
-	// gotype, gofunc, gomethod) are reserved words but not syntax
-	// keywords: they lex as plain Ident and are resolved as ordinary
-	// calls, matching Seed/Cascade's convention.
+	// gotype, gofunc, gomethod, package) are reserved words but not
+	// syntax keywords: they lex as plain Ident and are resolved as
+	// ordinary calls, matching Seed/Cascade's convention. This
+	// includes package(...) (weave_spec.md §17.2) — there is
+	// deliberately no `import`/`pub` syntax; see modloader's package
+	// doc comment.
 	KwFn
 	KwFunc
 	KwTrue
@@ -29,8 +32,6 @@ const (
 	KwBreak
 	KwContinue
 	KwReturn
-	KwImport
-	KwPub
 
 	// punctuation
 	LParen
@@ -74,8 +75,6 @@ var keywords = map[string]Kind{
 	"break":    KwBreak,
 	"continue": KwContinue,
 	"return":   KwReturn,
-	"import":   KwImport,
-	"pub":      KwPub,
 }
 
 // Token is a single lexical token together with its source line (1-based).

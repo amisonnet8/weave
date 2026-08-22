@@ -174,17 +174,20 @@ Seed/Cascadeは静的型付け言語だったため、この防波堤として�
   go.mod                        module github.com/amisonnet8/weave
   Makefile                      build/install/test/fmt/vet/tidy/clean タスク
   cmd/weave/
-    main.go                     CLIエントリポイント(build/run/emit-ir/emit-go/help のディスパッチ)
+    main.go                     CLIエントリポイント(build/run/emit-ir/emit-go/wvz/help のディスパッチ)
     build.go                    modloader.Load → sema.Check → codegen.Generate(compileToIR)
                                  → amivm(compileToGo) → go build(compileToBinary) のパイプライン。
-                                 srcPathは単一.weaveファイル、またはパッケージディレクトリのいずれも
-                                 受け付ける(modloader.Loadの項参照)
+                                 srcPathは単一.weaveファイル、パッケージディレクトリ、.wvzアーカイブの
+                                 いずれも受け付ける(modloader.Loadの項参照)
+    wvz.go                      `weave wvz`サブコマンド。ディレクトリ直下の.weaveファイルを
+                                 .wvzアーカイブ(archive/zip)へまとめる(weave_spec.md §17.6)
   internal/lexer/               字句解析
   internal/parser/               構文解析 → AST
   internal/ast/                 AST定義
-  internal/modloader/           パッケージ/importの解決(weave_spec.md §17)。複数.weaveファイル・
-                                 複数パッケージを1つのフラットな*ast.Fileへ解決してからsema/codegenへ
-                                 渡すため、両者はパッケージという概念を一切知らない(下記「確定した設計判断」参照)
+  internal/modloader/           パッケージ取り込みの解決(weave_spec.md §17)。複数.weaveファイル・
+                                 複数パッケージ(ディレクトリまたは.wvzアーカイブ)を1つのフラットな
+                                 *ast.Fileへ解決してからsema/codegenへ渡すため、両者はパッケージという
+                                 概念を一切知らない(下記「確定した設計判断」参照)
   internal/sema/                意味検査(スコープ解決・構文レベルの検査。動的型のためSeed/Cascadeより範囲は狭い)
   internal/codegen/             AST → AMIVM-IR生成
   weavert/                      Weave独自ランタイム(go:embedで配布)
@@ -494,6 +497,26 @@ Step3・4で持ち越した2つの制約(`self.file = goOpen(path)`のような�
 **発見: `-o`省略時のデフォルト出力パスがディレクトリ引数でソースツリーを汚染するバグ(Cascadeが同種のバグを踏んでいた前例からの予防的修正)。** `cascade_implementation_notes`相当の申し送り(Cascade自身のCLAUDE.md「CLI・配布」節)に、`defaultOutPath`がディレクトリ引数を想定しておらず`go build -o <既存ディレクトリ>`という意味になってしまうバグの記録があったため、Weave側は実装時に同じ地雷を踏む前に`cmd/weave/main.go`の`defaultOutPath`へディレクトリ検出分岐(`filepath.Base(srcPath)`を使う)を先回りで組み込んだ。実地検証(`weave emit-ir examples/modules`が`examples/modules/`の中ではなくカレントディレクトリに`modules.ir`を作ることを確認)で問題が無いことを確認済み。
 
 `examples/modules/`(ルートパッケージ`main.weave`が`mathutil`という別パッケージをインポートし、`pub`な関数(`clamp`・`clampSquare`)・`pub`でないパッケージ内プライベートヘルパー(`square`、同一パッケージ内の`pub`な`clampSquare`から参照される)を組み合わせる、weave_spec.md §17.2の例をほぼそのまま再現したサンプル)で`amivm`→`go build`→実行まで実地検証済み。加えて、非公開メンバーへの他パッケージからの参照・存在しないメンバーの参照・非ルートパッケージでの`func main`宣言・循環import・qualifier名のシャドーイング・同一qualifierへの異なるパスの二重import・識別子として不正なパッケージディレクトリ名、という7つのエラーケースをそれぞれ個別に実地検証し、いずれも意図通り明確なエラーメッセージで拒否されることを確認した。
+
+### モジュール機構の再設計: `import`/`pub`廃止、`package(...)`と大文字始まり公開、`.wvz`対応(クロージャー全面移行の後に追加)
+
+上記「モジュールと複数ファイルの統合」実装をユーザー自身が「テキトーにやってしまった」と評価し、再設計を依頼された。問題視されたのは機能そのものではなく、**`import`/`pub`という新しい構文キーワードを2つ追加した**こと——Weaveがこれまで一貫して守ってきた「新しい構文は増やさず、`name = 予約された関数呼び出し(...)`というパターンマッチだけで表現する」という流儀(`gotype`/`gofunc`/`gomethod`/`spawn`/`send`/`ask`/`reply`が全てそう)から外れていた点だった。加えて、`.wvz`(ディレクトリをZIP圧縮したアーカイブ)をパッケージの配布形式として追加したいという要望も合わせて実装した。
+
+**`import <名前> "<パス>"`を廃止し、`名前 = package("<パス>")`という`gotype`/`gofunc`と全く同じ形のパターンマッチに置き換えた。** 新しい構文キーワードは一切追加していない——`internal/lexer`の`KwImport`/`KwPub`は削除し、`package`は他の予約語同様ただのIdentとして字句解析され、`internal/modloader`だけがこのパターンを認識する。`gotype`/`gofunc`との違いは、認識する場所が「sema/codegen」ではなく「modloader」だという点だけ——`package(...)`はファイル読み込みを伴うため、その責務を持つのはmodloaderしかありえない(sema/codegenはファイルI/Oを一切知らない設計を保っている)。この結果、`package(...)`宣言はmodloaderの時点で完全に消費・削除され、sema/codegenは(旧`Import`ノードの時と同じく)`package`という名前の存在すら知らない。誤用(トップレベル以外での使用、不正な引数)は、modloader自身が`gotype`/`gofunc`のsema側チェックに相当する検証(`packageDeclArg`)を行い、それ以外の誤用(main本体内での使用等)は自然に「undefined name: package」というsemaのフォールバックに委ねている——専用のエラーパスを追加で持たせるコストと、フォールバックの分かりやすさを比較して後者を選んだ。
+
+**`pub`を廃止し、可視性はGoと同じ「大文字始まりが公開」という命名規則にした。** Weaveのオブジェクトには元々プライベートなプロパティという概念が無く(`has`/`for-in`はどのプロパティも区別なく見える)、パッケージだけに`pub`という可視性制御を持ち込むのは言語全体の「隠さない」方針とズレていた——ユーザー自身がこの代案(Go方式)を提案し、採用した。実装上の効果は非常に大きい:旧`PubNames map[string]bool`(`collectPubBareNames`で別途収集)が丸ごと不要になり、`tryResolveQualified`は`e.Prop`(参照している名前そのもの)の先頭文字を見るだけで可視性判定が完結する(`internal/modloader/modloader.go`の`isExported`)。ただし束縛自身の綴りが可視性を兼ねるため、旧`pub clamp = ...`のように「内部名は小文字のまま、公開だけ`pub`で別途宣言する」ことはできなくなった——公開したい名前は宣言そのものを大文字始まりにする必要がある(`examples/modules/mathutil/clamp.weave`を`Clamp`/`ClampSquare`へ改名)。
+
+**qualifierのシャドーイングは、ハードエラーから「`gofunc`の`goStaticVars`と同じ黙った降格」へ緩和した。** 旧`checkNoQualifierShadow`(import修飾子と同名のローカル変数・パラメータ・for変数を使うことをコンパイルエラーにする、独自の安全策)を削除し、`extractPackageDecls`が`package(...)`宣言以外のトップレベル代入で同名を再利用したときに`quals`マップから静かに削除するだけにした(`internal/sema/goasset.go`の`trackGoStaticVar`が再代入時に黙って`goStaticVars`から削除するのと全く同じ精神)。この判断はCascade由来の「トップレベル宣言のリネームはローカル変数によるシャドーイングを正しく扱わない、という既知の限定スコープを受け入れる」という前例(上記「識別子の一意化」参照)へ回帰したとも言える——`package(...)`だけを特別扱いして安全側に倒す非対称性より、`gofunc`と挙動を揃える一貫性を優先した、ユーザー自身の明示的な選択。
+
+**`extractPackageDecls`は`collectRenames`より前に実行しなければならない、という実装上の落とし穴を実装前に見抜けた。** `package(...)`宣言自体もトップレベルの`AssignStmt`である以上、先に`collectRenames`(全トップレベル束縛を無条件に`パッケージ名_元の名前`へリネームする既存ロジック)を通してしまうと、修飾子名(例:`mathutil`)が`renames`テーブルのキーにも入ってしまい、`tryResolveQualified`(`quals`を元の綴りで引く)と`rewriteExpr`の汎用Ident置換(`renames`を元の綴りで引く)が同じキーを取り合う——`quals`チェックが先に走る限りは実害が無いはずだが、設計の見通しを悪くするため、`package(...)`宣言の抽出・剥離を`collectRenames`より前に完全に終わらせる順序にした(`loadPackage`内で`extractPackageDecls`→`collectRenames`/`applySelfRename`という順序を厳守)。
+
+**`.wvz`は`fs.FS`抽象1枚でディレクトリと透過的に扱えた。** `internal/modloader`に`pkgLocation`(`fsys fs.FS`・`key`・`name`・`dir`・`closer`)を導入し、`loadPackageFiles`を`os.ReadFile`/`filepath.Glob`から`fs.ReadFile`/`fs.Glob`へ全面的に置き換えただけで、ディレクトリ(`os.DirFS`)と`.wvz`(`archive/zip`の`zip.OpenReader`——`*zip.ReadCloser`自体が`fs.FS`を実装している)が完全に同じコードパスを通るようになった。ネストした`package(...)`呼び出しの相対パス解決だけは`.wvz`特有の考慮が要った——`.wvz`ファイル自体はファイルシステム上の「ディレクトリ」を持たないため、そのアーカイブの**置き場所の親ディレクトリ**(`filepath.Dir(wvzの絶対パス)`)を、アーカイブ内の`.weave`ファイルが書く相対`package(...)`参照の基準点として採用した(`pkgLocation.dir`)。`weave wvz`サブコマンド(`cmd/weave/wvz.go`)はこの対称性をそのまま利用できるよう、ディレクトリ直下の`.weave`ファイルをアーカイブのルートへフラットに(ディレクトリプレフィックス無しで)詰めるだけの実装にした——`loadPackageFiles`の`fs.Glob(loc.fsys, "*.weave")`が実ディレクトリを読むときと全く同じ相対パスで`.wvz`内のエントリを見つけられることが前提になっている。
+
+**`weave wvz`は圧縮前に実際に`go build`まで通し、ビルド成果物は破棄する(ユーザーからの追加要望で実装)。** ディレクトリの中身を無検証でZIPに詰めるだけだと、壊れたソースがそのまま配布アーカイブになってしまう——`internal/modloader/modloader.go`の`Load`を`loadMerged`(中身の解決)と`Load`(それに「ルートに`func main`が無ければエラー」を足しただけの薄いラッパー)へ分割し、`func main`を要求しない`LoadPackage`を新設した。`cmd/weave/wvz.go`の`runWvz`はこれで対象ディレクトリを読み込み、`func main(): int { return 0 }`という仮の入口をその場で`*ast.File`へ差し込んでから`validateBuilds`(`sema.Check`→`codegen.Generate`→amivm→`go build`まで一気通貫で走らせる)を呼び、ビルド成功だけを確認して生成物(スクラッチのGoモジュール一式・ビルドした実行ファイル)を丸ごと`os.RemoveAll`で捨てる。既存の`cmd/weave/build.go`(`compileToIR`/`compileToGo`/`compileToBinary`)は、この検証パスと通常のビルドパスが同じ下位関数を共有できるよう`generateIR`(sema+codegen)・`irToGo`(amivm呼び出し)・`goToBinary`(`go build`)という3つの部品に分解した——`compileToIR`/`compileToGo`/`compileToBinary`はこれらを順に呼ぶだけの薄いラッパーとして残り、通常のビルド経路の挙動は一切変えていない。**`codegen.Generate`は`file.Main`が`nil`だと即座に`nil`ポインタ参照でpanicする**(`sema.Check`は`file.Main == nil`を自前でエラーにするが、`codegen.Generate`側にはガードが無い)ため、仮の`main`を差し込む処理は必ず`generateIR`を呼ぶ**前**に完了させる必要がある、と実装前の調査で確認した。
+
+**`func main`を自分で持つディレクトリは`weave wvz`の対象として拒否する(実装直後にユーザーから指摘を受けて追加)。** 当初の実装は「`func main`が無ければ仮のmainを補う、既にあればその本物のmainでそのまま検証する」という寛容な設計にしていたが、ユーザーから「`func main`を持つ実行可能プログラムを`.wvz`にする用途は`weave build`と役割が重複しており、実際には使われないのでは」という指摘を受け、再検討の上で妥当と判断した。**`.wvz`は常に`package(...)`で取り込まれる**パッケージ**の配布形式であり、17.3節で非ルートパッケージの`func main`がそもそも禁止されている以上、`weave wvz`が`func main`を持つディレクトリを受け付ける理由が無い**(受け付けたところで、生成された`.wvz`を`package(...)`で取り込もうとすると17.3節のチェックで確実に弾かれる——「圧縮はできるが取り込めない」という無意味な状態を許すだけだった)。`runWvz`は`modloader.LoadPackage`で読み込んだ直後に`file.Main != nil`を検査し、`weave build`/`weave run`の利用を促すメッセージ付きで拒否するよう修正した。合わせて`validateBuilds`のシグネチャを`(dir string)`から`(file *ast.File)`へ変更し、「読み込み+func mainチェック+仮main差し込み」という`runWvz`固有の判断と、「(既に用意された)*ast.Fileが実際にビルドできるかを確認するだけ」という`validateBuilds`本来の責務を分離した。
+
+`examples/modules/`を新構文(`package(...)`・`Clamp`/`ClampSquare`の大文字始まり)へ書き換え、`amivm`→`go build`→実行まで再検証(`10`/`100`/終了コード`3`、旧実装時と出力一致)。`.wvz`経由の取り込みも、`weave wvz`で生成したアーカイブを実際に`package("./mathutil.wvz")`から参照する統合テストで実地検証した。`weave wvz`のビルド確認機能自体も、(1)`func main`を持たないパッケージメンバーディレクトリが仮の`main`経由で検証・アーカイブされること、(2)構文エラーを含むディレクトリがアーカイブを拒否されエラーで終了すること、(3)`func main`を自分で持つディレクトリが`weave build`/`weave run`の利用を促すメッセージ付きで拒否され、`.wvz`が生成されないこと、の3パターンを実地検証した。既存の`examples/`直下14個の単一ファイルサンプルも無変更で動作することを再確認した。
 
 ### クロージャーをネイティブな`CLOS`ネストへ全面移行(モジュール機能完成後に追加)
 

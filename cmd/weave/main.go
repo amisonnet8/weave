@@ -36,6 +36,8 @@ func run(args []string) error {
 		return runEmitIR(rest)
 	case "emit-go":
 		return runEmitGo(rest)
+	case "wvz":
+		return runWvz(rest)
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return nil
@@ -50,11 +52,11 @@ func printUsage(w io.Writer) {
 
 Usage:
 
-	weave <command> [flags] <file.weave | package-dir>
+	weave <command> [flags] <file.weave | package-dir | package.wvz>
 
-A package-dir compiles every .weave file in that directory as one package
-(weave_spec.md §17); a single file compiles only that file, ignoring any
-siblings in the same directory.
+A package-dir (or a .wvz archive of one, weave_spec.md §17.6) compiles
+every .weave file in that package as one program; a single file compiles
+only that file, ignoring any siblings in the same directory.
 
 Commands:
 
@@ -62,12 +64,17 @@ Commands:
 	run        compile and immediately run, streaming its stdin/stdout/stderr
 	emit-ir    compile to AMIVM-IR
 	emit-go    compile to Go source (via amivm)
+	wvz        package a directory's .weave files into a .wvz archive
 	help       show this help message
 
 Flags (build, emit-ir, emit-go):
 
 	-o <file>  output file path (default: derived from the input path)
 	-v         show each pipeline stage's output as it runs
+
+Flags (wvz):
+
+	-o <file>  output .wvz path (default: <directory-name>.wvz)
 `)
 }
 
@@ -190,21 +197,25 @@ func runEmitGo(args []string) error {
 }
 
 // defaultOutPath derives an output path from srcPath by stripping its
-// .weave extension and appending ext (e.g. ".ir", ".go", or "" for a
-// build's bare executable name).
+// .weave/.wvz extension and appending ext (e.g. ".ir", ".go", or "" for
+// a build's bare executable name).
 //
-// srcPath may name a package directory rather than a single file
-// (weave_spec.md §17.1) — TrimSuffix(".weave") is then a no-op, which
-// would otherwise leave the output path identical to the source
-// directory itself (`go build -o <existing dir>` writes *into* that
-// directory instead of naming a new file — silently dropping a build
-// artifact into the source tree). So a directory srcPath instead derives
-// the name from the directory's own base name, written to the current
-// directory — matching `go build ./mypackage`'s own default (no -o) of
-// naming the binary after the package directory.
+// srcPath may name a package directory or a .wvz archive rather than a
+// single file (weave_spec.md §17.1, §17.6) — TrimSuffix(".weave") would
+// then be a no-op, which for a directory would otherwise leave the
+// output path identical to the source directory itself (`go build -o
+// <existing dir>` writes *into* that directory instead of naming a new
+// file — silently dropping a build artifact into the source tree). So a
+// directory or .wvz srcPath instead derives the name from its own base
+// name (extension stripped for .wvz), written to the current directory —
+// matching `go build ./mypackage`'s own default (no -o) of naming the
+// binary after the package directory.
 func defaultOutPath(srcPath, ext string) string {
 	if info, err := os.Stat(srcPath); err == nil && info.IsDir() {
 		return filepath.Base(srcPath) + ext
+	}
+	if strings.EqualFold(filepath.Ext(srcPath), ".wvz") {
+		return strings.TrimSuffix(filepath.Base(srcPath), filepath.Ext(srcPath)) + ext
 	}
 	return strings.TrimSuffix(srcPath, ".weave") + ext
 }

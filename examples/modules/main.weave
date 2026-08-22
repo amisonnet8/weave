@@ -1,7 +1,7 @@
-import mathutil "./mathutil"
+mathutil = package("./mathutil")
 
 func main(): int {
-    print(mathutil.clamp(15, 0, 10))
-    print(mathutil.clampSquare(15, 0, 10))
-    return mathutil.clamp(3, 0, 10)
+    print(mathutil.Clamp(15, 0, 10))
+    print(mathutil.ClampSquare(15, 0, 10))
+    return mathutil.Clamp(3, 0, 10)
 }

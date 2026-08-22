@@ -6,7 +6,7 @@
 
 ## ステータス
 
-Weaveのフロントエンド(字句解析・構文解析・意味検査・AMIVM-IRコード生成)は、[`weave_spec.md`](weave_spec.md)に記載された言語仕様を全て実装済みです: 動的な値(数値・文字列・真偽値・`nil`)、演算子、制御構文、関数・クロージャー・カリー化(自己再帰含む)、プロトタイプベースのオブジェクトとメソッド呼び出し、組み込み関数、`for`-`in`、アクターモデル(`spawn`/`send`/`ask`/`reply`)、静的なGo資産連携(`gotype`/`gofunc`/`gomethod`、15〜16節)、複数ファイル・複数パッケージのモジュール機構(`import`/`pub`、17節)。
+Weaveのフロントエンド(字句解析・構文解析・意味検査・AMIVM-IRコード生成)は、[`weave_spec.md`](weave_spec.md)に記載された言語仕様を全て実装済みです: 動的な値(数値・文字列・真偽値・`nil`)、演算子、制御構文、関数・クロージャー・カリー化(自己再帰含む)、プロトタイプベースのオブジェクトとメソッド呼び出し、組み込み関数、`for`-`in`、アクターモデル(`spawn`/`send`/`ask`/`reply`)、静的なGo資産連携(`gotype`/`gofunc`/`gomethod`、15〜16節)、複数ファイル・複数パッケージのモジュール機構(`package(...)`、17節。`.wvz`圧縮パッケージ含む)。
 
 ## パイプライン
 
@@ -39,10 +39,10 @@ go install github.com/amisonnet8/weave/cmd/weave@latest
 ## 使い方
 
 ```
-weave <コマンド> [フラグ] <file.weave | package-dir>
+weave <コマンド> [フラグ] <file.weave | package-dir | package.wvz>
 ```
 
-ディレクトリを指定した場合、その中の全`.weave`ファイルを1つのパッケージとしてコンパイルします(`import`/`pub`、仕様17節)。単一ファイルを指定した場合はそのファイルだけをコンパイルし、同じディレクトリの他のファイルは無視します。
+ディレクトリ(またはそれを圧縮した`.wvz`アーカイブ、仕様17.6節)を指定した場合、その中の全`.weave`ファイルを1つのパッケージとしてコンパイルします(`package(...)`、仕様17.2節)。単一ファイルを指定した場合はそのファイルだけをコンパイルし、同じディレクトリの他のファイルは無視します。
 
 | コマンド | 出力 |
 |---|---|
@@ -50,6 +50,7 @@ weave <コマンド> [フラグ] <file.weave | package-dir>
 | `run` | コンパイルして即座に実行(stdin/stdout/stderrをそのまま引き継ぐ) |
 | `emit-ir` | AMIVM-IR |
 | `emit-go` | Goソースコード(amivm経由) |
+| `wvz` | ディレクトリが実際にビルドできることを確認(成果物は破棄)してから`.wvz`アーカイブへまとめる |
 | `help` | このコマンド一覧 |
 
 `build`・`emit-ir`・`emit-go`は以下のフラグを受け付けます。
@@ -58,6 +59,8 @@ weave <コマンド> [フラグ] <file.weave | package-dir>
 |---|---|
 | `-o <file>` | 出力ファイルパス(省略時は入力パスから導出。例: `foo.weave` → `foo`/`foo.ir`/`foo.go`) |
 | `-v` | 各パイプライン段階の出力を実行しながら表示(生成されたIR、amivm自身の`-v`トレース、最終的なGoソース) |
+
+`wvz`は`-o <file>`(省略時は`<ディレクトリ名>.wvz`)を受け付けます。
 
 ## 例
 
@@ -95,8 +98,9 @@ cmd/weave/            CLIエントリポイント(本READMEの`weave`コマン�
 internal/lexer/       字句解析
 internal/parser/      構文解析 → AST
 internal/ast/         AST定義
-internal/modloader/   複数ファイル・複数パッケージ・import(17節)をsema/codegenの前に
-                       1つのフラットなASTへ解決する。詳細はCLAUDE.md参照
+internal/modloader/   複数ファイル・複数パッケージのpackage(...)宣言(17節、ディレクトリまたは
+                       .wvzアーカイブ)をsema/codegenの前に1つのフラットなASTへ解決する。
+                       詳細はCLAUDE.md参照
 internal/sema/        意味検査(スコープ解決・構文レベルの検査。Weaveは動的型付けのため、
                        値の型に依存するエラーの多くは実行時の関心事になる。詳細はCLAUDE.md参照)
 internal/codegen/     AST → AMIVM-IR
