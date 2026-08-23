@@ -225,7 +225,7 @@ func genGoFuncCall(fg *funcGen, info *GoFuncInfo, call *ast.CallExpr) (string, e
 
 	raws := make([]string, len(info.Returns))
 	for i, r := range info.Returns {
-		raws[i] = fg.newTemp(goTypeToken(r.Type))
+		raws[i] = fg.newTemp(goTypeToken(fg, r.Type))
 	}
 	fmt.Fprintf(&fg.body, "\tCALL\t%s:\t%s%s\n", callTargetsPrefix(raws), info.GoName, argSuffix(concreteArgs))
 	return genBoxList(fg, raws, info.Returns), nil
@@ -269,7 +269,7 @@ func genBoxList(fg *funcGen, raws []string, returns []GoReturnSpec) string {
 	obj := fg.newTemp("^any")
 	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.NewObject\n", obj)
 	for i, raw := range returns {
-		boxed := genNativeReturnValue(fg, raws[i], goTypeToken(raw.Type))
+		boxed := genNativeReturnValue(fg, raws[i], raw.Type)
 		fmt.Fprintf(&fg.body, "\tCALL\t:\t?weavert.ObjSet\t%s\t%s\t%s\n", obj, quoteKey(strconv.Itoa(i)), boxed)
 	}
 	return obj
@@ -435,11 +435,11 @@ func genNativeGoMethodCall(fg *funcGen, typeInfo *GoTypeInfo, methodInfo *GoMeth
 
 	paramTypeTokens := make([]string, len(methodInfo.ParamTypes))
 	for i, pt := range methodInfo.ParamTypes {
-		paramTypeTokens[i] = goTypeToken(pt)
+		paramTypeTokens[i] = goTypeToken(fg, pt)
 	}
 	returnTypeTokens := make([]string, len(methodInfo.Returns))
 	for i, r := range methodInfo.Returns {
-		returnTypeTokens[i] = goTypeToken(r.Type)
+		returnTypeTokens[i] = goTypeToken(fg, r.Type)
 	}
 	fnType := fg.ctx.newGoFnType(paramTypeTokens, returnTypeTokens)
 
@@ -448,20 +448,25 @@ func genNativeGoMethodCall(fg *funcGen, typeInfo *GoTypeInfo, methodInfo *GoMeth
 
 	raws := make([]string, len(methodInfo.Returns))
 	for i, r := range methodInfo.Returns {
-		raws[i] = fg.newTemp(goTypeToken(r.Type))
+		raws[i] = fg.newTemp(goTypeToken(fg, r.Type))
 	}
 	fmt.Fprintf(&fg.body, "\tCALL\t%s:\t%s%s\n", callTargetsPrefix(raws), methodVal, argSuffix(concreteArgs))
 	return genBoxList(fg, raws, methodInfo.Returns), nil
 }
 
 // genNativeReturnValue boxes a concretely-typed native call result (raw,
-// of type retType) into a fresh `^any` value, converting it first when
-// needed (nativeReturnConversion) — used by genBoxList for each position
-// of a typed gofunc(...)/gomethod(...) call's result list.
-func genNativeReturnValue(fg *funcGen, raw, retType string) string {
+// declared via goTypeToken(fg, goRef) — so already `^GoBytes`, not a bare
+// `^[]byte`, when goRef is "?[]byte") into a fresh `^any` value,
+// converting it first when needed (nativeReturnConversion) — used by
+// genBoxList for each position of a typed gofunc(...)/gomethod(...)
+// call's result list. goRef is the original "?pkg.Type"-shaped
+// declaration string (not yet tokenized) — nativeReturnConversion needs
+// to recognize "?[]byte" specifically, which goTypeToken's own output
+// (`^GoBytes`) no longer spells out.
+func genNativeReturnValue(fg *funcGen, raw, goRef string) string {
 	result := fg.newTemp("^any")
-	if conv := nativeReturnConversion(retType); conv != "" {
-		casted := fg.newTemp(goTypeToken(conv))
+	if conv := nativeReturnConversion(goRef); conv != "" {
+		casted := fg.newTemp(goTypeToken(fg, conv))
 		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t%s\t%s\n", casted, conv, raw)
 		fmt.Fprintf(&fg.body, "\tSET\t%s\t%s\n", result, casted)
 	} else {
@@ -480,9 +485,18 @@ func genNativeReturnValue(fg *funcGen, raw, retType string) string {
 // a clear, Weave-flavored message. Returns the token of the now
 // concretely-typed value, valid to use directly as a native CALL/FGET
 // argument.
+//
+// "?[]byte" is a special case, handled entirely separately
+// (genAssertByteSliceParam): the Weave-side value arriving here is never
+// actually a []byte to begin with (Weave has no slice concept at all —
+// weave_spec.md §2), so an ordinary ASSERT against `^GoBytes` would
+// always fail. See that function's own doc comment.
 func genAssertOrTypeError(fg *funcGen, anyVal, goRef, desc string) string {
+	if goRef == "?[]byte" {
+		return genAssertByteSliceParam(fg, anyVal, desc)
+	}
 	anyVal = ensureVariable(fg, anyVal)
-	concreteType := goTypeToken(goRef)
+	concreteType := goTypeToken(fg, goRef)
 	concrete := fg.newTemp(concreteType)
 	ok := fg.newTemp("^bool")
 	fmt.Fprintf(&fg.body, "\tASSERT\t%s\t%s\t%s\t%s\n", concrete, ok, anyVal, concreteType)
@@ -492,6 +506,28 @@ func genAssertOrTypeError(fg *funcGen, anyVal, goRef, desc string) string {
 	fmt.Fprintf(&fg.body, "\tCALL\t:\t?weavert.TypeError\t%s\t%s\t%s\n", strconv.Quote(desc), strconv.Quote(concreteType), anyVal)
 	fg.body.WriteString("\tENDIF\n")
 	return concrete
+}
+
+// genAssertByteSliceParam handles a declared "?[]byte" parameter/receiver
+// type (weave_spec.md §15.4): every "?[]byte" *return* value is already
+// converted to a Weave string on the way out (nativeReturnConversion,
+// mirroring weavert.NormalizeGoValue's identical untyped-path behavior),
+// so a Weave value destined for a []byte-typed Go parameter is always
+// actually a string underneath, not a []byte — asserting it directly as
+// `^GoBytes` would therefore always fail (the dynamic type genuinely is
+// string). Reversing that conversion takes two steps instead of
+// genAssertOrTypeError's usual one: ASSERT the value down to the
+// `^string` it actually is (an ordinary TypeError if it isn't — same
+// clear-error guarantee as any other declared type), then a native Go
+// conversion (`GoBytes(s)`, valid because GoBytes' underlying type is
+// []byte — same direction as string-to-[]byte conversions generally)
+// produces the concrete byte-slice-shaped value the real Go call needs.
+func genAssertByteSliceParam(fg *funcGen, anyVal, desc string) string {
+	strVal := genAssertOrTypeError(fg, anyVal, "?string", desc)
+	bytesType := fg.ctx.goBytesType()
+	casted := fg.newTemp(bytesType)
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?%s\t%s\n", casted, strings.TrimPrefix(bytesType, "^"), strVal)
+	return casted
 }
 
 // ensureVariable materializes val (an AMIVM `value` token, possibly a
@@ -520,7 +556,25 @@ func ensureVariable(fg *funcGen, val string) string {
 // prefixes line up with amivm's own type category (amivm_spec.md §7)
 // one swap away: `?strings.Reader` -> `^strings.Reader`, `?*os.File` ->
 // `^*os.File`.
-func goTypeToken(goRef string) string {
+//
+// "?[]byte" (weave_spec.md §15.4's slice type hint) is a special case:
+// naively applying the same swap would produce the unnamed slice
+// literal `^[]byte`, but AMIVM's `type1` operand category has no
+// slice-literal form at all — only named types, declared ahead of time
+// via SLTYPE (confirmed by direct probe: amivm rejects a bare `^[]byte`
+// type operand outright). So instead this returns the one shared named
+// type `^GoBytes` (codegenCtx.goBytesType, backed by a single top-level
+// `SLTYPE ^GoBytes ^byte` declaration) — Go's assignability rules make a
+// named type with underlying type []byte interchangeable with a literal
+// []byte at every boundary that matters here (an unnamed []byte return
+// value assigns straight into a `^GoBytes`-typed CALL target, and a
+// `^GoBytes`-typed argument passes straight into a Go parameter declared
+// as plain `[]byte`, confirmed by direct probe both ways) — so nothing
+// downstream of this function needs to know the substitution happened.
+func goTypeToken(fg *funcGen, goRef string) string {
+	if goRef == "?[]byte" {
+		return fg.ctx.goBytesType()
+	}
 	return "^" + strings.TrimPrefix(goRef, "?")
 }
 
@@ -541,15 +595,22 @@ var numericGoTypeNames = map[string]bool{
 }
 
 // nativeReturnConversion reports the CALL-cast callname (e.g. "?float64")
-// needed to box a native call's return value (typeToken, a `^`-prefixed
-// AMIVM type token) into the representation Weave code expects, or ""
-// when the raw value can be boxed into `^any` as-is. Mirrors
-// weavert.NormalizeGoValue's own switch (weavert/goasset.go, the
-// untyped/reflect path's equivalent step) but has to happen as an
-// explicit native CALL cast here since there's no reflect available on
-// this path at all — see genNativeReturnValue.
-func nativeReturnConversion(typeToken string) string {
-	bare := strings.TrimPrefix(typeToken, "^")
+// needed to box a native call's return value (goRef, the original
+// "?pkg.Type"-shaped declaration string — not yet run through
+// goTypeToken, since "?[]byte" needs to be recognized here by name
+// before it becomes the unrelated-looking `^GoBytes` token) into the
+// representation Weave code expects, or "" when the raw value can be
+// boxed into `^any` as-is. Mirrors weavert.NormalizeGoValue's own switch
+// (weavert/goasset.go, the untyped/reflect path's equivalent step) but
+// has to happen as an explicit native CALL cast here since there's no
+// reflect available on this path at all — see genNativeReturnValue.
+// "?[]byte" converts to `?string` (Go's own `string(b)` conversion,
+// valid directly on a `^GoBytes`-typed value too — goTypeToken's own doc
+// comment explains why the named/unnamed distinction doesn't matter
+// here), exactly matching NormalizeGoValue's identical choice on the
+// untyped path.
+func nativeReturnConversion(goRef string) string {
+	bare := strings.TrimPrefix(goRef, "?")
 	if numericGoTypeNames[bare] {
 		return "?float64"
 	}

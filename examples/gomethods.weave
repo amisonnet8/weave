@@ -25,5 +25,20 @@ main = fn(args) {
 	raiseIfError(at(readByteResult, 1))
 	print(at(readByteResult, 0))
 
+	// bytes.NewReader(b []byte) *bytes.Reader — the parameter-side
+	// counterpart to goassets.weave's "?[]byte" return-hint example
+	// (weave_spec.md §15.4): a Weave string passed where the real Go
+	// call expects []byte is automatically converted via the same
+	// compiler-generated named slice type (SLTYPE ^GoBytes ^byte), fully
+	// natively (internal/codegen/goasset.go's genAssertByteSliceParam) —
+	// no reflect here either.
+	GoBytesReader = gotype("?*bytes.Reader", {
+		len: gomethod("Len", goReturns("?int"), goParams())
+	})
+	newBytesReader = gofunc("?bytes.NewReader", goReturns(GoBytesReader), goParams("?[]byte"))
+	bytesResult = newBytesReader("raw bytes")
+	br = at(bytesResult, 0)
+	print(at(br.len(), 0))
+
 	return at(r.len(), 0)
 }

@@ -234,6 +234,26 @@ func (c *checker) checkGoMethodArgs(mcall *ast.CallExpr) (*GoMethodInfo, error) 
 	return &GoMethodInfo{GoName: goMethodName.Value, Returns: returns, ParamTypes: params}, nil
 }
 
+// validateSliceHint rejects any "?[]..." type hint other than exactly
+// "?[]byte" (weave_spec.md §15.4) — AMIVM's `type1` operand category has
+// no slice-literal form at all (confirmed by direct probe: `^[]byte`
+// itself is rejected as "型として解釈できない形式です"), so codegen's
+// goTypeToken can only make "?[]byte" work by substituting in one
+// specially-declared named type (`^GoBytes`, backed by weave's own
+// generated `SLTYPE`) with a defined Weave-side meaning (the returned/
+// passed value is always a string — mirrors weavert.NormalizeGoValue's
+// existing untyped-path behavior). No other slice element type has a
+// defined Weave-side representation to convert to or from, so every
+// other "?[]..." hint is rejected here at compile time with a clear
+// message, instead of surfacing later as amivm's own confusing type
+// error.
+func validateSliceHint(value string, line int) error {
+	if strings.HasPrefix(value, "?[]") && value != "?[]byte" {
+		return fmt.Errorf("line %d: %q is not a supported slice type hint — only \"?[]byte\" is (weave_spec.md §15.4)", line, value)
+	}
+	return nil
+}
+
 // goTypeArg validates one `"?pkg.Type"`-shaped string literal argument
 // (what, doesn't matter — describes it in error messages). line is used
 // in the error message when expr isn't even a StringLit (so there's no
@@ -245,6 +265,9 @@ func goTypeArg(expr ast.Expr, line int, what string) (string, error) {
 	}
 	if !strings.HasPrefix(lit.Value, "?") {
 		return "", fmt.Errorf("line %d: %s must start with '?' (e.g. \"?int\", \"?*strings.Reader\"), got %q", line, what, lit.Value)
+	}
+	if err := validateSliceHint(lit.Value, line); err != nil {
+		return "", err
 	}
 	return lit.Value, nil
 }
@@ -282,6 +305,9 @@ func (c *checker) goReturnsArg(expr ast.Expr, line int) ([]GoReturnSpec, error) 
 		case *ast.StringLit:
 			if !strings.HasPrefix(v.Value, "?") {
 				return nil, fmt.Errorf("line %d: goReturns(...)'s argument %d must start with '?' (e.g. \"?int\"), got %q", call.Line, i+1, v.Value)
+			}
+			if err := validateSliceHint(v.Value, call.Line); err != nil {
+				return nil, err
 			}
 			specs[i] = GoReturnSpec{Type: v.Value}
 		case *ast.Ident:

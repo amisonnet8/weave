@@ -1128,6 +1128,90 @@ func TestGenerate_TypedGoFuncCallIsFullyNative(t *testing.T) {
 	}
 }
 
+func TestGenerate_TypedGoFuncCallByteSliceReturnConvertsToString(t *testing.T) {
+	// os.ReadFile(name string) ([]byte, error) declared with a "?[]byte"
+	// return hint (weave_spec.md §15.4) — the native path can't use a
+	// literal `^[]byte` type operand at all (amivm rejects it), so this
+	// routes through the one shared `SLTYPE ^GoBytes ^byte` declaration
+	// (goTypeToken) and converts the raw result to a Weave string via a
+	// native `?string` CALL (nativeReturnConversion), mirroring
+	// weavert.NormalizeGoValue's identical choice on the untyped path.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "readFile", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gofunc"},
+				Args: []ast.Expr{
+					&ast.StringLit{Value: "?os.ReadFile"},
+					goReturnsExpr(&ast.StringLit{Value: "?[]byte"}, &ast.StringLit{Value: "?error"}),
+					goParamsExpr("?string"),
+				},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "readFile"}, Args: []ast.Expr{&ast.StringLit{Value: "f.txt"}}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "SLTYPE\t^GoBytes\t^byte\n") {
+		t.Errorf("expected a top-level SLTYPE declaring GoBytes, got:\n%s", ir)
+	}
+	if strings.Index(ir, "SLTYPE\t") > strings.Index(ir, "FUNC\t!weave_main") {
+		t.Errorf("expected SLTYPE to precede FUNC !weave_main, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "\tGoBytes\t") && !strings.Contains(ir, "\t?os.ReadFile\t") {
+		t.Errorf("expected the native CALL to ?os.ReadFile to target a ^GoBytes temp, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?string\t") {
+		t.Errorf("expected a native ?string conversion of the raw []byte result, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_TypedGoFuncCallByteSliceParamConvertsFromString(t *testing.T) {
+	// bytes.NewReader(b []byte) *bytes.Reader declared with a "?[]byte"
+	// parameter hint — the reverse direction of the return-side test
+	// above: ASSERT the incoming Weave value as the ^string it actually
+	// is, then a native ?GoBytes conversion (genAssertByteSliceParam)
+	// produces the []byte-shaped argument the real Go call needs.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoBytesReader", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gotype"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "?*bytes.Reader"}, &ast.ObjectLit{}},
+			}},
+			&ast.AssignStmt{Name: "newReader", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gofunc"},
+				Args: []ast.Expr{
+					&ast.StringLit{Value: "?bytes.NewReader"},
+					goReturnsExpr(&ast.Ident{Name: "GoBytesReader"}),
+					goParamsExpr("?[]byte"),
+				},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "newReader"}, Args: []ast.Expr{&ast.StringLit{Value: "hi"}}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "SLTYPE\t^GoBytes\t^byte\n") {
+		t.Errorf("expected a top-level SLTYPE declaring GoBytes, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "ASSERT\t") || !strings.Contains(ir, "^string\n") {
+		t.Errorf("expected the argument to first be ASSERTed as ^string, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?GoBytes\t") {
+		t.Errorf("expected a native ?GoBytes conversion before the call, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "\t?bytes.NewReader\t") {
+		t.Errorf("expected a native CALL to ?bytes.NewReader, got:\n%s", ir)
+	}
+}
+
 func TestGenerate_TypedGoMethodCallIsFullyNative(t *testing.T) {
 	body := append(typedGoReaderDeclStmts(),
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},

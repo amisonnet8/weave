@@ -759,6 +759,25 @@ checkShape(PointShape, p)
 
 `examples/goassets.weave`に`Stdout = govar("?os.Stdout")`を`io.WriteString`(非可変長引数のgofunc)と組み合わせる実例を追加し、`amivm`→`go build`→実行まで実地検証した(`os.Stdout`へ直接書き込まれることを確認——`weavert.Print`を経由しない出力行として現れる)。誤用パターン(引数0個・2個、非文字列引数、`?`プレフィックス無し、宣言以外の形での裸の`govar(...)`呼び出し)も個別に実地検証し、いずれも分かりやすいエラーで拒否されることを確認した。単体テスト(sema/codegen)を新規追加、全て green。既存の全17サンプル+`examples/modules`+`examples/multifile`の回帰も無変更で動作継続することを確認した。
 
+### スライス型ヒント`"?[]byte"`を`goReturns(...)`/`goParams(...)`へ追加(19節「できないことリスト」対応の第3弾として追加)
+
+`govar`(直前の節)の完了後、ユーザーから19節の項目4(スライス型`[]byte`が`goReturns`/`goParams`の型ヒントに書けない)への対応を「ネイティブ経路でも同様に文字列へ変換でよいです」という指示で依頼された——つまり型ヒント無し(reflect経由、`weavert.NormalizeGoValue`)の既存経路が既に行っている「`[]byte`はWeaveの文字列として表現する」という設計判断はそのまま踏襲し、型ヒント付き(ネイティブ経路)でも同じ変換をネイティブな`CALL`だけで実現する、という指示だった。
+
+**実装前に、この機能の実現可能性そのものをamivm CLIへの直接probeで検証した。** 後半の「Go資産の戻り値を常にlist」節の脚注で「`os.ReadFile`の`[]byte`戻り値はAMIVMの`type1`オペランドカテゴリに「スライスのリテラル形」が無く(`^[]byte`は「型として解釈できない形式です」というamivmのエラーになる)、名前付き`SLTYPE`を経由しない限り表現できない」と既に記録されていたため、今回はその記録を出発点に「`SLTYPE ^GoBytes ^byte`という名前付き型を1つ宣言し、あらゆる`?[]byte`ヒントの箇所でこの名前付き型を代わりに使えばよいのでは」という仮説を立て、実装前に3段階のGo probe(素の`type GoBytes []byte`宣言でのstring変換、無名の`[]byte`戻り値を名前付き`GoBytes`変数へ直接代入、名前付き`GoBytes`値を無名の`[]byte`引数へそのまま渡す)で個別に検証してから、最後に実際の`amivm`バイナリへ手書きIRを通して`SLTYPE`宣言・`?GoBytes`という(パッケージ修飾無しの)ローカル型名を使ったキャスト`CALL`が実際に成立することを確認した。全て仮説通りに成立したため、実装段階で「作ってからamivmのエラーに気づく」という回り道が一切発生しなかった——このプロジェクトの他の多くの機能(クロージャーのCLOSネスト、Go資産境界の型ヒント等)が辿った「実装→amivmのエラーで発覚→設計変更」というパターンから外れた、数少ない「事前probeが完全に功を奏した」例になった。
+
+**Goの代入可能性規則(名前付き型と無名型の間で、少なくとも片方が無名なら基底型が同じ同士は相互に代入可能)を全面的に利用した。** `os.ReadFile`が返す無名の`[]byte`は、`^GoBytes`型で宣言したCALLターゲット変数へ**変換無しでそのまま**代入できる(戻り値側)。逆に`^GoBytes`型の値も、`[]byte`引数を取るGo関数(`bytes.NewReader`等)へ**変換無しでそのまま**渡せる(引数側)——`GoBytes`という名前付き型は、Goの型システム上「ただの`[]byte`」として振る舞う。この性質のおかげで、戻り値側は追加の変換コード無しで直接受け取れ、変換が必要なのは「Weave文字列⇔Go []byte」という意味論的な変換(後述)の1点だけで済んだ。
+
+**設計は左右対称: 戻り値側は`[]byte→string`のネイティブ変換、引数側は`string→[]byte`のネイティブ変換。** どちらも`goTypeToken`が生成する`^GoBytes`型を経由するが、変換の向きが逆になる。
+
+- **戻り値側**(`nativeReturnConversion`): 既存の`bare == "[]byte"`という判定分岐(実装済みだったが、これまで`goTypeToken`が`^[]byte`という無効なトークンしか生成できず到達不能だった、事実上のデッドコード)がそのまま生きるようになった——`?string`というネイティブなキャスト`CALL`(`string(raw)`、`raw`の静的型が`GoBytes`でも問題なく成立、上記のprobeで確認済み)で変換する
+- **引数側**(新設`genAssertByteSliceParam`): こちらは既存の仕組みを単純に流用できなかった——`ASSERT`は「動的型が実際にその型と一致するか」を検証する命令であり、Weave側の値は(戻り値側が`string`へ変換して返している以上)常に`string`であって`[]byte`/`GoBytes`ではないため、`^GoBytes`への`ASSERT`は必ず失敗する。そこで**2段階**にした: まず`^string`へ`ASSERT`(既存の`genAssertOrTypeError`をそのまま再帰的に再利用)、次に`?GoBytes`というネイティブなキャスト`CALL`(`GoBytes(s)`)で`[]byte`相当の値に変換する。「型ヒント無しの箇所は`ASSERT`で厳格に検証する」という15.4節の原則を守りつつ、`[]byte`だけは「Weave側の実際の動的型(`string`)」と「Goが要求する型(`[]byte`)」が最初から異なる、という他の全ての型ヒントには無い特殊事情に対処した
+
+**`goTypeToken`のシグネチャ変更(`func(goRef string) string`→`func(fg *funcGen, goRef string) string`)という機械的だが影響範囲の広い変更を、既存の全呼び出し元(5箇所)へ機械的に伝播させた。** `fg`が必要になった理由は、`^GoBytes`の`SLTYPE`宣言を`fg.ctx.topLevelDecls`(`newGoFnType`が`FNTYPE`用に使っているのと同じ仕組み)へ1回だけ(`codegenCtx.goBytesTypeEmitted`で重複排除)追記する必要があったため。`nativeReturnConversion`も、渡される文字列を「`^`プレフィックス付きの変換済みトークン」から「`?`プレフィックス付きの元の宣言文字列」へ意味を変えた(`goTypeToken`変換後の`^GoBytes`という文字列からは、それがどの意味論的な型ヒントだったか——`"?[]byte"`だったのか、たまたま`GoBytes`という名前のユーザー定義`gotype`だったのか——判別できなくなるため、変換前の元の文字列で判定する必要があった)——`internal/codegen/goasset.go`の`genBoxList`が`raws[i]`(既に`goTypeToken`で変換済みのトークンから作った`newTemp`)と`raw.Type`(変換前の元の`"?..."`文字列)の**両方**を`genNativeReturnValue`へ渡すよう変更し、後者だけを`nativeReturnConversion`の判定に使うことで解決した。
+
+**sema側は`gotype`/`gofunc`/`gomethod`が受け付ける全ての型文字列位置(`goTypeArg`・`goReturnsArg`の`StringLit`分岐)に共通の`validateSliceHint`チェックを追加し、`"?[]byte"`以外の`"?[]..."`形をコンパイル時に明確なエラーで拒否するようにした。** 実装前の分析で「`"?[]int"`のような他のスライス型を放置すると、`goTypeToken`が黙って`^[]int`という無効なトークンを生成し、結局amivmの「型として解釈できない形式です」という分かりにくいエラーに落ちる」という、CLAUDE.md「意味検証の責任分担」原則(IR生成の構文的正しさはamivm呼び出し前にWeave側で検査する)違反になることを見抜き、実装と同時に対処した——後から発覚する類の問題ではなく、設計段階で潰した。
+
+`examples/goassets.weave`に型ヒント付き`os.ReadFile`(戻り値側`"?[]byte"`)を、`examples/gomethods.weave`に型ヒント付き`bytes.NewReader`(引数側`"?[]byte"`、既存の`*strings.Reader`パターンと対をなす形)を追加し、`amivm`→`go build`→実行まで両方向を実地検証した(ファイル内容の読み取り結果が型ヒント無し版と完全一致、`bytes.NewReader("raw bytes").Len()`が`9`)。`"?[]int"`等の非サポートスライス型ヒントを`goReturns`・`goParams`の両方の位置で個別に実地検証し、いずれも分かりやすいコンパイルエラーで拒否されることを確認した。単体テスト(sema/codegen)を新規追加、全て green。既存の全17サンプル+`examples/modules`+`examples/multifile`の回帰も無変更で動作継続することを確認した。
+
 ## 開発の進め方
 
 1. `weave_spec.md`を正として実装する。仕様に曖昧な点や矛盾を見つけたら、まず仕様側を疑い、確定させてからコードを直す

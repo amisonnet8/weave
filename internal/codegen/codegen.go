@@ -69,11 +69,34 @@ type codegenCtx struct {
 	// the cost of a handful of extra top-level type decls is negligible).
 	goFnTypeCount int
 
+	// goBytesTypeEmitted tracks whether the one shared `SLTYPE ^GoBytes
+	// ^byte` declaration (goTypeToken's "?[]byte" special case,
+	// weave_spec.md §15.4) has already been added to topLevelDecls —
+	// unlike goFnTypeCount above, this IS deduplicated: every "?[]byte"
+	// hint anywhere in the program means exactly the same Go type, so
+	// there's no reason to declare it more than once (contrast
+	// newGoFnType, where each call site's signature can genuinely
+	// differ).
+	goBytesTypeEmitted bool
+
 	// topLevelDecls collects IR lines that must sit outside any FUNC —
-	// currently only the FNTYPE lines above. Emitted by Generate() before
-	// FUNC !weave_main, since funcGen.body/decls are both scoped inside
-	// one FUNC/CLOS and have nowhere to put a package-level declaration.
+	// the FNTYPE lines above, plus the SLTYPE below. Emitted by
+	// Generate() before FUNC !weave_main, since funcGen.body/decls are
+	// both scoped inside one FUNC/CLOS and have nowhere to put a
+	// package-level declaration.
 	topLevelDecls []string
+}
+
+// goBytesType returns the `^GoBytes` type token backing every "?[]byte"
+// type hint (goTypeToken's own doc comment has the full reasoning for
+// why a named SLTYPE is needed at all), emitting its one shared SLTYPE
+// declaration into topLevelDecls the first time it's needed.
+func (ctx *codegenCtx) goBytesType() string {
+	if !ctx.goBytesTypeEmitted {
+		ctx.topLevelDecls = append(ctx.topLevelDecls, "SLTYPE\t^GoBytes\t^byte\n")
+		ctx.goBytesTypeEmitted = true
+	}
+	return "^GoBytes"
 }
 
 // newGoFnType mints and records a fresh top-level FNTYPE declaration
@@ -240,7 +263,9 @@ func Generate(file *ast.File) (string, error) {
 
 	var b strings.Builder
 	// FNTYPE declarations (typed gomethod(...) calls, goasset.go's
-	// newGoFnType) must sit outside any FUNC — emit them first.
+	// newGoFnType) and the shared SLTYPE for "?[]byte" hints
+	// (codegenCtx.goBytesType) must sit outside any FUNC — emit them
+	// first.
 	for _, d := range ctx.topLevelDecls {
 		b.WriteString(d)
 	}

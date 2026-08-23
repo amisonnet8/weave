@@ -849,6 +849,49 @@ func TestCheck_BareGovarCallOutsideDeclarationIsAnError(t *testing.T) {
 	}
 }
 
+func TestCheck_ByteSliceReturnAndParamHintsAreValid(t *testing.T) {
+	// weave_spec.md §15.4: "?[]byte" is the one supported slice type
+	// hint, valid in both goReturns(...) (os.ReadFile-shaped) and
+	// goParams(...) (bytes.NewReader-shaped) positions.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "readFile", Value: typedGoFuncDeclExpr("?os.ReadFile", goReturnsExpr(&ast.StringLit{Value: "?[]byte"}, &ast.StringLit{Value: "?error"}), "?string")},
+			&ast.AssignStmt{Name: "newReader", Value: typedGoFuncDeclExpr("?bytes.NewReader", goReturnsExpr(&ast.StringLit{Value: "?any"}), "?[]byte")},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_UnsupportedSliceReturnHintIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: typedGoFuncDeclExpr("?os.ReadFile", goReturnsExpr(&ast.StringLit{Value: "?[]int"}), "?string")},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: only \"?[]byte\" is a supported slice type hint")
+	}
+}
+
+func TestCheck_UnsupportedSliceParamHintIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: typedGoFuncDeclExpr("?bytes.NewReader", goReturnsExpr(&ast.StringLit{Value: "?any"}), "?[]string")},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: only \"?[]byte\" is a supported slice type hint")
+	}
+}
+
 func TestCheck_GomethodAllOrNothingMismatchIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", Param: "args",

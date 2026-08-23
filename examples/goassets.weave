@@ -26,6 +26,20 @@ main = fn(args) {
 	raiseIfError(at(fileResult, 1))
 	print(at(fileResult, 0))
 
+	// The same os.ReadFile, this time with a typed signature declared via
+	// goReturns("?[]byte", "?error") (weave_spec.md §15.4) — "?[]byte" is
+	// the one supported slice type hint, lowering to a fully native call
+	// (internal/codegen/goasset.go's genGoFuncCall, no reflect) via a
+	// compiler-generated named slice type (SLTYPE ^GoBytes ^byte, since
+	// AMIVM has no literal `^[]byte` type operand at all). The raw []byte
+	// result is converted to a Weave string automatically, same as the
+	// untyped call above — the type hint changes how the call dispatches,
+	// not what value comes back.
+	readFileTyped = gofunc("?os.ReadFile", goReturns("?[]byte", "?error"), goParams("?string"))
+	typedFileResult = readFileTyped("examples/testdata.txt")
+	raiseIfError(at(typedFileResult, 1))
+	print(at(typedFileResult, 0))
+
 	// strconv.Atoi(s string) (int, error) — another (value, error) stdlib
 	// function, this time with a typed signature declared via
 	// goReturns(...)/goParams(...) (weave_spec.md §15.4). Unlike readFile
@@ -33,10 +47,6 @@ main = fn(args) {
 	// (internal/codegen/goasset.go's genGoFuncCall) — ASSERT the
 	// argument, CALL raw+err directly against ?strconv.Atoi, box both
 	// into a 2-element list. No reflect anywhere in this call.
-	// (os.ReadFile's own []byte return can't take this typed path — AMIVM's
-	// `type1` operand category has no slice-literal form like `^[]byte`,
-	// only named types via a prior SLTYPE — so it stays on the untyped
-	// path above.)
 	atoi = gofunc("?strconv.Atoi", goReturns("?int", "?error"), goParams("?string"))
 	atoiResult = atoi("42")
 	raiseIfError(at(atoiResult, 1))
