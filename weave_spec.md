@@ -650,6 +650,13 @@ print(at(join(fieldList, "-"), 0))                   // "the-quick-brown-fox"(�
 
 `gomethod`の戻り値・引数にも同じスライス型ヒントを書ける(内部的にamivmの`METHOD`命令を経由するため、`gotype`/`gofunc`と全く同じ扱いになる——16節参照)。
 
+**数値の型ヒント(`"?int"`・`"?byte"`・`"?uint64"`等)は`goReturns(...)`・`goParams(...)`のどちらの位置にも書ける。** Weaveの数値は常に`float64`(2節)であり、`goParams(...)`側は「Weaveの値を実際にASSERTで検証してから、宣言されたGoの数値型へ変換する」という順序で処理する——先に実際の動的型である`^float64`へASSERTし(ここで初めて型の不一致がチェックされる)、それから`int(...)`のようなGoのネイティブな数値変換を行う。戻り値側(`goReturns(...)`)は元から同じ理屈で`float64`へ変換していた(15.1節以降)ので、これは引数側にも対称な扱いを及ぼしただけ——どちらの向きでも完全にネイティブ(reflect不使用)。
+
+```
+repeat = gofunc("?strings.Repeat", goReturns("?string"), goParams("?string", "?int"))
+print(at(repeat("ab", 3), 0))   // "ababab"
+```
+
 ### 15.5 Go変数の読み取り —— `govar(...)`
 
 ```

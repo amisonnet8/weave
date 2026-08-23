@@ -1314,6 +1314,46 @@ func TestGenerate_TypedGoFuncCallGeneralSliceParamConvertsFromList(t *testing.T)
 	}
 }
 
+// TestGenerate_TypedGoFuncCallNumericParamAssertsFloat64ThenCasts covers
+// genAssertNumericParam: a numeric parameter hint ("?int" here) can't be
+// ASSERTed directly (the Weave value is always a float64 underneath,
+// weave_spec.md §2), so the value must first be ASSERTed to ^float64,
+// then native-cast to the declared type via `?int` — mirroring
+// nativeReturnConversion's own return-side conversion in reverse.
+func TestGenerate_TypedGoFuncCallNumericParamAssertsFloat64ThenCasts(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "repeat", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gofunc"},
+				Args: []ast.Expr{
+					&ast.StringLit{Value: "?strings.Repeat"},
+					goReturnsExpr(&ast.StringLit{Value: "?string"}),
+					goParamsExpr("?string", "?int"),
+				},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "repeat"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "ab"}, &ast.NumberLit{Value: 3}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "ASSERT\t") || !strings.Contains(ir, "^float64\n") {
+		t.Errorf("expected the count argument to be ASSERTed to ^float64 first, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "\t?int\t") {
+		t.Errorf("expected a native CALL casting the asserted float64 to ?int, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "\t?strings.Repeat\t") {
+		t.Errorf("expected a native CALL to ?strings.Repeat, got:\n%s", ir)
+	}
+}
+
 func TestGenerate_TypedGoMethodCallIsFullyNative(t *testing.T) {
 	body := append(typedGoReaderDeclStmts(),
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},

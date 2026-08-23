@@ -847,6 +847,20 @@ checkShape(PointShape, p)
 
 `examples/gomethods.weave`に`(*regexp.Regexp).SubexpNames() []string`(`gomethod`のスライス戻り値、`METHOD`修正の直接の動機)を、`examples/goassets.weave`に`strings.Fields`/`strings.Join`/`sort.Ints`(`gofunc`の一般スライス戻り値・引数)を追加し、`amivm`→`go build`→実行まで実地検証した。単体テスト(codegen/sema/weavert)を新規追加、全て green。既存の全19サンプル+`examples/modules`+`examples/multifile`の回帰も(`gomethods.weave`/`goassets.weave`の意図的な拡張を除き)無変更で動作継続することを確認した。weave_spec.md §15.4/§15.6/§19.7・CLAUDE.md「AMIVM-IRの書き方」節(`<`プレフィックス・`METHOD`命令の追記)も更新した。
 
+### `goParams(...)`の数値型ヒントが常に失敗していたバグを修正(一般スライス型ヒントの完了直後、副次的発見の追実装)
+
+スライス型ヒント一般化の作業中、副次的に「`goParams("?int")`のような数値の引数型ヒントは今のところ全く動かない」という別件のバグに気づいていた(スコープ外として当時は見送り、ユーザーへ報告のみ済ませていた)。ユーザーから改めて対応を依頼され、まず案を提示してから着手した。
+
+**原因は`genAssertOrTypeError`(引数側のASSERT)が、宣言された型ヒントへ値を直接ASSERTしていたこと。** Weaveの数値は常に`^any`の中身が`float64`(2節の確定判断)であるため、`ASSERT ... ^int`は動的型が`float64`である限り必ず失敗する——戻り値側(`genNativeReturnValue`/`nativeReturnConversion`)は既に「Goのネイティブ数値型→`?float64`へキャスト」という変換を持っていたが、これは戻り値を`^any`へboxする方向専用で、引数側(`^any`からGoのネイティブ数値型へ)の逆方向変換が存在しなかった。既存のサンプルがどれも数値の`goParams(...)`を使っていなかったため、これまで気づかれずに残っていた。
+
+**修正は戻り値側の変換をそのまま逆向きに使うだけで済んだ——新しい設計判断というより、既に確立していたパターン(`genAssertByteSliceParam`/`genAssertGeneralSliceParam`と同じ「2段階ヘルパー」)の単純な延長だった。** `genAssertNumericParam`を新設し、(1)`genAssertOrTypeError(fg, anyVal, "?float64", desc)`を再帰呼び出しして実際の動的型である`^float64`へまずASSERT(ここで型不一致は通常通り分かりやすいエラーになる)、(2)ネイティブな`CALL %casted : ?int %floatVal`(`int(f)`)でGoの宣言された数値型へキャスト、という2段で実装した。`numericGoTypeNames`から`float64`自身が意図的に除外されている(既存の設計)おかげで、(1)の再帰呼び出しが再び`genAssertNumericParam`へ戻ってくることはなく、素直に既定のASSERT分岐へ落ちる。
+
+**実装前に、`byte(f)`/`rune(f)`のような裸の数値型キャストが素のGo・実際の`amivm`バイナリの両方で問題なく通ることを直接probeで確認してから着手した**(このプロジェクト全体の「probe before implementing」の徹底を、小さなバグ修正でも省略しなかった一例)——`int`/`byte`/`rune`/`uint64`への変換をGoレベルで確認した後、手書きの`.ir`ファイルを実際の`amivm`バイナリへ通し、生成されたGoコード(`main_amivm_function_i = int(main_amivm_function_f)`等)が`go build`→実行まで問題なく動くことも確認した。
+
+sema側は元々`goTypeArg`が`"?"`プレフィックスとスライスヒントの妥当性しか検査しておらず、数値ヒントの構文自体は最初から妥当と判定していたため、**sema側の変更は一切不要だった**(バグは純粋に codegen 側の実行時ASSERTの問題)。
+
+`examples/goassets.weave`に`strings.Repeat(s string, count int) string`(`goParams("?string", "?int")`、既存のスライス引数ヒントの隣に配置)を追加し、`amivm`→`go build`→実行まで実地検証した(`"ababab"`)。単体テスト(codegen)を新規追加、全て green。既存の全19サンプル+`examples/modules`+`examples/multifile`の回帰も(`goassets.weave`の意図的な拡張を除き)無変更で動作継続することを確認した。weave_spec.md §15.4も更新した。
+
 ## 開発の進め方
 
 1. `weave_spec.md`を正として実装する。仕様に曖昧な点や矛盾を見つけたら、まず仕様側を疑い、確定させてからコードを直す

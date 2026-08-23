@@ -514,6 +514,11 @@ func genNativeReturnValue(fg *funcGen, raw, goRef string) string {
 // supported "?[]T" slice hint has the same problem for the same reason
 // (the Weave-side value is always a list Object, never a real []T) —
 // see genAssertGeneralSliceParam.
+//
+// Any other numeric Go type ("?int", "?byte", "?uint64", ...) has an
+// analogous problem: the Weave-side value arriving here is never
+// actually that Go type either, it's always a float64 (weave_spec.md
+// §2's "numbers are always float64" rule) — see genAssertNumericParam.
 func genAssertOrTypeError(fg *funcGen, anyVal, goRef, desc string) string {
 	if goRef == "?[]byte" || goRef == "?[]uint8" {
 		return genAssertByteSliceParam(fg, anyVal, desc)
@@ -522,6 +527,9 @@ func genAssertOrTypeError(fg *funcGen, anyVal, goRef, desc string) string {
 		if suffix, supported := sliceElemGoFuncSuffix[elem]; supported {
 			return genAssertGeneralSliceParam(fg, anyVal, elem, suffix)
 		}
+	}
+	if numericGoTypeNames[strings.TrimPrefix(goRef, "?")] {
+		return genAssertNumericParam(fg, anyVal, goRef, desc)
 	}
 	anyVal = ensureVariable(fg, anyVal)
 	concreteType := goTypeToken(fg, goRef)
@@ -582,6 +590,34 @@ func genAssertGeneralSliceParam(fg *funcGen, anyVal, elem, suffix string) string
 	sliceType := fg.ctx.goSliceType(elem)
 	casted := fg.newTemp(sliceType)
 	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.ListTo%s\t%s\n", casted, suffix, anyVal)
+	return casted
+}
+
+// genAssertNumericParam handles a declared numeric parameter/receiver
+// type other than "?float64" itself ("?int", "?byte", "?uint64", ...) —
+// the parameter-side mirror of genNativeReturnValue/
+// nativeReturnConversion's own numeric handling, running in the opposite
+// direction. weave_spec.md §2's "numbers are always float64" rule means
+// the Weave value arriving here is always actually a `^float64`
+// underneath, never the specific Go numeric kind the real Go call wants
+// — an ordinary ASSERT straight to e.g. `^int` would therefore always
+// fail (the dynamic type genuinely is float64, confirmed by direct
+// probe). ASSERT first extracts the `^float64` the value actually is (an
+// ordinary TypeError if it isn't — same clear-error guarantee every
+// other declared type gets; the recursive genAssertOrTypeError call
+// below can't loop back here since numericGoTypeNames deliberately
+// excludes float64 itself), then a native Go conversion (`int(f)`,
+// `byte(f)`, ... — an ordinary numeric truncating conversion, not the
+// rune-conversion trap CLAUDE.md's `CALL`はキャストにも使われる note
+// warns about, which is specific to int->string; confirmed valid for
+// every numericGoTypeNames entry via direct probe against the real
+// amivm binary) produces the concrete numeric value the real Go call
+// needs.
+func genAssertNumericParam(fg *funcGen, anyVal, goRef, desc string) string {
+	floatVal := genAssertOrTypeError(fg, anyVal, "?float64", desc)
+	bare := strings.TrimPrefix(goRef, "?")
+	casted := fg.newTemp(goTypeToken(fg, goRef))
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?%s\t%s\n", casted, bare, floatVal)
 	return casted
 }
 

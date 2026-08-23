@@ -78,6 +78,18 @@ main = fn(args) {
 	raiseIfError(at(atoiResult, 1))
 	print(at(atoiResult, 0) + 1)
 
+	// strings.Repeat(s string, count int) string — a typed *numeric
+	// parameter* hint ("?int" in goParams(...), as opposed to every
+	// numeric hint above, which only ever appeared in goReturns(...)).
+	// The Weave value passed for count is always a float64 underneath
+	// (weave_spec.md §2) — genAssertNumericParam (internal/codegen/
+	// goasset.go) first ASSERTs it down to the ^float64 it actually is,
+	// then a native `int(f)` conversion produces the concrete int the
+	// real Go call needs. Fully native, no reflect, same as every other
+	// typed Go-asset call.
+	repeat = gofunc("?strings.Repeat", goReturns("?string"), goParams("?string", "?int"))
+	print(at(repeat("ab", 3), 0))
+
 	// govar(...) (weave_spec.md §15.5) reads a Go package-level variable
 	// live — os.Stdout here, passed straight into another gofunc call
 	// (io.WriteString(w io.Writer, s string) (int, error), non-variadic
