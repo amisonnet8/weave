@@ -329,6 +329,8 @@ func genStmt(fg *funcGen, stmt ast.Stmt) error {
 		return nil
 	case *ast.PropAssignStmt:
 		return genPropAssignStmt(fg, s)
+	case *ast.IndexAssignStmt:
+		return genIndexAssignStmt(fg, s)
 	default:
 		return fmt.Errorf("codegen: unsupported statement %T", stmt)
 	}
@@ -804,6 +806,8 @@ func genExpr(fg *funcGen, expr ast.Expr) (string, error) {
 		return genObjectLit(fg, e)
 	case *ast.PropExpr:
 		return genPropExpr(fg, e)
+	case *ast.IndexExpr:
+		return genIndexExpr(fg, e)
 	default:
 		return "", fmt.Errorf("line %d: expression not yet implemented", exprLine(expr))
 	}
@@ -949,6 +953,8 @@ func exprLine(x ast.Expr) int {
 	case *ast.ObjectLit:
 		return x.Line
 	case *ast.PropExpr:
+		return x.Line
+	case *ast.IndexExpr:
 		return x.Line
 	default:
 		return 0

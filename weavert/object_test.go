@@ -209,6 +209,40 @@ func TestObjAt_NonNumberIndexPanics(t *testing.T) {
 	ObjAt(l, "0")
 }
 
+func TestObjSetAt(t *testing.T) {
+	l := NewObject()
+	ObjSet(l, "0", "first")
+	ObjSet(l, "1", "second")
+
+	ObjSetAt(l, 1.0, "updated")
+	if got := ObjAt(l, 1.0); got != "updated" {
+		t.Errorf("ObjAt(l, 1) after ObjSetAt = %v, want updated", got)
+	}
+	if got := ObjAt(l, 0.0); got != "first" {
+		t.Errorf("ObjAt(l, 0) = %v, want unchanged first", got)
+	}
+}
+
+func TestObjSetAt_OutOfRangePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected ObjSetAt with an out-of-range index to panic")
+		}
+	}()
+	ObjSetAt(NewObject(), 0.0, "x")
+}
+
+func TestObjSetAt_NonNumberIndexPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected ObjSetAt with a non-number index to panic")
+		}
+	}()
+	l := NewObject()
+	ObjSet(l, "0", "first")
+	ObjSetAt(l, "0", "x")
+}
+
 func TestKeyAt(t *testing.T) {
 	keys := ObjKeys(func() any {
 		o := NewObject()

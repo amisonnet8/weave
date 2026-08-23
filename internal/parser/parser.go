@@ -278,8 +278,10 @@ func (p *parser) parseSimpleStmt() (ast.Stmt, error) {
 			return &ast.AssignStmt{Name: target.Name, Value: val, Line: eq.Line}, nil
 		case *ast.PropExpr:
 			return &ast.PropAssignStmt{Obj: target.Obj, Prop: target.Prop, Value: val, Line: eq.Line}, nil
+		case *ast.IndexExpr:
+			return &ast.IndexAssignStmt{Obj: target.X, Index: target.Index, Value: val, Line: eq.Line}, nil
 		default:
-			return nil, fmt.Errorf("line %d: left-hand side of `=` must be an identifier or a property access", eq.Line)
+			return nil, fmt.Errorf("line %d: left-hand side of `=` must be an identifier, a property access, or an index access", eq.Line)
 		}
 	}
 	return &ast.ExprStmt{X: x, Line: exprLine(x)}, nil
@@ -458,8 +460,9 @@ func opText(k lexer.Kind) string {
 }
 
 // parseCallOrPrimary handles weave_spec.md §8's highest-precedence
-// level: a primary expression followed by any mix of calls (`(args)`)
-// and property accesses (`.name`), left to right — e.g. `obj.method(a).field`.
+// level: a primary expression followed by any mix of calls (`(args)`),
+// property accesses (`.name`), and index accesses (`[index]`), left to
+// right — e.g. `obj.method(a).field`, `matrix[i][j]`.
 func (p *parser) parseCallOrPrimary() (ast.Expr, error) {
 	x, err := p.parsePrimary()
 	if err != nil {
@@ -471,6 +474,8 @@ func (p *parser) parseCallOrPrimary() (ast.Expr, error) {
 			x, err = p.parseCallArgs(x)
 		case lexer.Dot:
 			x, err = p.parsePropAccess(x)
+		case lexer.LBracket:
+			x, err = p.parseIndexAccess(x)
 		default:
 			return x, nil
 		}
@@ -487,6 +492,27 @@ func (p *parser) parsePropAccess(obj ast.Expr) (ast.Expr, error) {
 		return nil, err
 	}
 	return &ast.PropExpr{Obj: obj, Prop: name.Literal, Line: dot.Line}, nil
+}
+
+// parseIndexAccess parses `x[index]` (weave_spec.md §3.1) — kept as its
+// own *ast.IndexExpr node rather than desugared straight to an at(x,
+// index) CallExpr here: parseSimpleStmt needs to be able to tell "this
+// was written with []" apart from an ordinary call once `=` might follow
+// immediately after, to decide between an IndexAssignStmt (write) and a
+// plain read — a CallExpr to `at` would look identical to one the user
+// wrote by hand, losing that distinction. Every other appearance of an
+// IndexExpr (not immediately assigned) still means exactly at(X, Index)
+// — see genIndexExpr, which emits the identical IR.
+func (p *parser) parseIndexAccess(x ast.Expr) (ast.Expr, error) {
+	lb := p.advance() // '['
+	idx, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(lexer.RBracket, "']'"); err != nil {
+		return nil, err
+	}
+	return &ast.IndexExpr{X: x, Index: idx, Line: lb.Line}, nil
 }
 
 func (p *parser) parseCallArgs(callee ast.Expr) (ast.Expr, error) {
@@ -692,6 +718,8 @@ func exprLine(x ast.Expr) int {
 	case *ast.ObjectLit:
 		return x.Line
 	case *ast.PropExpr:
+		return x.Line
+	case *ast.IndexExpr:
 		return x.Line
 	default:
 		return 0

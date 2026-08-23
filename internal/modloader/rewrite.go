@@ -109,6 +109,23 @@ func (rw *rewriter) rewriteStmt(stmt ast.Stmt) error {
 		}
 		s.Value = v
 		return nil
+	case *ast.IndexAssignStmt:
+		o, err := rw.rewriteExpr(s.Obj)
+		if err != nil {
+			return err
+		}
+		s.Obj = o
+		i, err := rw.rewriteExpr(s.Index)
+		if err != nil {
+			return err
+		}
+		s.Index = i
+		v, err := rw.rewriteExpr(s.Value)
+		if err != nil {
+			return err
+		}
+		s.Value = v
+		return nil
 	case *ast.ForStmt:
 		o, err := rw.rewriteExpr(s.Obj)
 		if err != nil {
@@ -190,6 +207,18 @@ func (rw *rewriter) rewriteExpr(expr ast.Expr) (ast.Expr, error) {
 			return nil, err
 		}
 		e.Obj = obj
+		return e, nil
+	case *ast.IndexExpr:
+		x, err := rw.rewriteExpr(e.X)
+		if err != nil {
+			return nil, err
+		}
+		e.X = x
+		idx, err := rw.rewriteExpr(e.Index)
+		if err != nil {
+			return nil, err
+		}
+		e.Index = idx
 		return e, nil
 	default:
 		return nil, fmt.Errorf("modloader: unsupported expression %T", expr)

@@ -599,6 +599,32 @@ func TestGenerate_PropAssignUsesObjSet(t *testing.T) {
 	}
 }
 
+func TestGenerate_IndexExprUsesObjAt(t *testing.T) {
+	// list[i] must emit the exact same IR as at(list, i) — see
+	// ast.IndexExpr's own doc comment.
+	fg := newFuncGen(&codegenCtx{})
+	got, err := genExpr(fg, &ast.IndexExpr{X: &ast.Ident{Name: "nums"}, Index: &ast.NumberLit{Value: 1}})
+	if err != nil {
+		t.Fatalf("genExpr: %v", err)
+	}
+	if !strings.Contains(fg.body.String(), "CALL\t"+got+"\t:\t?weavert.ObjAt\t%nums\t1.0\n") {
+		t.Errorf("expected ObjAt, got:\n%s", fg.body.String())
+	}
+}
+
+func TestGenerate_IndexAssignUsesObjSetAt(t *testing.T) {
+	fg := newFuncGen(&codegenCtx{})
+	err := genIndexAssignStmt(fg, &ast.IndexAssignStmt{
+		Obj: &ast.Ident{Name: "nums"}, Index: &ast.NumberLit{Value: 1}, Value: &ast.NumberLit{Value: 99},
+	})
+	if err != nil {
+		t.Fatalf("genIndexAssignStmt: %v", err)
+	}
+	if !strings.Contains(fg.body.String(), "CALL\t:\t?weavert.ObjSetAt\t%nums\t1.0\t99.0\n") {
+		t.Errorf("expected ObjSetAt, got:\n%s", fg.body.String())
+	}
+}
+
 func TestGenerate_HasAndRemoveBuiltins(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", Param: "args",

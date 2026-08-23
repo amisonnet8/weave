@@ -540,6 +540,45 @@ func TestCheck_PropAssignChecksObjAndValue(t *testing.T) {
 	}
 }
 
+func TestCheck_IndexExprChecksXAndIndex(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.IndexExpr{
+			X: &ast.Ident{Name: "undefined"}, Index: &ast.NumberLit{Value: 0},
+		}}},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: index access on an undefined object")
+	}
+}
+
+func TestCheck_IndexExprChecksIndexExpr(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "nums", Value: &ast.CallExpr{Callee: &ast.Ident{Name: "list"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
+			&ast.ReturnStmt{Value: &ast.IndexExpr{X: &ast.Ident{Name: "nums"}, Index: &ast.Ident{Name: "undefined"}}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: index expression itself is undefined")
+	}
+}
+
+func TestCheck_IndexAssignChecksObjIndexAndValue(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "nums", Value: &ast.CallExpr{Callee: &ast.Ident{Name: "list"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
+			&ast.IndexAssignStmt{Obj: &ast.Ident{Name: "nums"}, Index: &ast.NumberLit{Value: 0}, Value: &ast.Ident{Name: "undefined"}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: index assignment value is undefined")
+	}
+}
+
 func TestCheck_HasAndRemoveAreBuiltins(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", Param: "args",

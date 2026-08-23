@@ -124,6 +124,28 @@ func ObjAt(obj any, index any) any {
 	return v
 }
 
+// ObjSetAt implements `list[index] = value` (weave_spec.md §3.1) — the
+// write-side counterpart to ObjAt above. Like ObjAt's read, an
+// out-of-range or non-numeric index panics rather than silently growing
+// the list: weave_spec.md §11 already documents that list/at have no
+// insert/append operation, and treating an out-of-bounds write as a
+// silent insert would quietly contradict that — a typo'd index is far
+// more likely than an intentional sparse-list append. To grow a list,
+// build a new one via list(...) instead.
+func ObjSetAt(obj any, index any, val any) any {
+	idx, ok := index.(float64)
+	if !ok {
+		panic(fmt.Sprintf("weave: list[...] = ... requires a number index, got %T", index))
+	}
+	o := objOf(obj)
+	key := strconv.Itoa(int(idx))
+	if _, ok := o[key]; !ok {
+		panic(fmt.Sprintf("weave: list[...] = ...: no element at index %v", idx))
+	}
+	o[key] = val
+	return nil
+}
+
 // ObjKeys returns obj's own property names for `for k, v in obj`
 // (weave_spec.md §7's "オブジェクトの自分自身が持つプロパティを列挙する
 // (プロトタイプは辿らない)" — matching ObjHas/ObjRemove's own-only

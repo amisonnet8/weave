@@ -125,6 +125,23 @@ func TestTokenize_LineCommentInsideBlockCommentIsLiteralText(t *testing.T) {
 	}
 }
 
+func TestTokenize_Brackets(t *testing.T) {
+	// weave_spec.md §3.1: list[index] read/write sugar needs [ and ].
+	toks, err := Tokenize("nums[0]\n")
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	want := []Kind{Ident, LBracket, Number, RBracket, Newline, EOF}
+	if len(toks) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(toks), len(want), toks)
+	}
+	for i, k := range want {
+		if toks[i].Kind != k {
+			t.Errorf("token %d: got Kind %d, want %d", i, toks[i].Kind, k)
+		}
+	}
+}
+
 func TestTokenize_UnterminatedString(t *testing.T) {
 	if _, err := Tokenize(`"abc`); err == nil {
 		t.Fatal("expected an error for an unterminated string literal")

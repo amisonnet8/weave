@@ -372,6 +372,10 @@ func (l *Lexer) lexOperator(line int) (Token, error) {
 		return Token{Kind: LBrace, Literal: "{", Line: line}, nil
 	case '}':
 		return Token{Kind: RBrace, Literal: "}", Line: line}, nil
+	case '[':
+		return Token{Kind: LBracket, Literal: "[", Line: line}, nil
+	case ']':
+		return Token{Kind: RBracket, Literal: "]", Line: line}, nil
 	case ',':
 		return Token{Kind: Comma, Literal: ",", Line: line}, nil
 	case ':':

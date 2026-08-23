@@ -41,6 +41,8 @@ const (
 	RParen
 	LBrace
 	RBrace
+	LBracket
+	RBracket
 	Comma
 	Colon
 	Dot

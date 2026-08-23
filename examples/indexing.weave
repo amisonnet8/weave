@@ -1,0 +1,37 @@
+// weave_spec.md §3.1: list[index] is sugar over at(list, index) for
+// reading, and a new write form (list[index] = value, sugar over
+// weavert.ObjSetAt) for updating an existing position. Neither form
+// grows a list — the index must already exist, same as at(...)'s own
+// out-of-range panic (see weavert/object.go's ObjSetAt doc comment).
+main = fn(args) {
+	nums = list(10, 20, 30)
+	print(nums[0])
+	print(at(nums, 0))   // same value, same underlying call
+
+	i = 1
+	print(nums[i])   // the index can be any expression, not just a literal
+
+	nums[1] = 99
+	print(nums[1])
+
+	// [] chains left to right just like .prop/(args) do, so nested lists
+	// read and write through multiple levels naturally.
+	matrix = list(list(1, 2), list(3, 4))
+	print(matrix[0][1])
+	matrix[1][0] = 30
+	print(matrix[1][0])
+
+	// [] and .prop mix freely — a list stored as a property, or a
+	// property reached through a list element, both just work.
+	board = { cells: list("x", "o", "x") }
+	print(board.cells[2])
+	board.cells[2] = "o"
+	print(board.cells[2])
+
+	players = list({ name: "Alice" }, { name: "Bob" })
+	print(players[1].name)
+	players[1].name = "Bobby"
+	print(players[1].name)
+
+	return 0
+}

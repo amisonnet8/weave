@@ -123,6 +123,18 @@ type PropAssignStmt struct {
 	Line  int
 }
 
+// IndexAssignStmt is `list[index] = value` (weave_spec.md §3.1) — sugar
+// over weavert.ObjSetAt, requiring the index to already exist (like
+// IndexExpr's own read side, at(...)/weavert.ObjAt). Unlike
+// PropAssignStmt, Index is a full expression (not a static name), so
+// sema/codegen must check it like any other operand.
+type IndexAssignStmt struct {
+	Obj   Expr
+	Index Expr
+	Value Expr
+	Line  int
+}
+
 // ForStmt is `for k, v in obj {...}` (weave_spec.md §7): enumerates
 // obj's own properties — never a prototype's, matching `has`/`remove`'s
 // own-only scope (§7's own comment: "プロトタイプは辿らない").
@@ -134,15 +146,16 @@ type ForStmt struct {
 	Line  int
 }
 
-func (*ExprStmt) stmtNode()       {}
-func (*ReturnStmt) stmtNode()     {}
-func (*AssignStmt) stmtNode()     {}
-func (*IfStmt) stmtNode()         {}
-func (*WhileStmt) stmtNode()      {}
-func (*BreakStmt) stmtNode()      {}
-func (*ContinueStmt) stmtNode()   {}
-func (*ForStmt) stmtNode()        {}
-func (*PropAssignStmt) stmtNode() {}
+func (*ExprStmt) stmtNode()        {}
+func (*ReturnStmt) stmtNode()      {}
+func (*AssignStmt) stmtNode()      {}
+func (*IfStmt) stmtNode()          {}
+func (*WhileStmt) stmtNode()       {}
+func (*BreakStmt) stmtNode()       {}
+func (*ContinueStmt) stmtNode()    {}
+func (*ForStmt) stmtNode()         {}
+func (*PropAssignStmt) stmtNode()  {}
+func (*IndexAssignStmt) stmtNode() {}
 
 // Expr is a Weave expression.
 type Expr interface {
@@ -244,6 +257,18 @@ type PropExpr struct {
 	Line int
 }
 
+// IndexExpr is `list[index]` (weave_spec.md §3.1) — sugar over
+// `at(list, index)`, kept as its own node (rather than desugared
+// straight to a CallExpr at parse time) so parseSimpleStmt can still
+// tell "this was written with []" apart when `=` follows, and produce
+// IndexAssignStmt instead of a read. Every other appearance behaves
+// exactly like at(X, Index) (genIndexExpr emits the identical IR).
+type IndexExpr struct {
+	X     Expr
+	Index Expr
+	Line  int
+}
+
 func (*Ident) exprNode()      {}
 func (*NumberLit) exprNode()  {}
 func (*StringLit) exprNode()  {}
@@ -255,3 +280,4 @@ func (*UnaryExpr) exprNode()  {}
 func (*FuncLit) exprNode()    {}
 func (*ObjectLit) exprNode()  {}
 func (*PropExpr) exprNode()   {}
+func (*IndexExpr) exprNode()  {}

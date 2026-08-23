@@ -60,6 +60,45 @@ func genPropAssignStmt(fg *funcGen, s *ast.PropAssignStmt) error {
 	return nil
 }
 
+// genIndexExpr lowers `list[index]` (weave_spec.md §3.1) to
+// weavert.ObjAt — identical IR to at(list, index) (genBuiltinCall's own
+// "at" case), since IndexExpr means exactly the same thing whenever it
+// isn't the target of an assignment (see ast.IndexExpr's doc comment).
+func genIndexExpr(fg *funcGen, e *ast.IndexExpr) (string, error) {
+	obj, err := genExpr(fg, e.X)
+	if err != nil {
+		return "", err
+	}
+	idx, err := genExpr(fg, e.Index)
+	if err != nil {
+		return "", err
+	}
+	tmp := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.ObjAt\t%s\t%s\n", tmp, obj, idx)
+	return tmp, nil
+}
+
+// genIndexAssignStmt lowers `list[index] = value` (weave_spec.md §3.1)
+// to weavert.ObjSetAt, discarding its nil result — the write-side
+// counterpart to genIndexExpr, requiring the index to already exist
+// (weavert.ObjSetAt's own doc comment explains why).
+func genIndexAssignStmt(fg *funcGen, s *ast.IndexAssignStmt) error {
+	obj, err := genExpr(fg, s.Obj)
+	if err != nil {
+		return err
+	}
+	idx, err := genExpr(fg, s.Index)
+	if err != nil {
+		return err
+	}
+	val, err := genExpr(fg, s.Value)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(&fg.body, "\tCALL\t:\t?weavert.ObjSetAt\t%s\t%s\t%s\n", obj, idx, val)
+	return nil
+}
+
 // quoteKey renders a property name as a Go string literal token — the
 // same shape genExpr's *ast.StringLit case produces, since a property
 // name is exactly a Weave string value at the weavert boundary

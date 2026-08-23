@@ -475,6 +475,60 @@ func TestParse_PropAssignStmt(t *testing.T) {
 	}
 }
 
+func TestParse_IndexExpr(t *testing.T) {
+	x, ok := parseExprForTest(t, `nums[i]`).(*ast.IndexExpr)
+	if !ok {
+		t.Fatalf("got %T, want *ast.IndexExpr", x)
+	}
+	obj, ok := x.X.(*ast.Ident)
+	if !ok || obj.Name != "nums" {
+		t.Errorf("X = %#v, want Ident(nums)", x.X)
+	}
+	idx, ok := x.Index.(*ast.Ident)
+	if !ok || idx.Name != "i" {
+		t.Errorf("Index = %#v, want Ident(i)", x.Index)
+	}
+}
+
+func TestParse_ChainedIndexExpr(t *testing.T) {
+	// matrix[i][j] — left-to-right postfix chaining, same as .prop/(args).
+	outer, ok := parseExprForTest(t, `matrix[i][j]`).(*ast.IndexExpr)
+	if !ok {
+		t.Fatalf("got %T, want *ast.IndexExpr", outer)
+	}
+	inner, ok := outer.X.(*ast.IndexExpr)
+	if !ok {
+		t.Fatalf("outer.X = %T, want *ast.IndexExpr", outer.X)
+	}
+	obj, ok := inner.X.(*ast.Ident)
+	if !ok || obj.Name != "matrix" {
+		t.Errorf("inner.X = %#v, want Ident(matrix)", inner.X)
+	}
+}
+
+func TestParse_IndexAssignStmt(t *testing.T) {
+	file, err := Parse("main = fn(args) {\n\tnums[i] = 10\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	assign, ok := file.Main.Body[0].(*ast.IndexAssignStmt)
+	if !ok {
+		t.Fatalf("statement 0: got %T, want *ast.IndexAssignStmt", file.Main.Body[0])
+	}
+	obj, ok := assign.Obj.(*ast.Ident)
+	if !ok || obj.Name != "nums" {
+		t.Errorf("Obj = %#v, want Ident(nums)", assign.Obj)
+	}
+	idx, ok := assign.Index.(*ast.Ident)
+	if !ok || idx.Name != "i" {
+		t.Errorf("Index = %#v, want Ident(i)", assign.Index)
+	}
+	val, ok := assign.Value.(*ast.NumberLit)
+	if !ok || val.Value != 10 {
+		t.Errorf("Value = %#v, want NumberLit(10)", assign.Value)
+	}
+}
+
 func TestParse_MethodCallOnPropExpr(t *testing.T) {
 	// obj.greet("x") — a call whose callee is a property access, not a
 	// plain identifier (general-call/builtin dispatch is codegen's job,

@@ -282,6 +282,14 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 			return err
 		}
 		return c.checkExpr(s.Value, sc)
+	case *ast.IndexAssignStmt:
+		if err := c.checkExpr(s.Obj, sc); err != nil {
+			return err
+		}
+		if err := c.checkExpr(s.Index, sc); err != nil {
+			return err
+		}
+		return c.checkExpr(s.Value, sc)
 	default:
 		return fmt.Errorf("sema: unsupported statement %T", stmt)
 	}
@@ -398,6 +406,11 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 		return nil
 	case *ast.PropExpr:
 		return c.checkExpr(e.Obj, sc)
+	case *ast.IndexExpr:
+		if err := c.checkExpr(e.X, sc); err != nil {
+			return err
+		}
+		return c.checkExpr(e.Index, sc)
 	default:
 		return fmt.Errorf("sema: unsupported expression %T", expr)
 	}
