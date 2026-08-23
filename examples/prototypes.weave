@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	base = {
 		greet: fn(self) { print(self.name + " says hi") }
 	}

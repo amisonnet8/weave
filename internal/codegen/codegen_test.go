@@ -10,8 +10,8 @@ import (
 func TestGenerate_HelloWorld(t *testing.T) {
 	file := &ast.File{
 		Main: &ast.FuncDecl{
-			Name:       "main",
-			ReturnType: "int",
+			Name:  "main",
+			Param: "args",
 			Body: []ast.Stmt{
 				&ast.ExprStmt{X: &ast.CallExpr{
 					Callee: &ast.Ident{Name: "print"},
@@ -27,15 +27,19 @@ func TestGenerate_HelloWorld(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	want := "FUNC\t!weave_main\t:\t^int\n" +
+	want := "FUNC\t!weave_main\t^any\t:\t^int\n" +
+		"\tVAR\t%args\t^any\n" +
 		"\tVAR\t%__exitcode\t^int\n" +
+		"\tSET\t%args\t$1\n" +
 		"\tCALL\t:\t?weavert.Print\t\"Hello, Weave!\"\n" +
 		"\tCALL\t%__exitcode\t:\t?weavert.ExitCode\t0.0\n" +
 		"\tRET\t%__exitcode\n" +
 		"ENDFUNC\n" +
 		"FUNC\t!main\t:\n" +
 		"\tVAR\t%exitcode\t^int\n" +
-		"\tCALL\t%exitcode\t:\t!weave_main\n" +
+		"\tVAR\t%args\t^any\n" +
+		"\tCALL\t%args\t:\t?weavert.Args\n" +
+		"\tCALL\t%exitcode\t:\t!weave_main\t%args\n" +
 		"\tCALL\t:\t?os.Exit\t%exitcode\n" +
 		"\tRET\n" +
 		"ENDFUNC\n"
@@ -46,7 +50,7 @@ func TestGenerate_HelloWorld(t *testing.T) {
 
 func TestGenerate_VariablesAreHoistedAndSetInOrder(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "x", Value: &ast.NumberLit{Value: 1}},
 			&ast.AssignStmt{Name: "x", Value: &ast.NumberLit{Value: 2}}, // reassignment: no second VAR
@@ -100,7 +104,7 @@ func TestGenerate_LiteralKinds(t *testing.T) {
 
 func TestGenerate_BinaryExprEvaluatesOperandsThenCallsWeavert(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.BinaryExpr{
 			Op: "+",
 			X:  &ast.NumberLit{Value: 1},
@@ -170,7 +174,7 @@ func TestGenerate_UnknownBinaryOperatorIsAnError(t *testing.T) {
 
 func TestGenerate_ReturnRoutesThroughExitCode(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.Ident{Name: "x"}}},
 	}}
 	ir, err := Generate(file)
@@ -184,7 +188,7 @@ func TestGenerate_ReturnRoutesThroughExitCode(t *testing.T) {
 
 func TestGenerate_MissingReturnIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{}},
 	}}
 	if _, err := Generate(file); err == nil {
@@ -245,7 +249,7 @@ func blocksBalance(t *testing.T, ir string) {
 
 func TestGenerate_IfElifElseBlocksBalance(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.IfStmt{
 				Clauses: []ast.IfClause{
@@ -280,7 +284,7 @@ func TestGenerate_NestedWhileBreakContinueBlocksBalance(t *testing.T) {
 	// "BREAK/CONTINUE must be inside an open LOOP" check plus the
 	// exact-nesting-count checks below are what's left to verify.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.WhileStmt{
 				Cond: &ast.BoolLit{Value: true},
@@ -337,7 +341,7 @@ func TestGenerate_ShortCircuitOrSkipsRHSOnTrue(t *testing.T) {
 
 func TestGenerate_ConditionRoutesThroughCheckBool(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.WhileStmt{Cond: &ast.Ident{Name: "cond"}, Body: nil},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -367,7 +371,7 @@ func TestGenerate_ConditionRoutesThroughCheckBool(t *testing.T) {
 
 func TestGenerate_FuncLitEmitsNestedCLOS(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "base", Value: &ast.NumberLit{Value: 100}},
 			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
@@ -422,7 +426,7 @@ func TestGenerate_NestedCurryProducesTwoLevelsOfCLOS(t *testing.T) {
 	}}
 	outer := &ast.FuncLit{Param: "a", Body: []ast.Stmt{&ast.ReturnStmt{Value: inner}}}
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "add", Value: outer},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -451,7 +455,7 @@ func TestGenerate_AssignInsideClosureReassignsOuterBinding(t *testing.T) {
 	// shadow copy — the entire point of switching to native CLOS capture
 	// (see funcGen's and genAssignStmt's doc comments).
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "n", Value: &ast.NumberLit{Value: 1}},
 			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
@@ -483,7 +487,7 @@ func TestGenerate_AssignInsideClosureReassignsOuterBinding(t *testing.T) {
 
 func TestGenerate_MultiArgCallCurriesThroughWeavertCall(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.CallExpr{
 			Callee: &ast.Ident{Name: "f"},
 			Args:   []ast.Expr{&ast.NumberLit{Value: 1}, &ast.NumberLit{Value: 2}},
@@ -556,7 +560,7 @@ func TestGenerate_PropAssignUsesObjSet(t *testing.T) {
 
 func TestGenerate_HasAndRemoveBuiltins(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ExprStmt{X: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "has"},
@@ -665,7 +669,7 @@ func TestGenerate_ListCallBuildsNumericKeyedObject(t *testing.T) {
 
 func TestGenerate_LenAndStringBuiltins(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "len"}, Args: []ast.Expr{&ast.StringLit{Value: "hi"}}}},
 			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "string"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
@@ -686,7 +690,7 @@ func TestGenerate_LenAndStringBuiltins(t *testing.T) {
 
 func TestGenerate_ForInBlocksBalanceAndUseKeyValueVars(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ForStmt{
 				Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"},
@@ -764,7 +768,7 @@ func TestGenerate_ForInInsideClosureUsesPrefixedKeyValueTokens(t *testing.T) {
 
 func TestGenerate_GoFuncDeclEmitsNoIR(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "toUpper", Value: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "gofunc"},
@@ -787,7 +791,7 @@ func TestGenerate_GoFuncDeclEmitsNoIR(t *testing.T) {
 
 func TestGenerate_GoFuncCallRoutesThroughCallGoFuncList(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "toUpper", Value: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "gofunc"},
@@ -823,7 +827,7 @@ func TestGenerate_GoFuncCallRoutesThroughCallGoFuncList(t *testing.T) {
 
 func TestGenerate_GoTypeDeclEmitsNoIR(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "GoFile", Value: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "gotype"},
@@ -907,7 +911,7 @@ func TestGenerate_GoFuncCallAlwaysBuildsListViaReflect(t *testing.T) {
 	// visible CALL to NormalizeGoValue in the emitted IR; this just
 	// confirms the gofunc call itself is still routed through it.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: append(goReaderDeclStmts(), &ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}),
 	}}
 	ir, err := Generate(file)
@@ -963,7 +967,7 @@ func TestGenerate_StaticGoMethodCallBypassesWeavertObjGet(t *testing.T) {
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	ir, err := Generate(file)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -1013,7 +1017,7 @@ func typedGoReaderDeclStmts() []ast.Stmt {
 
 func TestGenerate_TypedGoFuncCallIsFullyNative(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: append(typedGoReaderDeclStmts(), &ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}),
 	}}
 	ir, err := Generate(file)
@@ -1042,7 +1046,7 @@ func TestGenerate_TypedGoMethodCallIsFullyNative(t *testing.T) {
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	ir, err := Generate(file)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -1112,7 +1116,7 @@ func TestGenerate_TypedGoMethodCallWithMultipleReturnsBuildsMultiElementList(t *
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "readByte"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	}
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	ir, err := Generate(file)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -1148,7 +1152,7 @@ func TestGenerate_TypedGoFuncCallWithMultipleReturnsBuildsMultiElementList(t *te
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "atoi"}, Args: []ast.Expr{&ast.StringLit{Value: "42"}}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	}
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	ir, err := Generate(file)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -1181,7 +1185,7 @@ func TestGenerate_TypedNiladicReturnBuildsEmptyList(t *testing.T) {
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "reset"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	}
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	ir, err := Generate(file)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -1205,7 +1209,7 @@ func TestGenerate_UntypedGoMethodCallStillUsesReflectFallback(t *testing.T) {
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	ir, err := Generate(file)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -1222,7 +1226,7 @@ func TestGenerate_OrdinaryObjectMethodStillUsesDynamicDispatch(t *testing.T) {
 	// A variable that was never assigned from a gofunc(...) call must
 	// keep using the ordinary dynamic obj.method() path.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "obj", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
 				{Name: "greet", Value: &ast.FuncLit{Param: "self", Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}}}}},
@@ -1250,7 +1254,7 @@ func TestGenerate_TopLevelStatementsPrecedeMainBody(t *testing.T) {
 			&ast.AssignStmt{Name: "greeting", Value: &ast.StringLit{Value: "hi"}},
 		},
 		Main: &ast.FuncDecl{
-			Name: "main", ReturnType: "int",
+			Name: "main", Param: "args",
 			Body: []ast.Stmt{
 				&ast.ExprStmt{X: &ast.CallExpr{
 					Callee: &ast.Ident{Name: "print"},
@@ -1296,7 +1300,7 @@ func TestGenerate_GoFuncCallInsideClosureDoesNotCaptureGoFuncName(t *testing.T) 
 			}},
 		),
 		Main: &ast.FuncDecl{
-			Name: "main", ReturnType: "int",
+			Name: "main", Param: "args",
 			Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
 		},
 	}
@@ -1318,7 +1322,7 @@ func TestGenerate_SelfRecursiveFuncLitReferencesOwnHoistedVar(t *testing.T) {
 	// must resolve to weave_main's own %fact, not fall through to some
 	// undefined/fresh token.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "fact", Value: &ast.FuncLit{
 				Param: "n",
@@ -1347,7 +1351,7 @@ func TestGenerate_SelfRecursiveFuncLitReferencesOwnHoistedVar(t *testing.T) {
 
 func TestGenerate_ShapeDeclEmitsNoIR(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "PointShape", Value: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "shape"},
@@ -1369,7 +1373,7 @@ func TestGenerate_ShapeDeclEmitsNoIR(t *testing.T) {
 
 func TestGenerate_CheckShapeUsesAssertForScalarFieldsAndIsWeaveFuncForFunctions(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "S", Value: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "shape"},

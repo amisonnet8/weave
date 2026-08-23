@@ -18,12 +18,9 @@ type parser struct {
 
 // Parse tokenizes and parses src into a *ast.File.
 //
-// Step 1 scope: only `func main(): int { ... }` is recognized at the top
-// level, with a statement grammar limited to bare calls and `return`.
 // The parser deliberately stays permissive about *names* it doesn't yet
-// understand semantically (e.g. it accepts any identifier as the
-// function name or return type) — internal/sema is where those rules
-// are enforced, matching Seed/Cascade's split of responsibilities.
+// understand semantically — internal/sema is where those rules are
+// enforced, matching Seed/Cascade's split of responsibilities.
 func Parse(src string) (*ast.File, error) {
 	toks, err := lexer.Tokenize(src)
 	if err != nil {
@@ -58,75 +55,73 @@ func (p *parser) expect(k lexer.Kind, what string) (lexer.Token, error) {
 
 // parseFile parses a Weave source file: an interleaving of ordinary
 // top-level statements (weave_spec.md §17's gotype/gofunc/package(...)
-// declarations, prototype object literals) and exactly one `func
-// main(): int {...}` declaration, in any order. There is no dedicated
-// `import` syntax — a cross-package reference is just an ordinary
-// `name = package("<path>")` top-level assignment (weave_spec.md
-// §17.2), parsed here as a plain ast.AssignStmt like any other; the
-// pattern is recognized and fully resolved by internal/modloader, which
-// runs before sema/codegen ever see a *File (see modloader's package
-// doc comment). See ast.File's doc comment for why top-level statements
-// need no dedicated codegen/sema treatment beyond being processed
-// against the same scope as main's body.
+// declarations, prototype object literals) and at most one entry-point
+// declaration (`main = fn(args) {...}`, weave_spec.md §12), in any
+// order. There is no dedicated `import` syntax — a cross-package
+// reference is just an ordinary `name = package("<path>")` top-level
+// assignment (weave_spec.md §17.2), parsed here as a plain
+// ast.AssignStmt like any other; the pattern is recognized and fully
+// resolved by internal/modloader, which runs before sema/codegen ever
+// see a *File (see modloader's package doc comment). See ast.File's doc
+// comment for why top-level statements need no dedicated codegen/sema
+// treatment beyond being processed against the same scope as main's
+// body.
+//
+// main's own declaration follows this exact same "ordinary-shaped
+// assignment, recognized by name" pattern (ast.FuncDecl's own doc
+// comment) — every top-level statement is parsed identically via
+// parseSimpleStmt, with no dedicated grammar production at all; this
+// function's only extra job is to notice, after the fact, when one of
+// those parsed statements happens to be a top-level `*ast.AssignStmt`
+// named "main" whose value is directly a `*ast.FuncLit`, and pull it out
+// into the dedicated Main field instead of leaving it in TopLevel. A
+// second one appearing in the same file is rejected here.
 func (p *parser) parseFile() (*ast.File, error) {
 	p.skipNewlines()
 
 	var topLevel []ast.Stmt
 	var main *ast.FuncDecl
 	for p.peek().Kind != lexer.EOF {
-		if p.peek().Kind == lexer.KwFunc {
-			fn, err := p.parseFuncDecl()
-			if err != nil {
-				return nil, err
-			}
+		stmt, err := p.parseSimpleStmt()
+		if err != nil {
+			return nil, err
+		}
+		if fn, ok := mainDecl(stmt); ok {
 			if main != nil {
-				return nil, fmt.Errorf("line %d: only one `func main` is allowed per file", fn.Line)
+				return nil, fmt.Errorf("line %d: only one `main = fn(...) {...}` is allowed per file", fn.Line)
 			}
 			main = fn
 		} else {
-			stmt, err := p.parseSimpleStmt()
-			if err != nil {
-				return nil, err
-			}
 			topLevel = append(topLevel, stmt)
 		}
 		p.skipNewlines()
 	}
-	// A single parsed file need not contain `func main` at all — a
-	// package member file (weave_spec.md §17.1) legitimately has none.
-	// Requiring at least one `func main` somewhere in the whole package
-	// is internal/modloader's job, once every file in the package has
-	// been merged (see modloader.Load).
+	// A single parsed file need not contain `main` at all — a package
+	// member file (weave_spec.md §17.1) legitimately has none. Requiring
+	// exactly one somewhere in the whole root package is internal/
+	// modloader's job, once every file in the package has been merged
+	// (see modloader.Load).
 	return &ast.File{TopLevel: topLevel, Main: main}, nil
 }
 
-func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {
-	kw, err := p.expect(lexer.KwFunc, "'func'")
-	if err != nil {
-		return nil, err
+// mainDecl reports whether stmt is `main = fn(args) {...}` — a top-level
+// AssignStmt named "main" whose value is directly a function literal —
+// and if so, converts it to the ast.FuncDecl shape parseFile's caller
+// promotes into ast.File.Main. Any other shape naming "main" (e.g.
+// `main = 5`) is deliberately left as an ordinary AssignStmt: it falls
+// through to internal/sema's reservedName check instead, which gives
+// every misuse of the reserved name "main" one single, consistent error
+// path rather than splitting it between parser- and sema-raised errors.
+func mainDecl(stmt ast.Stmt) (*ast.FuncDecl, bool) {
+	a, ok := stmt.(*ast.AssignStmt)
+	if !ok || a.Name != "main" {
+		return nil, false
 	}
-	name, err := p.expect(lexer.Ident, "function name")
-	if err != nil {
-		return nil, err
+	lit, ok := a.Value.(*ast.FuncLit)
+	if !ok {
+		return nil, false
 	}
-	if _, err := p.expect(lexer.LParen, "'('"); err != nil {
-		return nil, err
-	}
-	if _, err := p.expect(lexer.RParen, "')'"); err != nil {
-		return nil, err
-	}
-	if _, err := p.expect(lexer.Colon, "':'"); err != nil {
-		return nil, err
-	}
-	retType, err := p.expect(lexer.Ident, "return type")
-	if err != nil {
-		return nil, err
-	}
-	body, err := p.parseBlock()
-	if err != nil {
-		return nil, err
-	}
-	return &ast.FuncDecl{Name: name.Literal, ReturnType: retType.Literal, Body: body, Line: kw.Line}, nil
+	return &ast.FuncDecl{Name: "main", Param: lit.Param, Body: lit.Body, Line: a.Line}, true
 }
 
 func (p *parser) parseBlock() ([]ast.Stmt, error) {

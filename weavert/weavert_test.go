@@ -1,6 +1,10 @@
 package weavert
 
-import "testing"
+import (
+	"os"
+	"strconv"
+	"testing"
+)
 
 func TestToString(t *testing.T) {
 	tests := []struct {
@@ -52,4 +56,16 @@ func TestLen_InvalidTypePanics(t *testing.T) {
 		}
 	}()
 	Len(5.0)
+}
+
+func TestArgs_MatchesOSArgsIncludingProgramName(t *testing.T) {
+	got := Args().(Object)
+	if len(got) != len(os.Args) {
+		t.Fatalf("Args() has %d elements, want %d (len(os.Args))", len(got), len(os.Args))
+	}
+	for i, want := range os.Args {
+		if got[strconv.Itoa(i)] != want {
+			t.Errorf("Args()[%d] = %v, want %q", i, got[strconv.Itoa(i)], want)
+		}
+	}
 }

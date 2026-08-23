@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	// weave_spec.md §3 explains how list(...) builds a numeric-keyed
 	// object but never shows how to read an element back — Weave's only
 	// property-access syntax is `.identifier` (§4.1), and identifiers

@@ -17,9 +17,12 @@ const (
 	// ordinary calls, matching Seed/Cascade's convention. This
 	// includes package(...) (weave_spec.md §17.2) — there is
 	// deliberately no `import`/`pub` syntax; see modloader's package
-	// doc comment.
+	// doc comment. `main` (the entry point, weave_spec.md §12) follows
+	// this same pattern now too — `main = fn(args) {...}` is an
+	// ordinary-looking assignment, not a keyword; the `func` keyword
+	// that used to introduce it has been retired entirely, since
+	// nothing else in the language ever used it.
 	KwFn
-	KwFunc
 	KwTrue
 	KwFalse
 	KwNil
@@ -62,7 +65,6 @@ const (
 
 var keywords = map[string]Kind{
 	"fn":       KwFn,
-	"func":     KwFunc,
 	"true":     KwTrue,
 	"false":    KwFalse,
 	"nil":      KwNil,

@@ -2,12 +2,14 @@ package ast
 
 // File is the root of a parsed Weave source file.
 //
-// TopLevel holds ordinary statements written outside `func main`
-// (weave_spec.md §15.3, §17: gotype/gofunc declarations, prototype
-// object definitions, ...), in source order, regardless of where `func
-// main` itself appears among them. Main is always exactly one
-// `func main(): int {...}` (weave_spec.md §12) — parser.go's parseFile
-// rejects a second one.
+// TopLevel holds ordinary statements written outside `main`'s own
+// declaration (weave_spec.md §15.3, §17: gotype/gofunc declarations,
+// prototype object definitions, ...), in source order, regardless of
+// where `main = fn(args) {...}` itself appears among them. Main is
+// always exactly one such declaration — parser.go's parseFile
+// recognizes it (a top-level `*ast.AssignStmt` named "main" whose value
+// is directly a `*ast.FuncLit`), extracts it out of TopLevel into this
+// dedicated field, and rejects a second one appearing in the same file.
 //
 // codegen.Generate and sema.Check both simply process TopLevel and
 // Main.Body in order against the *same* scope/funcGen — Weave has no
@@ -25,14 +27,26 @@ type File struct {
 	Main     *FuncDecl
 }
 
-// FuncDecl is the `func main(): int { ... }` entry point (weave_spec.md
-// §12). It is the only construct that uses the `func` keyword; every
-// other Weave function is a `fn(a) {...}` expression (§5).
+// FuncDecl is Weave's entry point, written as `main = fn(args) { ... }`
+// (weave_spec.md §12) — an ordinary-looking top-level assignment whose
+// RHS is a function literal, but recognized and extracted specially
+// because the name is exactly "main" (mirroring how `gotype`/`gofunc`/
+// `package(...)` are likewise ordinary-shaped assignments that carry
+// special, compile-time-only meaning — see internal/sema's goAssetReservedName
+// and internal/modloader's package doc comment for the same pattern
+// applied elsewhere). Param is the closure's own parameter name (not
+// fixed to any particular spelling — weave_spec.md §11's `at`-indexable
+// list of command-line arguments, including the program's own name at
+// position 0, is bound to it at the call site — see codegen.go's
+// Generate). There used to be a dedicated `func` keyword for this
+// declaration; it was retired once `main` became just another
+// (specially recognized) assignment, leaving `fn(a) {...}` the only
+// function-literal syntax in the language (§5).
 type FuncDecl struct {
-	Name       string
-	ReturnType string
-	Body       []Stmt
-	Line       int
+	Name  string
+	Param string
+	Body  []Stmt
+	Line  int
 }
 
 // Stmt is a Weave statement.

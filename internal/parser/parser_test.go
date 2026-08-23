@@ -33,7 +33,7 @@ func exprString(e ast.Expr) string {
 
 func parseExprForTest(t *testing.T, src string) ast.Expr {
 	t.Helper()
-	file, err := Parse("func main(): int {\n\treturn " + src + "\n}\n")
+	file, err := Parse("main = fn(args) {\n\treturn " + src + "\n}\n")
 	if err != nil {
 		t.Fatalf("Parse(%q): %v", src, err)
 	}
@@ -67,7 +67,7 @@ func TestParse_OperatorPrecedence(t *testing.T) {
 }
 
 func TestParse_HelloWorld(t *testing.T) {
-	src := "func main(): int {\n\tprint(\"Hello, Weave!\")\n\treturn 0\n}\n"
+	src := "main = fn(args) {\n\tprint(\"Hello, Weave!\")\n\treturn 0\n}\n"
 	file, err := Parse(src)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -75,8 +75,8 @@ func TestParse_HelloWorld(t *testing.T) {
 	if file.Main == nil {
 		t.Fatal("expected file.Main to be set")
 	}
-	if file.Main.Name != "main" || file.Main.ReturnType != "int" {
-		t.Errorf("got Name=%q ReturnType=%q", file.Main.Name, file.Main.ReturnType)
+	if file.Main.Name != "main" || file.Main.Param != "args" {
+		t.Errorf("got Name=%q Param=%q", file.Main.Name, file.Main.Param)
 	}
 	if len(file.Main.Body) != 2 {
 		t.Fatalf("got %d statements, want 2: %+v", len(file.Main.Body), file.Main.Body)
@@ -113,7 +113,7 @@ func TestParse_HelloWorld(t *testing.T) {
 }
 
 func TestParse_AssignStmt(t *testing.T) {
-	src := "func main(): int {\n\tx = 1\n\ty = \"hi\"\n\tz = true\n\tw = false\n\tn = nil\n\treturn 0\n}\n"
+	src := "main = fn(args) {\n\tx = 1\n\ty = \"hi\"\n\tz = true\n\tw = false\n\tn = nil\n\treturn 0\n}\n"
 	file, err := Parse(src)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -149,25 +149,55 @@ func TestParse_AssignStmt(t *testing.T) {
 }
 
 func TestParse_AssignToNonIdentIsAnError(t *testing.T) {
-	if _, err := Parse("func main(): int {\n\tprint(x) = 1\n\treturn 0\n}\n"); err == nil {
+	if _, err := Parse("main = fn(args) {\n\tprint(x) = 1\n\treturn 0\n}\n"); err == nil {
 		t.Fatal("expected an error assigning to a non-identifier")
 	}
 }
 
-func TestParse_MissingReturnTypeIsAnError(t *testing.T) {
-	if _, err := Parse("func main() {\n}\n"); err == nil {
-		t.Fatal("expected an error for a missing `: <type>`")
+func TestParse_FuncIsNoLongerAKeyword(t *testing.T) {
+	// The `func` keyword was retired once `main`'s own declaration
+	// became an ordinary-shaped `main = fn(args) {...}` assignment
+	// (weave_spec.md §12) — `func` is now just a plain identifier, usable
+	// as an ordinary top-level binding name like any other.
+	file, err := Parse("func = 1\nmain = fn(args) {\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(file.TopLevel) != 1 {
+		t.Fatalf("got %d top-level statements, want 1", len(file.TopLevel))
+	}
+	a, ok := file.TopLevel[0].(*ast.AssignStmt)
+	if !ok || a.Name != "func" {
+		t.Fatalf("TopLevel[0] = %#v, want AssignStmt(func)", file.TopLevel[0])
+	}
+}
+
+func TestParse_MainWithoutFuncLitValueIsNotExtracted(t *testing.T) {
+	// `main = 5` (not a function literal) is deliberately NOT recognized
+	// as the entry-point declaration — it's left as an ordinary
+	// AssignStmt, later rejected by internal/sema's reservedName check
+	// (see mainDecl's own doc comment for why the parser stays silent
+	// here instead of raising its own error).
+	file, err := Parse("main = 5\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if file.Main != nil {
+		t.Errorf("Main = %#v, want nil", file.Main)
+	}
+	if len(file.TopLevel) != 1 {
+		t.Fatalf("got %d top-level statements, want 1", len(file.TopLevel))
 	}
 }
 
 func TestParse_UnterminatedBlockIsAnError(t *testing.T) {
-	if _, err := Parse("func main(): int {\n\treturn 0\n"); err == nil {
+	if _, err := Parse("main = fn(args) {\n\treturn 0\n"); err == nil {
 		t.Fatal("expected an error for an unterminated block")
 	}
 }
 
 func TestParse_IfElifElse(t *testing.T) {
-	src := "func main(): int {\n" +
+	src := "main = fn(args) {\n" +
 		"\tif x == 100 {\n\t\ty = 100\n" +
 		"\t} elif x == 200 {\n\t\tz = 200\n" +
 		"\t} else {\n\t\tx = x + 1\n\t}\n" +
@@ -192,7 +222,7 @@ func TestParse_IfElifElse(t *testing.T) {
 }
 
 func TestParse_IfWithoutElifOrElse(t *testing.T) {
-	file, err := Parse("func main(): int {\n\tif true {\n\t\tx = 1\n\t}\n\treturn 0\n}\n")
+	file, err := Parse("main = fn(args) {\n\tif true {\n\t\tx = 1\n\t}\n\treturn 0\n}\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -209,7 +239,7 @@ func TestParse_IfWithoutElifOrElse(t *testing.T) {
 }
 
 func TestParse_While(t *testing.T) {
-	file, err := Parse("func main(): int {\n\twhile i < 10 {\n\t\ti = i + 1\n\t}\n\treturn 0\n}\n")
+	file, err := Parse("main = fn(args) {\n\twhile i < 10 {\n\t\ti = i + 1\n\t}\n\treturn 0\n}\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -226,7 +256,7 @@ func TestParse_While(t *testing.T) {
 }
 
 func TestParse_BreakAndContinue(t *testing.T) {
-	src := "func main(): int {\n\twhile true {\n\t\tbreak\n\t\tcontinue\n\t}\n\treturn 0\n}\n"
+	src := "main = fn(args) {\n\twhile true {\n\t\tbreak\n\t\tcontinue\n\t}\n\treturn 0\n}\n"
 	file, err := Parse(src)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -288,7 +318,7 @@ func TestParse_MultiParamSugarMatchesChainedSugar(t *testing.T) {
 }
 
 func TestParse_FuncLitNoParamsIsAnError(t *testing.T) {
-	if _, err := Parse("func main(): int {\n\tf = fn() { return 1 }\n\treturn 0\n}\n"); err == nil {
+	if _, err := Parse("main = fn(args) {\n\tf = fn() { return 1 }\n\treturn 0\n}\n"); err == nil {
 		t.Fatal("expected an error: fn(...) requires at least one parameter")
 	}
 }
@@ -389,7 +419,7 @@ func TestParse_ChainedPropExpr(t *testing.T) {
 }
 
 func TestParse_PropAssignStmt(t *testing.T) {
-	file, err := Parse("func main(): int {\n\tpoint.x = 10\n\treturn 0\n}\n")
+	file, err := Parse("main = fn(args) {\n\tpoint.x = 10\n\treturn 0\n}\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -420,7 +450,7 @@ func TestParse_MethodCallOnPropExpr(t *testing.T) {
 }
 
 func TestParse_ForIn(t *testing.T) {
-	file, err := Parse("func main(): int {\n\tfor k, v in obj {\n\t\tprint(k)\n\t}\n\treturn 0\n}\n")
+	file, err := Parse("main = fn(args) {\n\tfor k, v in obj {\n\t\tprint(k)\n\t}\n\treturn 0\n}\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -441,13 +471,13 @@ func TestParse_ForIn(t *testing.T) {
 }
 
 func TestParse_ForInMissingCommaIsAnError(t *testing.T) {
-	if _, err := Parse("func main(): int {\n\tfor k v in obj {\n\t}\n\treturn 0\n}\n"); err == nil {
+	if _, err := Parse("main = fn(args) {\n\tfor k v in obj {\n\t}\n\treturn 0\n}\n"); err == nil {
 		t.Fatal("expected an error for a missing ',' between k and v")
 	}
 }
 
 func TestParse_TopLevelStatementsBeforeMain(t *testing.T) {
-	file, err := Parse("proto = { x: 1 }\nfunc main(): int {\n\treturn 0\n}\n")
+	file, err := Parse("proto = { x: 1 }\nmain = fn(args) {\n\treturn 0\n}\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -464,7 +494,7 @@ func TestParse_TopLevelStatementsBeforeMain(t *testing.T) {
 }
 
 func TestParse_TopLevelStatementsAfterMain(t *testing.T) {
-	file, err := Parse("func main(): int {\n\treturn 0\n}\nunused = 2\n")
+	file, err := Parse("main = fn(args) {\n\treturn 0\n}\nunused = 2\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -473,17 +503,17 @@ func TestParse_TopLevelStatementsAfterMain(t *testing.T) {
 	}
 }
 
-func TestParse_TwoFuncMainIsAnError(t *testing.T) {
-	if _, err := Parse("func main(): int {\n\treturn 0\n}\nfunc main(): int {\n\treturn 1\n}\n"); err == nil {
-		t.Fatal("expected an error for a second `func main`")
+func TestParse_TwoMainDeclsIsAnError(t *testing.T) {
+	if _, err := Parse("main = fn(args) {\n\treturn 0\n}\nmain = fn(args) {\n\treturn 1\n}\n"); err == nil {
+		t.Fatal("expected an error for a second `main = fn(...) {...}`")
 	}
 }
 
 func TestParse_MissingMainIsNotAParseError(t *testing.T) {
-	// A single file legitimately has no `func main` — it may be a
-	// package member file (weave_spec.md §17.1). Requiring at least one
-	// `func main` across a whole package is modloader.Load's job, not
-	// Parse's — see TestLoad_MissingMainIsAnError in internal/modloader.
+	// A single file legitimately has no entry-point declaration — it may
+	// be a package member file (weave_spec.md §17.1). Requiring at least
+	// one across a whole package is modloader.Load's job, not Parse's —
+	// see TestLoad_MissingMainIsAnError in internal/modloader.
 	file, err := Parse("x = 1\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -499,7 +529,7 @@ func TestParse_MissingMainIsNotAParseError(t *testing.T) {
 // internal/modloader's own tests for how the pattern is recognized and
 // resolved once modloader.Load runs.
 func TestParse_PackageCallParsesAsOrdinaryAssignStmt(t *testing.T) {
-	file, err := Parse("mathutil = package(\"./mathutil\")\nfunc main(): int {\n\treturn 0\n}\n")
+	file, err := Parse("mathutil = package(\"./mathutil\")\nmain = fn(args) {\n\treturn 0\n}\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

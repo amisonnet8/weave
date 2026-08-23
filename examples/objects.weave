@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	point = { x: 1, y: 2 }
 	print(point.x)
 	print(point.y)

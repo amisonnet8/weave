@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	print("say \"hi\" now")           // named escape: \"
 	print("tab\tbetween\twords")      // named escape: \t
 	print("line one\nline two")       // named escape: \n

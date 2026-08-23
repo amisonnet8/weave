@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	add = fn(a) fn(b) { return a + b }
 	add5 = add(5)
 	result = add5(3)

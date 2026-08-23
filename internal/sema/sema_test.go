@@ -8,7 +8,7 @@ import (
 )
 
 func TestCheck_ValidMain(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int"}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args"}}
 	if err := Check(file); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -20,23 +20,44 @@ func TestCheck_MissingMain(t *testing.T) {
 	}
 }
 
-func TestCheck_WrongFuncName(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{Name: "notMain", ReturnType: "int"}}
+func TestCheck_MainParamReservedNameIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "weave_main"}}
 	if err := Check(file); err == nil {
-		t.Fatal("expected an error: `func` may only declare main")
+		t.Fatal("expected an error: weave_main is a reserved name")
 	}
 }
 
-func TestCheck_WrongReturnType(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "string"}}
+func TestCheck_MainBodyCanReferenceItsOwnParam(t *testing.T) {
+	// main = fn(args) { return len(args) } — args (whatever name main's
+	// own parameter happens to use) must be visible throughout the body,
+	// exactly like an ordinary function literal's own parameter.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "len"},
+			Args:   []ast.Expr{&ast.Ident{Name: "args"}},
+		}}},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_MainNameIsReservedElsewhere(t *testing.T) {
+	// `main` used as an ordinary variable (not the top-level entry-point
+	// declaration the parser recognizes) must be rejected — mirrors
+	// weave_main's own reservedName treatment.
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args"}, TopLevel: []ast.Stmt{
+		&ast.AssignStmt{Name: "main", Value: &ast.NumberLit{Value: 1}},
+	}}
 	if err := Check(file); err == nil {
-		t.Fatal("expected an error: main must return int")
+		t.Fatal("expected an error: main is a reserved name")
 	}
 }
 
 func TestCheck_AssignThenUseIsValid(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "x", Value: &ast.NumberLit{Value: 1}},
 			&ast.ExprStmt{X: &ast.CallExpr{
@@ -53,7 +74,7 @@ func TestCheck_AssignThenUseIsValid(t *testing.T) {
 
 func TestCheck_UseBeforeAssignIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.Ident{Name: "x"}}},
 	}}
 	if err := Check(file); err == nil {
@@ -63,7 +84,7 @@ func TestCheck_UseBeforeAssignIsAnError(t *testing.T) {
 
 func TestCheck_AssignToReservedNameIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "weave_main", Value: &ast.NumberLit{Value: 1}},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -76,7 +97,7 @@ func TestCheck_AssignToReservedNameIsAnError(t *testing.T) {
 
 func TestCheck_AssignToDoubleUnderscorePrefixIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "__t0", Value: &ast.NumberLit{Value: 1}},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -89,7 +110,7 @@ func TestCheck_AssignToDoubleUnderscorePrefixIsAnError(t *testing.T) {
 
 func TestCheck_BinaryExprChecksBothOperands(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.BinaryExpr{
 			Op: "+",
 			X:  &ast.NumberLit{Value: 1},
@@ -103,7 +124,7 @@ func TestCheck_BinaryExprChecksBothOperands(t *testing.T) {
 
 func TestCheck_UnaryExprChecksOperand(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.UnaryExpr{
 			Op: "-",
 			X:  &ast.Ident{Name: "undefined"},
@@ -118,7 +139,7 @@ func TestCheck_VariableAssignedOnlyInsideIfIsInvisibleAfter(t *testing.T) {
 	// if true { y = 1 }
 	// return y   <- y was never assigned in an enclosing scope
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.IfStmt{Clauses: []ast.IfClause{{
 				Cond: &ast.BoolLit{Value: true},
@@ -141,7 +162,7 @@ func TestCheck_ReassigningAnOuterVariableInsideIfIsVisibleAfter(t *testing.T) {
 	// `while i < 10 { i = i + 1 }` example — see sema.go's scope doc
 	// comment and CLAUDE.md's Step 4 "確定した設計判断".
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "x", Value: &ast.NumberLit{Value: 1}},
 			&ast.IfStmt{Clauses: []ast.IfClause{{
@@ -160,7 +181,7 @@ func TestCheck_ElifBranchesDoNotSeeEachOthersLocals(t *testing.T) {
 	// if false { y = 1 } elif true { print(y) }  <- y from the `if` branch
 	// isn't visible in the `elif` branch (siblings, not nested).
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.IfStmt{Clauses: []ast.IfClause{
 				{
@@ -187,7 +208,7 @@ func TestCheck_WhileLoopCounterExampleIsValid(t *testing.T) {
 	// i = 0
 	// while i < 10 { i = i + 1 }   <- weave_spec.md §7's own example
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "i", Value: &ast.NumberLit{Value: 0}},
 			&ast.WhileStmt{
@@ -207,7 +228,7 @@ func TestCheck_WhileLoopCounterExampleIsValid(t *testing.T) {
 
 func TestCheck_BreakOutsideLoopIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.BreakStmt{}, &ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
 	}}
 	if err := Check(file); err == nil {
@@ -217,7 +238,7 @@ func TestCheck_BreakOutsideLoopIsAnError(t *testing.T) {
 
 func TestCheck_ContinueOutsideLoopIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ContinueStmt{}, &ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
 	}}
 	if err := Check(file); err == nil {
@@ -227,7 +248,7 @@ func TestCheck_ContinueOutsideLoopIsAnError(t *testing.T) {
 
 func TestCheck_BreakInsideWhileIsValid(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.WhileStmt{
 				Cond: &ast.BoolLit{Value: true},
@@ -244,7 +265,7 @@ func TestCheck_BreakInsideWhileIsValid(t *testing.T) {
 func TestCheck_BreakAfterWhileIsAnErrorAgain(t *testing.T) {
 	// loopDepth must be decremented after the while ends.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.WhileStmt{Cond: &ast.BoolLit{Value: false}, Body: nil},
 			&ast.BreakStmt{},
@@ -260,7 +281,7 @@ func TestCheck_FuncLitCanReadOuterVariable(t *testing.T) {
 	// base = 100
 	// addBase = fn(x) { return x + base }
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "base", Value: &ast.NumberLit{Value: 100}},
 			&ast.AssignStmt{Name: "addBase", Value: &ast.FuncLit{
@@ -281,7 +302,7 @@ func TestCheck_FuncLitParamNotVisibleOutside(t *testing.T) {
 	// f = fn(x) { return x }
 	// return x   <- x is the closure's own param, not visible in main
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
 				Param: "x",
@@ -297,7 +318,7 @@ func TestCheck_FuncLitParamNotVisibleOutside(t *testing.T) {
 
 func TestCheck_FuncLitReservedParamNameIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
 				Param: "__t0",
@@ -317,7 +338,7 @@ func TestCheck_BreakInsideFuncLitInsideWhileIsAnError(t *testing.T) {
 	// say this explicitly — see sema.go checker.loopDepth's doc comment
 	// for why this is treated as settled rather than left open).
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.WhileStmt{
 				Cond: &ast.BoolLit{Value: true},
@@ -339,7 +360,7 @@ func TestCheck_BreakInsideFuncLitInsideWhileIsAnError(t *testing.T) {
 
 func TestCheck_GeneralCallCalleeMustBeDefined(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.CallExpr{
 			Callee: &ast.Ident{Name: "undefinedFunc"},
 			Args:   []ast.Expr{&ast.NumberLit{Value: 1}},
@@ -352,7 +373,7 @@ func TestCheck_GeneralCallCalleeMustBeDefined(t *testing.T) {
 
 func TestCheck_BuiltinCalleeIsNotTreatedAsAVariable(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ExprStmt{X: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "print"},
@@ -368,7 +389,7 @@ func TestCheck_BuiltinCalleeIsNotTreatedAsAVariable(t *testing.T) {
 
 func TestCheck_ObjectLitChecksFieldValues(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.ObjectLit{
 			Fields: []ast.ObjectField{{Name: "x", Value: &ast.Ident{Name: "undefined"}}},
 		}}},
@@ -380,7 +401,7 @@ func TestCheck_ObjectLitChecksFieldValues(t *testing.T) {
 
 func TestCheck_PropExprChecksObj(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.PropExpr{
 			Obj: &ast.Ident{Name: "undefined"}, Prop: "x",
 		}}},
@@ -392,7 +413,7 @@ func TestCheck_PropExprChecksObj(t *testing.T) {
 
 func TestCheck_PropAssignChecksObjAndValue(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
 			&ast.PropAssignStmt{Obj: &ast.Ident{Name: "o"}, Prop: "x", Value: &ast.Ident{Name: "undefined"}},
@@ -406,7 +427,7 @@ func TestCheck_PropAssignChecksObjAndValue(t *testing.T) {
 
 func TestCheck_HasAndRemoveAreBuiltins(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
 			&ast.ExprStmt{X: &ast.CallExpr{
@@ -427,7 +448,7 @@ func TestCheck_HasAndRemoveAreBuiltins(t *testing.T) {
 
 func TestCheck_ForInDeclaresKeyAndValue(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
 			&ast.ForStmt{
@@ -447,7 +468,7 @@ func TestCheck_ForInDeclaresKeyAndValue(t *testing.T) {
 
 func TestCheck_ForInKeyNotVisibleOutside(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
 			&ast.ForStmt{Key: "k", Value: "v", Obj: &ast.Ident{Name: "o"}},
@@ -461,7 +482,7 @@ func TestCheck_ForInKeyNotVisibleOutside(t *testing.T) {
 
 func TestCheck_BreakInsideForIsValid(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "o", Value: &ast.ObjectLit{}},
 			&ast.ForStmt{
@@ -478,7 +499,7 @@ func TestCheck_BreakInsideForIsValid(t *testing.T) {
 
 func TestCheck_ListLenStringAreBuiltins(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "list"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
 			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "len"}, Args: []ast.Expr{&ast.StringLit{Value: "hi"}}}},
@@ -493,7 +514,7 @@ func TestCheck_ListLenStringAreBuiltins(t *testing.T) {
 
 func TestCheck_AtAndRaiseIfErrorAreBuiltins(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "l", Value: &ast.CallExpr{Callee: &ast.Ident{Name: "list"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
 			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "at"}, Args: []ast.Expr{&ast.Ident{Name: "l"}, &ast.NumberLit{Value: 0}}}},
@@ -512,7 +533,7 @@ func TestCheck_ActorBuiltinsDoNotRequireCalleeVariableCheck(t *testing.T) {
 	// must not be mistaken for a general call needing `send` itself to
 	// resolve as a declared variable.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "a", Value: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "spawn"},
@@ -590,7 +611,7 @@ func typedGoFuncDeclExpr(goName string, returns ast.Expr, paramTypes ...string) 
 
 func TestCheck_GoTypeAndGoFuncDeclAreValid(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "GoFile", Value: goTypeDeclExpr("?os.File", []ast.ObjectField{
 				{Name: "Close", Value: gomethodExpr("Close")},
@@ -608,7 +629,7 @@ func TestCheck_GoTypeAndGoFuncDeclAreValid(t *testing.T) {
 
 func TestCheck_GoFuncNameMustHaveQuestionMarkPrefix(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "f", Value: goFuncDeclExpr("strings.ToUpper")},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -621,7 +642,7 @@ func TestCheck_GoFuncNameMustHaveQuestionMarkPrefix(t *testing.T) {
 
 func TestCheck_GoFuncUnknownProtoIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "f", Value: typedGoFuncDeclExpr("?os.Open", goReturnsExpr(&ast.Ident{Name: "NeverDeclared"}), "?string")},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -637,7 +658,7 @@ func TestCheck_GoFuncAllOrNothingMismatchIsAnError(t *testing.T) {
 	// valid gofunc(...) shapes now — no partial typing (weave_spec.md
 	// §15.4's all-or-nothing rule).
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "f", Value: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "gofunc"},
@@ -653,7 +674,7 @@ func TestCheck_GoFuncAllOrNothingMismatchIsAnError(t *testing.T) {
 
 func TestCheck_GomethodAllOrNothingMismatchIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
 				{Name: "len", Value: &ast.CallExpr{
@@ -675,7 +696,7 @@ func TestCheck_BareGoReturnsCallIsAnError(t *testing.T) {
 	// "reserved name" error, not a confusing "undefined name"
 	// (goAssetReservedName).
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{goReturnsExpr(&ast.StringLit{Value: "?int"})}}},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -692,7 +713,7 @@ func TestCheck_BareGoReturnsCallIsAnError(t *testing.T) {
 
 func TestCheck_BareGoParamsCallIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{goParamsExpr("?int")}}},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -709,7 +730,7 @@ func TestCheck_BareGoParamsCallIsAnError(t *testing.T) {
 
 func TestCheck_GotypeOutsideDeclarationShapeIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ExprStmt{X: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "print"},
@@ -725,7 +746,7 @@ func TestCheck_GotypeOutsideDeclarationShapeIsAnError(t *testing.T) {
 
 func TestCheck_GoTypeMemberMustBeGomethod(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "GoFile", Value: goTypeDeclExpr("?os.File", []ast.ObjectField{
 				{Name: "Close", Value: &ast.NumberLit{Value: 1}},
@@ -770,7 +791,7 @@ func TestCheck_StaticGoMethodCallIsValid(t *testing.T) {
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	if err := Check(file); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -781,7 +802,7 @@ func TestCheck_StaticGoMethodCallRejectsUnknownMember(t *testing.T) {
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "notDeclared"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	if err := Check(file); err == nil {
 		t.Fatal("expected an error: notDeclared was never gomethod(...)-declared on GoReader")
 	}
@@ -792,7 +813,7 @@ func TestCheck_TypedGomethodAndGofuncDeclAreValid(t *testing.T) {
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	if err := Check(file); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -806,7 +827,7 @@ func TestCheck_TypedGomethodWrongArgCountIsAnError(t *testing.T) {
 		}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	if err := Check(file); err == nil {
 		t.Fatal("expected an error: len(...) declared 0 params but was called with 1")
 	}
@@ -814,7 +835,7 @@ func TestCheck_TypedGomethodWrongArgCountIsAnError(t *testing.T) {
 
 func TestCheck_GomethodTypeArgMissingQuestionMarkIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
 				{Name: "len", Value: typedGomethodExpr("Len", goReturnsExpr(&ast.StringLit{Value: "int"}))}, // missing '?'
@@ -846,7 +867,7 @@ func TestCheck_GoReturnsWithProtoAndAtExtractionIsValid(t *testing.T) {
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	}
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	if err := Check(file); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -866,7 +887,7 @@ func TestCheck_ReassignedVarLosesStaticGoType(t *testing.T) {
 		}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
 	if err := Check(file); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -883,7 +904,7 @@ func TestCheck_TopLevelStatementsShareScopeWithMain(t *testing.T) {
 			}}},
 		},
 		Main: &ast.FuncDecl{
-			Name: "main", ReturnType: "int",
+			Name: "main", Param: "args",
 			Body: []ast.Stmt{
 				&ast.ExprStmt{X: &ast.PropExpr{Obj: &ast.Ident{Name: "proto"}, Prop: "x"}},
 				&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -901,7 +922,7 @@ func TestCheck_TopLevelUndefinedNameIsAnError(t *testing.T) {
 			&ast.ExprStmt{X: &ast.Ident{Name: "undefined"}},
 		},
 		Main: &ast.FuncDecl{
-			Name: "main", ReturnType: "int",
+			Name: "main", Param: "args",
 			Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
 		},
 	}
@@ -914,7 +935,7 @@ func TestCheck_SelfRecursiveFuncLitIsValid(t *testing.T) {
 	// fact = fn(n) { ... fact(n - 1) ... } — a function literal assigned
 	// directly to a name may refer to itself inside its own body.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "fact", Value: &ast.FuncLit{
 				Param: "n",
@@ -936,7 +957,7 @@ func TestCheck_MutualRecursionIsStillAnError(t *testing.T) {
 	// name for itself — a second closure referring to a name not yet
 	// assigned (mutual recursion) must still fail, exactly as before.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "isEven", Value: &ast.FuncLit{
 				Param: "n",
@@ -965,7 +986,7 @@ func shapeDeclExpr(fields map[string]string) *ast.CallExpr {
 
 func TestCheck_ShapeDeclAndCheckShapeCallAreValid(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "PointShape", Value: shapeDeclExpr(map[string]string{"x": "number", "y": "number"})},
 			&ast.AssignStmt{Name: "p", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
@@ -986,7 +1007,7 @@ func TestCheck_ShapeDeclAndCheckShapeCallAreValid(t *testing.T) {
 
 func TestCheck_ShapeUnknownHintIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "S", Value: shapeDeclExpr(map[string]string{"x": "integer"})}, // not a recognized hint
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -999,7 +1020,7 @@ func TestCheck_ShapeUnknownHintIsAnError(t *testing.T) {
 
 func TestCheck_CheckShapeFirstArgMustBeShapeDeclared(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "notAShape", Value: &ast.NumberLit{Value: 1}},
 			&ast.AssignStmt{Name: "p", Value: &ast.ObjectLit{}},
@@ -1017,7 +1038,7 @@ func TestCheck_CheckShapeFirstArgMustBeShapeDeclared(t *testing.T) {
 
 func TestCheck_ShapeOutsideDeclarationShapeIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.ExprStmt{X: &ast.CallExpr{
 				Callee: &ast.Ident{Name: "print"},
@@ -1035,7 +1056,7 @@ func TestCheck_NonRecursiveFuncLitStillReservedNameChecked(t *testing.T) {
 	// The pre-declare carve-out for FuncLit RHS must not skip the
 	// reserved-name check.
 	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
+		Name: "main", Param: "args",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "weave_main", Value: &ast.FuncLit{
 				Param: "x",

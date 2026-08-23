@@ -8,6 +8,7 @@ package weavert
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"unicode/utf8"
 )
@@ -64,6 +65,24 @@ func Len(v any) any {
 	default:
 		panic(fmt.Sprintf("weave: len() requires an object or a string, got %T", v))
 	}
+}
+
+// Args returns the process's command-line arguments as a Weave list
+// (weave_spec.md §3/§12 — the same numeric-keyed weavert.Object every
+// list(...) literal uses), including the program's own invocation name
+// at position 0 (Go's own os.Args convention, kept as-is rather than
+// sliced — weave_spec.md §12's own design-decision note explains the
+// choice). Elements are always plain strings — command-line arguments
+// have no numeric type to normalize into, unlike a Go-asset call result
+// (weavert/goasset.go's NormalizeGoValue). Called once, by `!main`'s own
+// wrapper, before weave_main is ever invoked (internal/codegen/codegen.go's
+// Generate) — main's own body never calls this directly.
+func Args() any {
+	list := Object{}
+	for i, a := range os.Args {
+		list[strconv.Itoa(i)] = a
+	}
+	return list
 }
 
 // ExitCode converts a Weave value into the Go int the `!main` wrapper

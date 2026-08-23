@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	// weave_spec.md §15.2: every Go function/method call always returns
 	// a Weave list now, regardless of how many values the real Go call
 	// returns — at(list, i) reads one position back out.

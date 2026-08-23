@@ -3,14 +3,14 @@ package lexer
 import "testing"
 
 func TestTokenize_HelloWorld(t *testing.T) {
-	src := "func main(): int {\n\tprint(\"Hello, Weave!\")\n\treturn 0\n}\n"
+	src := "main = fn(args) {\n\tprint(\"Hello, Weave!\")\n\treturn 0\n}\n"
 	toks, err := Tokenize(src)
 	if err != nil {
 		t.Fatalf("Tokenize: %v", err)
 	}
 
 	want := []Kind{
-		KwFunc, Ident, LParen, RParen, Colon, Ident, LBrace, Newline,
+		Ident, Assign, KwFn, LParen, Ident, RParen, LBrace, Newline,
 		Ident, LParen, String, RParen, Newline,
 		KwReturn, Number, Newline,
 		RBrace, Newline,

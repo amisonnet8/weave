@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	counter = {
 		count: 0,
 		increment: fn(self, amount) { self.count = self.count + amount },

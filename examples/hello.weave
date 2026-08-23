@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	print("Hello, Weave!")
 	return 0
 }

@@ -1,6 +1,6 @@
 mathutil = package("./mathutil")
 
-func main(): int {
+main = fn(args) {
     print(mathutil.Clamp(15, 0, 10))
     print(mathutil.ClampSquare(15, 0, 10))
     return mathutil.Clamp(3, 0, 10)

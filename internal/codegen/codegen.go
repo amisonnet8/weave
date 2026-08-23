@@ -213,10 +213,23 @@ func (fg *funcGen) newTemp(irType string) string {
 }
 
 // Generate lowers a checked *ast.File into AMIVM-IR text.
+//
+// main's own parameter (weave_spec.md §12's command-line-arguments list,
+// ast.FuncDecl.Param) is bound as weave_main's own ordinary FUNC-level
+// argument (`$1`) — weave_main stays one flat top-level FUNC exactly as
+// before (main = fn(args) {...} changed only the *surface syntax* for
+// declaring the entry point, not this underlying mechanism; see
+// ast.FuncDecl's own doc comment) — copied into an ordinary %-declared
+// local right at the start of the body, mirroring genFuncLit's identical
+// `&1`-to-%-local copy for an ordinary closure's own parameter (see its
+// doc comment) — just using `$1` (a plain FUNC argument) instead of `&1`
+// (a CLOS argument), since weave_main was never itself a CLOS.
 func Generate(file *ast.File) (string, error) {
 	ctx := &codegenCtx{}
 	fg := newFuncGen(ctx)
 	fg.isMain = true
+	argsTok := fg.declare(file.Main.Param, "^any")
+	fmt.Fprintf(&fg.body, "\tSET\t%%%s\t$1\n", argsTok)
 	if err := genBlock(fg, file.TopLevel); err != nil {
 		return "", err
 	}
@@ -233,7 +246,7 @@ func Generate(file *ast.File) (string, error) {
 	// Every closure literal compiled while generating weave_main is now
 	// an inline, nested CLOS block already sitting inside fg.body (see
 	// genFuncLit) — nothing to emit separately here.
-	fmt.Fprintf(&b, "FUNC\t!%s\t:\t^int\n", weaveMainFunc)
+	fmt.Fprintf(&b, "FUNC\t!%s\t^any\t:\t^int\n", weaveMainFunc)
 	for _, d := range fg.decls {
 		b.WriteString(d)
 	}
@@ -242,7 +255,9 @@ func Generate(file *ast.File) (string, error) {
 
 	b.WriteString("FUNC\t!main\t:\n")
 	b.WriteString("\tVAR\t%exitcode\t^int\n")
-	fmt.Fprintf(&b, "\tCALL\t%%exitcode\t:\t!%s\n", weaveMainFunc)
+	b.WriteString("\tVAR\t%args\t^any\n")
+	b.WriteString("\tCALL\t%args\t:\t?weavert.Args\n")
+	fmt.Fprintf(&b, "\tCALL\t%%exitcode\t:\t!%s\t%%args\n", weaveMainFunc)
 	b.WriteString("\tCALL\t:\t?os.Exit\t%exitcode\n")
 	b.WriteString("\tRET\n")
 	b.WriteString("ENDFUNC\n")

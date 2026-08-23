@@ -27,7 +27,7 @@ readerProto = {
 	}
 }
 
-func main(): int {
+main = fn(args) {
 	a = spawn({ __proto__: readerProto, text: "hello, weave" })
 	n = ask(a)("measure")
 	print(n)

@@ -47,6 +47,9 @@ func reservedName(name string) (string, bool) {
 	if name == "weave_main" {
 		return "reserved for the compiled entry point (weave_spec.md §12)", true
 	}
+	if name == "main" {
+		return "reserved for the entry point declaration; it may only appear as a top-level `main = fn(args) { ... }` (weave_spec.md §12)", true
+	}
 	if strings.HasPrefix(name, "__") {
 		return "names starting with `__` are reserved for the compiler's own use", true
 	}
@@ -153,17 +156,21 @@ type checker struct {
 // responsible for.
 func Check(file *ast.File) error {
 	if file.Main == nil {
-		return fmt.Errorf("missing entry point: expected `func main(): int { ... }`")
+		return fmt.Errorf("missing entry point: expected `main = fn(args) { ... }`")
 	}
-	if file.Main.Name != "main" {
-		return fmt.Errorf("line %d: `func` may only declare `main` (weave_spec.md §12), got %q", file.Main.Line, file.Main.Name)
-	}
-	if file.Main.ReturnType != "int" {
-		return fmt.Errorf("line %d: main must return `int`, got %q", file.Main.Line, file.Main.ReturnType)
+	if why, ok := reservedName(file.Main.Param); ok {
+		return fmt.Errorf("line %d: %q is a reserved name (%s)", file.Main.Line, file.Main.Param, why)
 	}
 
 	c := &checker{}
 	root := newScope(nil)
+	// main's own parameter (weave_spec.md §12's command-line-arguments
+	// list) is visible throughout — including TopLevel, since codegen
+	// binds it before TopLevel runs too (see codegen.go's Generate) —
+	// exactly mirroring checkFuncLit's own param-declared-in-child-scope
+	// setup, just declared directly on root since main's body shares
+	// root with TopLevel (ast.File's own doc comment).
+	root.declared[file.Main.Param] = true
 	for _, stmt := range file.TopLevel {
 		if err := c.checkStmt(stmt, root); err != nil {
 			return err

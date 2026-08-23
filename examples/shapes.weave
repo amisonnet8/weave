@@ -2,7 +2,7 @@
 // equivalent of TypeScript/Python type hints — optional, checked only
 // where you call checkShape, and about catching mistakes early with a
 // clear message rather than making anything faster.
-func main(): int {
+main = fn(args) {
 	PointShape = shape({ x: "number", y: "number" })
 
 	origin = { x: 0, y: 0 }

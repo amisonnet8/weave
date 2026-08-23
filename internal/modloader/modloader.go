@@ -102,16 +102,16 @@ func Load(root string) (*ast.File, error) {
 		return nil, err
 	}
 	if merged.Main == nil {
-		return nil, fmt.Errorf("missing entry point: expected `func main(): int { ... }` in the root package")
+		return nil, fmt.Errorf("missing entry point: expected `main = fn(args) { ... }` in the root package")
 	}
 	return merged, nil
 }
 
 // LoadPackage resolves root exactly like Load, but does not require the
-// root package to declare `func main` of its own — a package meant to
-// be *imported* (via another file's `package(...)`) legitimately has
-// none. This is used by `weave wvz` (cmd/weave/wvz.go) to validate that
-// a package-member directory's own code actually compiles before
+// root package to declare its own entry point — a package meant to be
+// *imported* (via another file's `package(...)`) legitimately has none.
+// This is used by `weave wvz` (cmd/weave/wvz.go) to validate that a
+// package-member directory's own code actually compiles before
 // archiving it: the caller is expected to splice in a synthetic `main`
 // before handing the result to sema.Check/codegen.Generate, since
 // codegen.Generate itself unconditionally dereferences file.Main.
@@ -243,10 +243,11 @@ func resolvePkgLocation(baseDir, relPath string) (*pkgLocation, error) {
 // loadPackage loads, merges, self-renames (if non-root), and
 // qualifier-resolves the package at loc (restricted to onlyFile alone
 // when it's non-empty — see Load's doc). isRoot controls both whether
-// `func main` is allowed (§17.3) and whether this package's own
-// top-level bindings get a name prefix at all (§17.4 — root's own names
-// are never rewritten, since there is exactly one root and no risk of
-// collision with itself).
+// this package's own `main = fn(args) {...}` (if any) is treated as the
+// entry point (§17.3) and whether this package's own top-level bindings
+// get a name prefix at all (§17.4 — root's own names are never
+// rewritten, since there is exactly one root and no risk of collision
+// with itself).
 func (ld *loader) loadPackage(loc *pkgLocation, onlyFile string, isRoot bool) (*loadedPackage, error) {
 	if pkg, ok := ld.loaded[loc.key]; ok {
 		return pkg, nil
@@ -263,8 +264,24 @@ func (ld *loader) loadPackage(loc *pkgLocation, onlyFile string, isRoot bool) (*
 	}
 
 	if !isRoot {
+		// A non-root package's own `main = fn(args) {...}`, if present,
+		// is never an error (unlike the old `func main` design's dedicated
+		// rejection) — it is demoted back into an ordinary top-level
+		// binding instead, which then flows through the exact same
+		// renaming/rewriting every other non-root top-level name gets
+		// (collectRenames below has no special-case exclusion for "main"
+		// at all — see its own doc comment). Only the *root* package's own
+		// (never-renamed) binding is ever wired up as the actual entry
+		// point. This mirrors how a gofunc-tracked variable silently loses
+		// its static typing on reassignment rather than hard-erroring: no
+		// dedicated error path, just falling through to ordinary handling.
 		if file.Main != nil {
-			return nil, fmt.Errorf("line %d: `func main` can only be declared in the root package (weave_spec.md §17.3), found in package %q", file.Main.Line, loc.name)
+			file.TopLevel = append(file.TopLevel, &ast.AssignStmt{
+				Name:  file.Main.Name,
+				Value: &ast.FuncLit{Param: file.Main.Param, Body: file.Main.Body, Line: file.Main.Line},
+				Line:  file.Main.Line,
+			})
+			file.Main = nil
 		}
 		if !isValidPackageName(loc.name) {
 			return nil, fmt.Errorf("package %q can't be used as an import prefix — must look like a Weave identifier (letters, digits, underscore; not starting with a digit)", loc.name)
@@ -437,7 +454,7 @@ func loadPackageFiles(loc *pkgLocation, onlyFile string) (*mergedFile, error) {
 		merged.TopLevel = append(merged.TopLevel, f.TopLevel...)
 		if f.Main != nil {
 			if merged.Main != nil {
-				return nil, fmt.Errorf("%s (in %s): only one `func main` is allowed per package (weave_spec.md §17.3)", name, loc.key)
+				return nil, fmt.Errorf("%s (in %s): only one `main = fn(...) {...}` is allowed per package (weave_spec.md §17.3)", name, loc.key)
 			}
 			merged.Main = f.Main
 		}

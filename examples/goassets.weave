@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	// weave_spec.md §15.3 shows gotype/gofunc declared at true top
 	// level (module scope), but Weave's grammar only supports general
 	// top-level statements once Step 5 (functions) and Step 6 (objects)

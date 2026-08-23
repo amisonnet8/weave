@@ -63,23 +63,23 @@ func runWvz(args []string) error {
 	}
 
 	// modloader.LoadPackage (unlike modloader.Load, used by
-	// build/run/emit-ir/emit-go) tolerates a package with no `func main`
+	// build/run/emit-ir/emit-go) tolerates a package with no entry point
 	// of its own — the normal case here (see doc above).
 	file, err := modloader.LoadPackage(dir)
 	if err != nil {
 		return err
 	}
 	if file.Main != nil {
-		return fmt.Errorf("%q declares its own `func main` — weave wvz only packages *importable* packages (weave_spec.md §17.2/§17.3, which may never declare `func main`); to build or run it as a standalone program instead, use `weave build`/`weave run`", dir)
+		return fmt.Errorf("%q declares its own `main = fn(args) {...}` — weave wvz only packages *importable* packages (weave_spec.md §17.2/§17.3, which may never declare their own entry point); to build or run it as a standalone program instead, use `weave build`/`weave run`", dir)
 	}
 	// A synthetic entry point, so the pipeline below (which always needs
 	// a real Go func main() to reach `go build`) has something to
 	// compile against — this proves the package's own code compiles;
 	// it is never written to the archive itself.
 	file.Main = &ast.FuncDecl{
-		Name:       "main",
-		ReturnType: "int",
-		Body:       []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
+		Name:  "main",
+		Param: "_",
+		Body:  []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}},
 	}
 
 	if err := validateBuilds(file); err != nil {

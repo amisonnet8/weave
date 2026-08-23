@@ -62,7 +62,7 @@ func assignNames(stmts []ast.Stmt) []string {
 
 func TestLoad_SingleFile(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
-		"main.weave": "x = 1\nfunc main(): int {\n\treturn 0\n}\n",
+		"main.weave": "x = 1\nmain = fn(args) {\n\treturn 0\n}\n",
 	})
 	file, err := Load(filepath.Join(dir, "main.weave"))
 	if err != nil {
@@ -78,8 +78,8 @@ func TestLoad_SingleFile(t *testing.T) {
 
 func TestLoad_SingleFileIgnoresSiblings(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
-		"main.weave":  "func main(): int {\n\treturn 0\n}\n",
-		"other.weave": "func main(): int {\n\treturn 1\n}\n", // would collide if merged
+		"main.weave":  "main = fn(args) {\n\treturn 0\n}\n",
+		"other.weave": "main = fn(args) {\n\treturn 1\n}\n", // would collide if merged
 	})
 	if _, err := Load(filepath.Join(dir, "main.weave")); err != nil {
 		t.Fatalf("Load: %v", err)
@@ -89,7 +89,7 @@ func TestLoad_SingleFileIgnoresSiblings(t *testing.T) {
 func TestLoad_DirectoryMergesFiles(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"a.weave": "x = 1\n",
-		"b.weave": "func main(): int {\n\treturn x\n}\n",
+		"b.weave": "main = fn(args) {\n\treturn x\n}\n",
 	})
 	file, err := Load(dir)
 	if err != nil {
@@ -108,17 +108,17 @@ func TestLoad_MissingMainIsAnError(t *testing.T) {
 		"a.weave": "x = 1\n",
 	})
 	if _, err := Load(dir); err == nil {
-		t.Fatal("expected an error for a package with no func main")
+		t.Fatal("expected an error for a package with no entry point")
 	}
 }
 
 func TestLoad_DuplicateMainInSamePackageIsAnError(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
-		"a.weave": "func main(): int {\n\treturn 0\n}\n",
-		"b.weave": "func main(): int {\n\treturn 1\n}\n",
+		"a.weave": "main = fn(args) {\n\treturn 0\n}\n",
+		"b.weave": "main = fn(args) {\n\treturn 1\n}\n",
 	})
 	if _, err := Load(dir); err == nil {
-		t.Fatal("expected an error for two `func main` in the same package")
+		t.Fatal("expected an error for two `main = fn(...) {...}` in the same package")
 	}
 }
 
@@ -126,7 +126,7 @@ func TestLoad_PackageCallResolvesQualifiedCallToFlatIdent(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"mathutil/clamp.weave": "Clamp = fn(v) { return v }\n",
 		"main.weave": `mathutil = package("./mathutil")
-func main(): int {
+main = fn(args) {
 	return mathutil.Clamp(1)
 }
 `,
@@ -159,7 +159,7 @@ func TestLoad_LowercaseMemberNotExportedIsAnError(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"mathutil/clamp.weave": "helper = fn(v) { return v }\n", // lowercase: not exported
 		"main.weave": `mathutil = package("./mathutil")
-func main(): int {
+main = fn(args) {
 	return mathutil.helper(1)
 }
 `,
@@ -173,7 +173,7 @@ func TestLoad_UnknownMemberIsAnError(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"mathutil/clamp.weave": "Clamp = fn(v) { return v }\n",
 		"main.weave": `mathutil = package("./mathutil")
-func main(): int {
+main = fn(args) {
 	return mathutil.Nope(1)
 }
 `,
@@ -183,17 +183,40 @@ func main(): int {
 	}
 }
 
-func TestLoad_MainInNonRootPackageIsAnError(t *testing.T) {
+// TestLoad_MainInNonRootPackageIsDemotedToOrdinaryBinding verifies
+// weave_spec.md §17.3's option (a) resolution: a non-root package's own
+// `main = fn(args) {...}` is never an error — it is silently demoted
+// into an ordinary top-level binding (renamed like any other, here
+// `sub_main`), never treated as an entry point. Only the root package's
+// own `main` becomes the actual entry point.
+func TestLoad_MainInNonRootPackageIsDemotedToOrdinaryBinding(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
-		"sub/x.weave": "func main(): int {\n\treturn 0\n}\n",
+		"sub/x.weave": "main = fn(args) {\n\treturn 0\n}\n",
 		"main.weave": `sub = package("./sub")
-func main(): int {
+main = fn(args) {
 	return 0
 }
 `,
 	})
-	if _, err := Load(dir); err == nil {
-		t.Fatal("expected an error for `func main` in a non-root package")
+	file, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if file.Main == nil {
+		t.Fatal("Main is nil (want the root package's own entry point)")
+	}
+	got := assignNames(file.TopLevel)
+	found := false
+	for _, name := range got {
+		if name == "sub_main" {
+			found = true
+		}
+		if name == "main" {
+			t.Errorf("TopLevel contains a bare %q binding — the non-root package's main must be renamed, not left as-is", name)
+		}
+	}
+	if !found {
+		t.Errorf("TopLevel names = %v, want sub_main present (the non-root package's own main, demoted and renamed)", got)
 	}
 }
 
@@ -206,7 +229,7 @@ FromA = 1
 FromB = 1
 `,
 		"main.weave": `a = package("./a")
-func main(): int {
+main = fn(args) {
 	return 0
 }
 `,
@@ -226,7 +249,7 @@ func TestLoad_QualifierReassignmentIsGracefullyDegraded(t *testing.T) {
 		"mathutil/clamp.weave": "Clamp = fn(v) { return v }\n",
 		"main.weave": `mathutil = package("./mathutil")
 mathutil = 5
-func main(): int {
+main = fn(args) {
 	return mathutil
 }
 `,
@@ -257,7 +280,7 @@ func TestLoad_ReassigningQualifierToADifferentPackageUsesTheLastOne(t *testing.T
 		"b/b.weave": "X = 2\n",
 		"main.weave": `shared = package("./a")
 shared = package("./b")
-func main(): int {
+main = fn(args) {
 	return shared.X
 }
 `,
@@ -277,7 +300,7 @@ func TestLoad_InvalidPackageNameIsAnError(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"my-utils/x.weave": "Y = 1\n",
 		"main.weave": `u = package("./my-utils")
-func main(): int {
+main = fn(args) {
 	return 0
 }
 `,
@@ -298,7 +321,7 @@ FromB = shared.Value
 `,
 		"main.weave": `a = package("./a")
 b = package("./b")
-func main(): int {
+main = fn(args) {
 	return 0
 }
 `,
@@ -331,7 +354,7 @@ ClampSquare = fn(v, lo, hi) {
 }
 `,
 		"main.weave": `mathutil = package("./mathutil")
-func main(): int {
+main = fn(args) {
 	return mathutil.ClampSquare(15, 0, 10)
 }
 `,
@@ -347,7 +370,7 @@ func TestLoad_WvzArchiveIsUsableAsAPackage(t *testing.T) {
 		"clamp.weave": "Clamp = fn(v) { return v }\n",
 	})
 	if err := os.WriteFile(filepath.Join(dir, "main.weave"), []byte(`mathutil = package("./mathutil.wvz")
-func main(): int {
+main = fn(args) {
 	return mathutil.Clamp(1)
 }
 `), 0o644); err != nil {
@@ -365,7 +388,7 @@ func main(): int {
 func TestLoad_WvzArchiveAsRootWorks(t *testing.T) {
 	dir := t.TempDir()
 	writeWvz(t, dir, "prog.wvz", map[string]string{
-		"main.weave": "func main(): int {\n\treturn 0\n}\n",
+		"main.weave": "main = fn(args) {\n\treturn 0\n}\n",
 	})
 	if _, err := Load(filepath.Join(dir, "prog.wvz")); err != nil {
 		t.Fatalf("Load: %v", err)

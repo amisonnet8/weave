@@ -1,4 +1,4 @@
-func main(): int {
+main = fn(args) {
 	x = 100
 	if x == 100 {
 		y = 100
