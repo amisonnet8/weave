@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Every Weave object is represented as a Go map[string]any, boxed into
@@ -44,7 +45,74 @@ func keyOf(v any) string {
 	if !ok {
 		panic(fmt.Sprintf("weave: property name must be a string, got %T", v))
 	}
-	return s
+	return normalizeKey(s)
+}
+
+// listKeyWidth is how many digits a list position's storage key is
+// zero-padded to (weave_spec.md §7's numeric for-in ordering). 10 digits
+// covers any list size that could plausibly fit in memory, with room to
+// spare — this is an internal storage detail, never a value a Weave
+// program can observe directly (ObjKeys strips it back off before
+// exposing a key to `for k, v in obj`, and at(...)/list[index] always
+// take/return an ordinary unpadded number).
+const listKeyWidth = 10
+
+// listKey formats a non-negative list index as its canonical zero-padded
+// storage key — the single source of truth ObjAt/ObjSetAt both build
+// their lookup key from.
+func listKey(i int) string {
+	s := strconv.Itoa(i)
+	if len(s) >= listKeyWidth {
+		return s
+	}
+	return strings.Repeat("0", listKeyWidth-len(s)) + s
+}
+
+// normalizeKey canonicalizes an arbitrary property-name string for
+// storage: if it's composed entirely of ASCII digits (i.e. it's a list
+// position, weave_spec.md §3.1 — an ordinary object's own properties are
+// always identifiers, per §1's lexical rules, and an identifier can
+// never start with a digit, so a digit-only key can only ever have come
+// from list(...)/a Go-asset call result/at·[]/has·remove used on one of
+// those), it's padded to the same listKeyWidth listKey produces. This is
+// what makes ObjGet/ObjSet/ObjHas/ObjRemove agree with ObjAt/ObjSetAt on
+// exactly which map entry "5" refers to, regardless of which of the two
+// families of functions a given piece of Weave code happens to reach a
+// list position through. Any other string (not all-digit) passes
+// through completely unchanged.
+func normalizeKey(s string) string {
+	if s == "" || len(s) >= listKeyWidth {
+		return s
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return s
+		}
+	}
+	return strings.Repeat("0", listKeyWidth-len(s)) + s
+}
+
+// stripListKeyPadding reverses listKey/normalizeKey's padding for
+// display — used only by ObjKeys, so `for k, v in obj` still exposes the
+// plain "0", "1", "11" a Weave program actually wrote/expects, never the
+// zero-padded internal storage form. Only a key that is *exactly*
+// listKeyWidth digits round-trips through this (anything shorter or
+// containing a non-digit was never padded to begin with, and is
+// returned unchanged).
+func stripListKeyPadding(k string) string {
+	if len(k) != listKeyWidth {
+		return k
+	}
+	for _, r := range k {
+		if r < '0' || r > '9' {
+			return k
+		}
+	}
+	trimmed := strings.TrimLeft(k, "0")
+	if trimmed == "" {
+		return "0"
+	}
+	return trimmed
 }
 
 // protoKey is the reserved property name a prototype-chain link is
@@ -116,7 +184,7 @@ func ObjAt(obj any, index any) any {
 		panic(fmt.Sprintf("weave: at(...) requires a number index, got %T", index))
 	}
 	o := objOf(obj)
-	key := strconv.Itoa(int(idx))
+	key := listKey(int(idx))
 	v, ok := o[key]
 	if !ok {
 		panic(fmt.Sprintf("weave: at(...): no element at index %v", idx))
@@ -138,7 +206,7 @@ func ObjSetAt(obj any, index any, val any) any {
 		panic(fmt.Sprintf("weave: list[...] = ... requires a number index, got %T", index))
 	}
 	o := objOf(obj)
-	key := strconv.Itoa(int(idx))
+	key := listKey(int(idx))
 	if _, ok := o[key]; !ok {
 		panic(fmt.Sprintf("weave: list[...] = ...: no element at index %v", idx))
 	}
@@ -159,7 +227,14 @@ func ObjSetAt(obj any, index any, val any) any {
 // Go map iteration order is randomized by design, which weave_spec.md
 // never promises an order to begin with — but sorting here makes
 // iteration deterministic and thus testable, which costs nothing
-// observable to a spec that makes no ordering claim either way.
+// observable to a spec that makes no ordering claim either way. Sorting
+// happens on the raw (possibly zero-padded, normalizeKey) storage keys —
+// this is what gives list positions true numeric order (weave_spec.md
+// §7: "10" no longer sorts before "2", since the real keys being
+// compared are "0000000010" and "0000000002") — and only *afterward* is
+// each key run through stripListKeyPadding, so the k a Weave program
+// actually sees in `for k, v in obj` is still the plain "0"/"1"/"10" it
+// would have written itself, never the padded internal form.
 //
 // The []string return (rather than `any`) is deliberately not a
 // general Weave value: nothing outside genForStmt's own codegen ever
@@ -174,6 +249,9 @@ func ObjKeys(obj any) any {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	for i, k := range keys {
+		keys[i] = stripListKeyPadding(k)
+	}
 	return keys
 }
 

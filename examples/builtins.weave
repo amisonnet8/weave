@@ -60,11 +60,13 @@ main = fn(args) {
 	}
 	print(acc)
 
-	// weave_spec.md §7: for-in enumerates keys in string-lexicographic
-	// order, not numeric order — for a list of 10+ elements this means
-	// "10" sorts before "2". Printed out, the effect is visible directly:
-	// this list has 12 elements (indices "0".."11"), and "10"/"11" land
-	// right after "1" instead of at the end.
+	// weave_spec.md §7: for-in enumerates a list(...)'s keys in true
+	// numeric order, even past 10 elements — internally each position is
+	// stored under a zero-padded key (weavert.listKey) precisely so that
+	// string-lexicographic sorting and numeric order agree; ObjKeys
+	// strips the padding back off before k ever reaches Weave code, so
+	// what's printed below is the plain "0","1",...,"11" a program
+	// actually wrote, in the order it actually expects.
 	big = list(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
 	order = ""
 	for k, v in big {

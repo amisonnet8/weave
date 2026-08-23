@@ -80,7 +80,7 @@ func Len(v any) any {
 func Args() any {
 	list := Object{}
 	for i, a := range os.Args {
-		list[strconv.Itoa(i)] = a
+		list[listKey(i)] = a
 	}
 	return list
 }

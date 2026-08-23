@@ -18,8 +18,8 @@ func TestCallGoMethodList_InvokesRealMethodAndBoxesIntoAList(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("expected a 1-element list, got %v", list)
 	}
-	if list["0"] != 5.0 {
-		t.Errorf("list[0] = %v, want 5.0 (normalized from int)", list["0"])
+	if v := ObjAt(list, 0.0); v != 5.0 {
+		t.Errorf("list[0] = %v, want 5.0 (normalized from int)", v)
 	}
 }
 
@@ -38,9 +38,10 @@ func TestCallGoFuncList_InvokesRealFunctionAndBoxesIntoAList(t *testing.T) {
 	if !ok {
 		t.Fatalf("CallGoFuncList(...) = %v (%T), want Object", got, got)
 	}
-	r, ok := list["0"].(*strings.Reader)
+	v := ObjAt(list, 0.0)
+	r, ok := v.(*strings.Reader)
 	if !ok {
-		t.Fatalf("list[0] = %v (%T), want *strings.Reader", list["0"], list["0"])
+		t.Fatalf("list[0] = %v (%T), want *strings.Reader", v, v)
 	}
 	if r.Len() != 5 {
 		t.Errorf("r.Len() = %d, want 5", r.Len())
@@ -50,8 +51,8 @@ func TestCallGoFuncList_InvokesRealFunctionAndBoxesIntoAList(t *testing.T) {
 func TestCallGoFuncList_NormalizesNumericResult(t *testing.T) {
 	got := CallGoFuncList(func(s string) int { return len(s) }, "hello")
 	list := got.(Object)
-	if list["0"] != 5.0 {
-		t.Fatalf("list[0] = %v (%T), want 5.0 (normalized from int)", list["0"], list["0"])
+	if v := ObjAt(list, 0.0); v != 5.0 {
+		t.Fatalf("list[0] = %v (%T), want 5.0 (normalized from int)", v, v)
 	}
 }
 
@@ -71,12 +72,12 @@ func TestCallGoFuncList_ValueErrorIdiom_Success(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected a 2-element list (value, error), got %v", got)
 	}
-	s, ok := got["0"].(string)
+	s, ok := ObjAt(got, 0.0).(string)
 	if !ok || s != "hi" {
-		t.Errorf("list[0] = %v (%T), want \"hi\" (normalized from []byte)", got["0"], got["0"])
+		t.Errorf("list[0] = %v (%T), want \"hi\" (normalized from []byte)", ObjAt(got, 0.0), ObjAt(got, 0.0))
 	}
-	if got["1"] != nil {
-		t.Errorf("list[1] = %v, want nil (no error)", got["1"])
+	if v := ObjAt(got, 1.0); v != nil {
+		t.Errorf("list[1] = %v, want nil (no error)", v)
 	}
 }
 
@@ -85,12 +86,12 @@ func TestCallGoFuncList_ValueErrorIdiom_ErrorIsJustAListElement(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected a 2-element list (value, error), got %v", got)
 	}
-	if got["0"] != "" {
-		t.Errorf("list[0] = %v, want \"\" (zero value on failure)", got["0"])
+	if v := ObjAt(got, 0.0); v != "" {
+		t.Errorf("list[0] = %v, want \"\" (zero value on failure)", v)
 	}
-	err, ok := got["1"].(error)
+	err, ok := ObjAt(got, 1.0).(error)
 	if !ok || err == nil || !strings.Contains(err.Error(), "no such file") {
-		t.Errorf("list[1] = %v (%T), want a real os error mentioning \"no such file\"", got["1"], got["1"])
+		t.Errorf("list[1] = %v (%T), want a real os error mentioning \"no such file\"", ObjAt(got, 1.0), ObjAt(got, 1.0))
 	}
 }
 
@@ -100,7 +101,7 @@ func TestCallGoFuncList_ValueErrorIdiom_ErrorIsJustAListElement(t *testing.T) {
 // always-list design.
 func TestCallGoFuncList_MultipleNonErrorValues(t *testing.T) {
 	got := CallGoFuncList(func() (int, int) { return 1, 2 }).(Object)
-	if got["0"] != 1.0 || got["1"] != 2.0 {
+	if ObjAt(got, 0.0) != 1.0 || ObjAt(got, 1.0) != 2.0 {
 		t.Errorf("CallGoFuncList(...) = %v, want {0:1.0, 1:2.0}", got)
 	}
 }
@@ -111,9 +112,9 @@ func TestCallGoMethodList_ValueErrorIdiom(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected a 2-element list (value, error), got %v", got)
 	}
-	err, ok := got["1"].(error)
+	err, ok := ObjAt(got, 1.0).(error)
 	if !ok || err == nil || err.Error() != "boom" {
-		t.Errorf("list[1] = %v (%T), want an error \"boom\"", got["1"], got["1"])
+		t.Errorf("list[1] = %v (%T), want an error \"boom\"", ObjAt(got, 1.0), ObjAt(got, 1.0))
 	}
 }
 

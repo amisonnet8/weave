@@ -2,7 +2,6 @@ package weavert
 
 import (
 	"os"
-	"strconv"
 	"testing"
 )
 
@@ -64,8 +63,8 @@ func TestArgs_MatchesOSArgsIncludingProgramName(t *testing.T) {
 		t.Fatalf("Args() has %d elements, want %d (len(os.Args))", len(got), len(os.Args))
 	}
 	for i, want := range os.Args {
-		if got[strconv.Itoa(i)] != want {
-			t.Errorf("Args()[%d] = %v, want %q", i, got[strconv.Itoa(i)], want)
+		if v := ObjAt(got, float64(i)); v != want {
+			t.Errorf("Args()[%d] = %v, want %q", i, v, want)
 		}
 	}
 }

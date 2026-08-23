@@ -3,7 +3,6 @@ package weavert
 import (
 	"fmt"
 	"reflect"
-	"strconv"
 )
 
 // CallGoFuncList implements an untyped (no goReturns(...)/goParams(...))
@@ -81,7 +80,7 @@ func CallGoMethodList(target any, methodName string, args ...any) any {
 func newList(out []reflect.Value) any {
 	list := Object{}
 	for i, v := range out {
-		list[strconv.Itoa(i)] = NormalizeGoValue(v.Interface())
+		list[listKey(i)] = NormalizeGoValue(v.Interface())
 	}
 	return list
 }

@@ -1,6 +1,9 @@
 package weavert
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestObjGetSet(t *testing.T) {
 	o := NewObject()
@@ -166,6 +169,91 @@ func TestObjKeys_ExcludesProtoKeyAndSortsForDeterminism(t *testing.T) {
 	want := []string{"a", "b"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("ObjKeys = %v, want %v (__proto__ excluded, sorted)", got, want)
+	}
+}
+
+// TestObjKeys_ListPositionsSortNumerically confirms weave_spec.md §7's
+// fix: a list(...)-shaped object with 10+ elements enumerates in true
+// numeric order (not "10" before "2"), and each key ObjKeys returns is
+// still the plain unpadded string a Weave program actually wrote — the
+// zero-padding (listKey/normalizeKey) is purely an internal storage
+// detail (weave_spec.md §3.1).
+func TestObjKeys_ListPositionsSortNumerically(t *testing.T) {
+	l := NewObject()
+	for i := 0; i < 12; i++ {
+		ObjSet(l, strconv.Itoa(i), float64(i))
+	}
+	got := ObjKeys(l).([]string)
+	want := []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"}
+	if len(got) != len(want) {
+		t.Fatalf("ObjKeys = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ObjKeys[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestKeyNormalization_UnpaddedAndPaddedFormsAgree confirms
+// ObjGet/ObjSet/ObjHas/ObjRemove/ObjAt/ObjSetAt all resolve a list
+// position to the same underlying storage slot, regardless of whether
+// the caller spells the key as a plain digit string ("5"), an already-
+// padded one ("0000000005"), or a numeric index (5.0 via ObjAt) —
+// weave_spec.md §3.1's own point that padding is invisible from Weave.
+func TestKeyNormalization_UnpaddedAndPaddedFormsAgree(t *testing.T) {
+	l := NewObject()
+	ObjSet(l, "5", "via unpadded ObjSet")
+
+	if v := ObjAt(l, 5.0); v != "via unpadded ObjSet" {
+		t.Errorf("ObjAt(l, 5.0) = %v, want the value set via ObjSet(l, \"5\", ...)", v)
+	}
+	if ObjHas(l, "5") != true {
+		t.Error("ObjHas(l, \"5\") = false, want true")
+	}
+	if ObjHas(l, "0000000005") != true {
+		t.Error("ObjHas(l, \"0000000005\") = false, want true (same position, padded spelling)")
+	}
+
+	ObjSetAt(l, 5.0, "via ObjSetAt")
+	if v := ObjGet(l, "5"); v != "via ObjSetAt" {
+		t.Errorf("ObjGet(l, \"5\") = %v, want the value ObjSetAt(l, 5.0, ...) just wrote", v)
+	}
+
+	ObjRemove(l, "5")
+	if ObjHas(l, "0000000005") != false {
+		t.Error("ObjHas(l, \"0000000005\") = true after ObjRemove(l, \"5\"), want false (same position)")
+	}
+}
+
+func TestNormalizeKey(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"5", "0000000005"},
+		{"0", "0000000000"},
+		{"007", "0000000007"}, // pre-padded input still lands on the same key
+		{"0000000005", "0000000005"},
+		{"x", "x"},   // non-digit: untouched
+		{"", ""},     // empty: untouched
+		{"5x", "5x"}, // mixed: not all-digit, untouched
+	}
+	for _, tt := range tests {
+		if got := normalizeKey(tt.in); got != tt.want {
+			t.Errorf("normalizeKey(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestStripListKeyPadding(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"0000000005", "5"},
+		{"0000000000", "0"},
+		{"x", "x"}, // not exactly listKeyWidth digits: untouched
+		{"5", "5"}, // too short to be a padded key: untouched
+	}
+	for _, tt := range tests {
+		if got := stripListKeyPadding(tt.in); got != tt.want {
+			t.Errorf("stripListKeyPadding(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
