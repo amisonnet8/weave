@@ -367,8 +367,8 @@ func protoShape(returns []GoReturnSpec) []string {
 // (weave_spec.md §15.2).
 //
 // With a declared signature (genNativeGoMethodCall), the call becomes
-// fully native — ASSERT extracts f's concrete receiver type, FNTYPE+FGET
-// extract the method as a real Go method value, and a native multi-
+// fully native — ASSERT extracts f's concrete receiver type, METHOD
+// extracts the method as a real Go method value, and a native multi-
 // target CALL invokes it directly. No reflect anywhere in this path.
 //
 // The bool result tells genGeneralCall whether this applied at all —
@@ -411,15 +411,30 @@ func genGoMethodCall(fg *funcGen, prop *ast.PropExpr, args []ast.Expr) (bool, st
 }
 
 // genNativeGoMethodCall lowers a typed gomethod(...) call to a fully
-// native ASSERT+FNTYPE+FGET+CALL sequence — see genGoMethodCall's doc
+// native ASSERT+METHOD+CALL sequence — see genGoMethodCall's doc
 // comment. Every step down to the final CALL only ever deals in
 // concretely-typed AMIVM values (never `^any`), matching amivm's own
-// method-call pattern (amivm_instruction_spec.md §8) exactly. The
-// FNTYPE's own return-type list (newGoFnType) has exactly one entry per
-// declared goReturns(...) position — 0, 1, 2, or more, all uniformly —
-// since amivm's FNTYPE/CALL both natively support any number of return
-// targets (no more special-casing "2 for the (value,error) idiom" the
-// way the old goError(...) design once did).
+// method-call pattern exactly.
+//
+// METHOD (amivm_spec.md §4.21, `local := variable.method`) replaced an
+// earlier FNTYPE+FGET design that turned out to be fundamentally
+// incompatible with any slice-shaped parameter/return position: FGET's
+// `single1 = variable.field` is a plain assignment into a *pre-declared*
+// VAR, which requires Go's own function-type *identity* (not mere
+// assignability) between the VAR's FNTYPE-declared type and the real
+// method's actual type — and a named stand-in like `^GoBytes` (needed
+// because AMIVM's type1 has no literal slice-type-token form at all) is
+// never identical to the real unnamed `[]byte`, only assignable to it,
+// so the FGET assignment itself failed to compile (confirmed by direct
+// probe). METHOD's `:=` sidesteps this entirely: the method value's own
+// type is inferred straight from the real method, so there's no
+// pre-declared type for it to conflict with. concreteArgs (passed into
+// the CALL below) and raws[] (its results' targets) can still freely
+// use named stand-in types (goTypeToken) same as always — passing an
+// argument and assigning a return value are both governed by
+// assignability, never identity, so naming never causes a problem there
+// (only *composing a function type*, which METHOD no longer does, ever
+// required identity).
 func genNativeGoMethodCall(fg *funcGen, typeInfo *GoTypeInfo, methodInfo *GoMethodInfo, objVal string, argVals []string, line int) (string, error) {
 	if len(argVals) != len(methodInfo.ParamTypes) {
 		return "", fmt.Errorf("line %d: %s.%s expects %d argument(s), got %d", line, typeInfo.GoName, methodInfo.GoName, len(methodInfo.ParamTypes), len(argVals))
@@ -433,18 +448,8 @@ func genNativeGoMethodCall(fg *funcGen, typeInfo *GoTypeInfo, methodInfo *GoMeth
 		concreteArgs[i] = genAssertOrTypeError(fg, av, methodInfo.ParamTypes[i], desc)
 	}
 
-	paramTypeTokens := make([]string, len(methodInfo.ParamTypes))
-	for i, pt := range methodInfo.ParamTypes {
-		paramTypeTokens[i] = goTypeToken(fg, pt)
-	}
-	returnTypeTokens := make([]string, len(methodInfo.Returns))
-	for i, r := range methodInfo.Returns {
-		returnTypeTokens[i] = goTypeToken(fg, r.Type)
-	}
-	fnType := fg.ctx.newGoFnType(paramTypeTokens, returnTypeTokens)
-
-	methodVal := fg.newTemp(fnType)
-	fmt.Fprintf(&fg.body, "\tFGET\t%s\t%s\t>%s\n", methodVal, recv, methodInfo.GoName)
+	methodVal := fg.newUndeclaredTemp()
+	fmt.Fprintf(&fg.body, "\tMETHOD\t%s\t%s\t<%s\n", methodVal, recv, methodInfo.GoName)
 
 	raws := make([]string, len(methodInfo.Returns))
 	for i, r := range methodInfo.Returns {
@@ -455,16 +460,31 @@ func genNativeGoMethodCall(fg *funcGen, typeInfo *GoTypeInfo, methodInfo *GoMeth
 }
 
 // genNativeReturnValue boxes a concretely-typed native call result (raw,
-// declared via goTypeToken(fg, goRef) — so already `^GoBytes`, not a bare
-// `^[]byte`, when goRef is "?[]byte") into a fresh `^any` value,
-// converting it first when needed (nativeReturnConversion) — used by
-// genBoxList for each position of a typed gofunc(...)/gomethod(...)
-// call's result list. goRef is the original "?pkg.Type"-shaped
-// declaration string (not yet tokenized) — nativeReturnConversion needs
-// to recognize "?[]byte" specifically, which goTypeToken's own output
-// (`^GoBytes`) no longer spells out.
+// declared via goTypeToken(fg, goRef) — so already a named stand-in
+// type like `^GoBytes`/`^GoSlice_int`, not a bare `^[]byte`/`^[]int`,
+// whenever goRef is a slice hint) into a fresh `^any` value, converting
+// it first when needed — used by genBoxList for each position of a
+// typed gofunc(...)/gomethod(...) call's result list. goRef is the
+// original "?pkg.Type"-shaped declaration string (not yet tokenized) —
+// both branches below need to recognize the original hint string by
+// name, which goTypeToken's own output (the named stand-in type) no
+// longer spells out.
+//
+// A general (non-byte) "?[]T" slice hint is handled first, and
+// differently from every other conversion: weavert.XsToList (slices.go)
+// already returns `^any` directly, so its CALL result *is* the final
+// result — no intermediate concretely-typed "casted" temp the way
+// nativeReturnConversion's other cases need (goTypeToken would make no
+// sense applied to a callname like "?weavert.IntsToList" anyway, since
+// that's not a "?pkg.Type"-shaped string at all).
 func genNativeReturnValue(fg *funcGen, raw, goRef string) string {
 	result := fg.newTemp("^any")
+	if elem, ok := sliceElem(goRef); ok {
+		if suffix, supported := sliceElemGoFuncSuffix[elem]; supported {
+			fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.%sToList\t%s\n", result, suffix, raw)
+			return result
+		}
+	}
 	if conv := nativeReturnConversion(goRef); conv != "" {
 		casted := fg.newTemp(goTypeToken(fg, conv))
 		fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t%s\t%s\n", casted, conv, raw)
@@ -490,10 +510,18 @@ func genNativeReturnValue(fg *funcGen, raw, goRef string) string {
 // (genAssertByteSliceParam): the Weave-side value arriving here is never
 // actually a []byte to begin with (Weave has no slice concept at all —
 // weave_spec.md §2), so an ordinary ASSERT against `^GoBytes` would
-// always fail. See that function's own doc comment.
+// always fail. See that function's own doc comment. Every other
+// supported "?[]T" slice hint has the same problem for the same reason
+// (the Weave-side value is always a list Object, never a real []T) —
+// see genAssertGeneralSliceParam.
 func genAssertOrTypeError(fg *funcGen, anyVal, goRef, desc string) string {
-	if goRef == "?[]byte" {
+	if goRef == "?[]byte" || goRef == "?[]uint8" {
 		return genAssertByteSliceParam(fg, anyVal, desc)
+	}
+	if elem, ok := sliceElem(goRef); ok {
+		if suffix, supported := sliceElemGoFuncSuffix[elem]; supported {
+			return genAssertGeneralSliceParam(fg, anyVal, elem, suffix)
+		}
 	}
 	anyVal = ensureVariable(fg, anyVal)
 	concreteType := goTypeToken(fg, goRef)
@@ -530,6 +558,33 @@ func genAssertByteSliceParam(fg *funcGen, anyVal, desc string) string {
 	return casted
 }
 
+// genAssertGeneralSliceParam handles a declared "?[]T" parameter type
+// for T other than byte/uint8 (weave_spec.md §15.4) — the general
+// counterpart to genAssertByteSliceParam. Unlike that one-step native
+// cast, converting a Weave list into an arbitrary []T needs real
+// per-element validation (any element could be the wrong Weave type),
+// which isn't a single native CALL/CAST the way string<->[]byte is —
+// weavert.ListToXs (one per supported T, slices.go) does this
+// validation loop in ordinary Go (a type assertion per element,
+// panicking with a clear message on the first mismatch — no reflect).
+// Its return value is already the concrete, unnamed []T the real Go
+// function needs; the result here is declared with goTypeToken's own
+// named `^GoSlice_T` stand-in only because AMIVM has no literal slice
+// type token to declare the VAR with — assigning an unnamed []T into
+// it, and later passing it as an argument, both go through Go's
+// ordinary assignability rules (not a type switch), so the naming
+// doesn't matter here the way it does for weavert.XsToList's own
+// return-side callers (goTypeToken's own doc comment). anyVal is passed
+// to ListToXs as-is (no ensureVariable needed): unlike ASSERT's
+// `variable`-only operand category, a plain CALL argument accepts a
+// literal value token directly.
+func genAssertGeneralSliceParam(fg *funcGen, anyVal, elem, suffix string) string {
+	sliceType := fg.ctx.goSliceType(elem)
+	casted := fg.newTemp(sliceType)
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.ListTo%s\t%s\n", casted, suffix, anyVal)
+	return casted
+}
+
 // ensureVariable materializes val (an AMIVM `value` token, possibly a
 // literal) into a fresh `^any` variable if it isn't one already —
 // ASSERT's `variable` operand category (amivm_spec.md §5) accepts only
@@ -550,6 +605,46 @@ func ensureVariable(fg *funcGen, val string) string {
 	return tmp
 }
 
+// sliceElemGoFuncSuffix maps a supported "?[]T" element type name (T,
+// with the "?[]" prefix already stripped) to the Go-identifier-safe
+// suffix used to name its dedicated weavert conversion functions —
+// "int" -> "Ints" gives weavert.IntsToList (return side) and
+// weavert.ListToInts (parameter side). byte/uint8 are deliberately
+// absent: that element type keeps its own, older →string conversion
+// (goTypeToken/nativeReturnConversion's own "?[]byte" special case)
+// rather than becoming a list of numbers, since Weave's only textual
+// value is already a string (weave_spec.md §2) and NormalizeGoValue's
+// untyped path has always made that same choice. Every other slice
+// element type Weave supports a hint for is listed here — sema's own
+// copy (internal/sema/goasset.go's validateSliceHint) must be kept in
+// sync manually, matching this project's established pattern for every
+// other sema/codegen table (builtinNames/reservedName/numericGoTypeNames).
+var sliceElemGoFuncSuffix = map[string]string{
+	"int":     "Ints",
+	"int8":    "Int8s",
+	"int16":   "Int16s",
+	"int32":   "Int32s",
+	"int64":   "Int64s",
+	"uint":    "Uints",
+	"uint16":  "Uint16s",
+	"uint32":  "Uint32s",
+	"uint64":  "Uint64s",
+	"float32": "Float32s",
+	"float64": "Float64s",
+	"string":  "Strings",
+	"bool":    "Bools",
+}
+
+// sliceElem extracts T from a "?[]T"-shaped type hint string, reporting
+// false for anything else (a plain scalar hint, a pointer/struct hint,
+// ...).
+func sliceElem(goRef string) (string, bool) {
+	if !strings.HasPrefix(goRef, "?[]") {
+		return "", false
+	}
+	return strings.TrimPrefix(goRef, "?[]"), true
+}
+
 // goTypeToken converts a "?pkg.Type"/"?*pkg.Type"-shaped declaration
 // string (gotype/gomethod/gofunc's own argument shape, weave_spec.md
 // §15.1) into the `^`-prefixed AMIVM type token it names — the two
@@ -557,23 +652,42 @@ func ensureVariable(fg *funcGen, val string) string {
 // one swap away: `?strings.Reader` -> `^strings.Reader`, `?*os.File` ->
 // `^*os.File`.
 //
-// "?[]byte" (weave_spec.md §15.4's slice type hint) is a special case:
-// naively applying the same swap would produce the unnamed slice
-// literal `^[]byte`, but AMIVM's `type1` operand category has no
-// slice-literal form at all — only named types, declared ahead of time
-// via SLTYPE (confirmed by direct probe: amivm rejects a bare `^[]byte`
-// type operand outright). So instead this returns the one shared named
-// type `^GoBytes` (codegenCtx.goBytesType, backed by a single top-level
-// `SLTYPE ^GoBytes ^byte` declaration) — Go's assignability rules make a
-// named type with underlying type []byte interchangeable with a literal
-// []byte at every boundary that matters here (an unnamed []byte return
-// value assigns straight into a `^GoBytes`-typed CALL target, and a
-// `^GoBytes`-typed argument passes straight into a Go parameter declared
-// as plain `[]byte`, confirmed by direct probe both ways) — so nothing
-// downstream of this function needs to know the substitution happened.
+// "?[]byte" and every other supported "?[]T" slice type hint
+// (weave_spec.md §15.4) are a special case: naively applying the same
+// swap would produce an unnamed slice literal like `^[]byte`/`^[]int`,
+// but AMIVM's `type1` operand category has no slice-literal form at
+// all — only named types, declared ahead of time via SLTYPE (confirmed
+// by direct probe: amivm rejects a bare `^[]byte` type operand
+// outright). So instead this returns one shared named type per element
+// type — `^GoBytes` (codegenCtx.goBytesType) for byte/uint8, or
+// `^GoSlice_T` (codegenCtx.goSliceType) for every other supported T,
+// each backed by its own single top-level `SLTYPE` declaration — Go's
+// assignability rules make a named type with underlying type []T
+// interchangeable with a literal []T at every boundary that matters
+// here (an unnamed []T return value assigns straight into a
+// `^GoSlice_T`-typed CALL target, and a `^GoSlice_T`-typed argument
+// passes straight into a Go parameter declared as plain `[]T`,
+// confirmed by direct probe both ways) — so nothing downstream of this
+// function needs to know the substitution happened. This is also why
+// weavert's own []T<->list conversion functions (slices.go's
+// IntsToList/ListToInts and friends) are written to take/return a
+// *concretely typed* []T parameter rather than `any`: passing a
+// `^GoSlice_int`-typed argument into a `func([]int) any` parameter is
+// just ordinary assignability (naming doesn't matter), whereas a Go
+// type *switch* (`case []int:`) would require the value's *exact*
+// dynamic type and would never match a named stand-in — see slices.go's
+// own doc comment for the full reasoning (the same distinction that
+// motivated introducing amivm's own METHOD instruction, one level up,
+// for method-value extraction — genNativeGoMethodCall's own doc
+// comment).
 func goTypeToken(fg *funcGen, goRef string) string {
-	if goRef == "?[]byte" {
+	if goRef == "?[]byte" || goRef == "?[]uint8" {
 		return fg.ctx.goBytesType()
+	}
+	if elem, ok := sliceElem(goRef); ok {
+		if _, supported := sliceElemGoFuncSuffix[elem]; supported {
+			return fg.ctx.goSliceType(elem)
+		}
 	}
 	return "^" + strings.TrimPrefix(goRef, "?")
 }

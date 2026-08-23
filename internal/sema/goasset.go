@@ -234,24 +234,45 @@ func (c *checker) checkGoMethodArgs(mcall *ast.CallExpr) (*GoMethodInfo, error) 
 	return &GoMethodInfo{GoName: goMethodName.Value, Returns: returns, ParamTypes: params}, nil
 }
 
-// validateSliceHint rejects any "?[]..." type hint other than exactly
-// "?[]byte" (weave_spec.md §15.4) — AMIVM's `type1` operand category has
-// no slice-literal form at all (confirmed by direct probe: `^[]byte`
-// itself is rejected as "型として解釈できない形式です"), so codegen's
-// goTypeToken can only make "?[]byte" work by substituting in one
-// specially-declared named type (`^GoBytes`, backed by weave's own
-// generated `SLTYPE`) with a defined Weave-side meaning (the returned/
-// passed value is always a string — mirrors weavert.NormalizeGoValue's
-// existing untyped-path behavior). No other slice element type has a
-// defined Weave-side representation to convert to or from, so every
-// other "?[]..." hint is rejected here at compile time with a clear
-// message, instead of surfacing later as amivm's own confusing type
-// error.
+// sliceElemSupported lists every "?[]T" element type T that has a
+// defined Weave-side representation to convert to/from, other than
+// byte/uint8 (which keeps its own, older →string treatment — see
+// validateSliceHint's own doc comment). Every entry here becomes a list
+// of Weave numbers/strings/bools (weave_spec.md §15.4); codegen's own
+// copy (internal/codegen/goasset.go's sliceElemGoFuncSuffix) must be
+// kept in sync manually, matching this project's established pattern
+// for every other sema/codegen table.
+var sliceElemSupported = map[string]bool{
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint16": true, "uint32": true, "uint64": true,
+	"float32": true, "float64": true,
+	"string": true, "bool": true,
+}
+
+// validateSliceHint rejects any "?[]..." type hint whose element type
+// isn't one of the supported ones above (plus byte/uint8) — AMIVM's
+// `type1` operand category has no slice-literal form at all (confirmed
+// by direct probe: `^[]byte` itself is rejected as「型として解釈できない
+// 形式です」), so codegen's goTypeToken can only make a "?[]T" hint work
+// by substituting in one specially-declared named type (backed by
+// weave's own generated `SLTYPE`) with a defined Weave-side meaning:
+// "?[]byte"/"?[]uint8" become a Weave string (mirroring
+// weavert.NormalizeGoValue's existing untyped-path behavior), every
+// other supported element type becomes a list of Weave values
+// (weave_spec.md §3). Any *other* slice element type (structs,
+// pointers, further-nested slices, ...) has no defined Weave-side
+// representation to convert to or from at all, so it's rejected here at
+// compile time with a clear message, instead of surfacing later as
+// amivm's own confusing type error.
 func validateSliceHint(value string, line int) error {
-	if strings.HasPrefix(value, "?[]") && value != "?[]byte" {
-		return fmt.Errorf("line %d: %q is not a supported slice type hint — only \"?[]byte\" is (weave_spec.md §15.4)", line, value)
+	if !strings.HasPrefix(value, "?[]") {
+		return nil
 	}
-	return nil
+	elem := strings.TrimPrefix(value, "?[]")
+	if elem == "byte" || elem == "uint8" || sliceElemSupported[elem] {
+		return nil
+	}
+	return fmt.Errorf("line %d: %q is not a supported slice type hint (weave_spec.md §15.4)", line, value)
 }
 
 // goTypeArg validates one `"?pkg.Type"`-shaped string literal argument

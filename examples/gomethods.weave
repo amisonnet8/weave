@@ -6,7 +6,7 @@ main = fn(args) {
 		len: gomethod("Len", goReturns("?int"), goParams()),
 		// (*strings.Reader).ReadByte() (byte, error) — a typed gomethod
 		// declaring both return positions via goReturns(...), so the call
-		// below lowers to a fully native ASSERT+FNTYPE+FGET+2-target-CALL
+		// below lowers to a fully native ASSERT+METHOD+2-target-CALL
 		// (internal/codegen/goasset.go's genNativeGoMethodCall), never
 		// reflect. Error-checking is no longer automatic (§15.4) — the
 		// caller extracts position 1 and decides via raiseIfError(...).
@@ -39,6 +39,29 @@ main = fn(args) {
 	bytesResult = newBytesReader("raw bytes")
 	br = at(bytesResult, 0)
 	print(at(br.len(), 0))
+
+	// A general (non-byte) slice type hint on a *gomethod*'s own return
+	// position — weave_spec.md §15.4. This combination didn't work at
+	// all until amivm's own METHOD instruction was introduced
+	// specifically to enable it: the old FNTYPE+FGET design required an
+	// exact Go function-type match between the declared signature and
+	// the real method's actual one, which a named slice stand-in
+	// (SLTYPE ^GoSlice_string) could never have with the real method's
+	// unnamed `[]string` return type (see CLAUDE.md's own record of this
+	// discovery). (*regexp.Regexp).SubexpNames() []string returns the
+	// names of a pattern's capture groups — the unnamed one (the whole
+	// match itself) is always "".
+	GoRegexp = gotype("?*regexp.Regexp", {
+		subexpNames: gomethod("SubexpNames", goReturns("?[]string"), goParams())
+	})
+	compile = gofunc("?regexp.Compile", goReturns(GoRegexp, "?error"), goParams("?string"))
+	compileResult = compile("(?P<year>[0-9]+)-(?P<month>[0-9]+)")
+	raiseIfError(at(compileResult, 1))
+	re = at(compileResult, 0)
+	names = at(re.subexpNames(), 0)
+	print(len(names))
+	print(names[1])
+	print(names[2])
 
 	return at(r.len(), 0)
 }

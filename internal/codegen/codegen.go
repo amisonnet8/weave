@@ -63,27 +63,26 @@ type codegenCtx struct {
 	// (shape.go) and consulted by later checkShape(...) calls.
 	shapes map[string]*ShapeInfo
 
-	// goFnTypeCount mints unique names for the FNTYPE declarations a
-	// typed gomethod(...) call needs (goasset.go's genNativeGoMethodCall)
-	// — one per call site, never deduplicated by signature (simpler, and
-	// the cost of a handful of extra top-level type decls is negligible).
-	goFnTypeCount int
-
 	// goBytesTypeEmitted tracks whether the one shared `SLTYPE ^GoBytes
 	// ^byte` declaration (goTypeToken's "?[]byte" special case,
 	// weave_spec.md §15.4) has already been added to topLevelDecls —
-	// unlike goFnTypeCount above, this IS deduplicated: every "?[]byte"
-	// hint anywhere in the program means exactly the same Go type, so
-	// there's no reason to declare it more than once (contrast
-	// newGoFnType, where each call site's signature can genuinely
-	// differ).
+	// every "?[]byte" hint anywhere in the program means exactly the
+	// same Go type, so there's no reason to declare it more than once.
 	goBytesTypeEmitted bool
 
+	// goSliceTypeNames memoizes the one shared named slice type
+	// (`^GoSlice_int`, `^GoSlice_string`, ...) generated per distinct
+	// non-byte "?[]T" element type actually used in the program
+	// (goTypeToken's own doc comment) — keyed by the bare element type
+	// name ("int", "string", ...), so every "?[]int" hint anywhere in
+	// the program shares the same SLTYPE declaration, same spirit as
+	// goBytesTypeEmitted above.
+	goSliceTypeNames map[string]string
+
 	// topLevelDecls collects IR lines that must sit outside any FUNC —
-	// the FNTYPE lines above, plus the SLTYPE below. Emitted by
-	// Generate() before FUNC !weave_main, since funcGen.body/decls are
-	// both scoped inside one FUNC/CLOS and have nowhere to put a
-	// package-level declaration.
+	// the SLTYPE lines below. Emitted by Generate() before FUNC
+	// !weave_main, since funcGen.body/decls are both scoped inside one
+	// FUNC/CLOS and have nowhere to put a package-level declaration.
 	topLevelDecls []string
 }
 
@@ -99,17 +98,22 @@ func (ctx *codegenCtx) goBytesType() string {
 	return "^GoBytes"
 }
 
-// newGoFnType mints and records a fresh top-level FNTYPE declaration
-// (paramTypes -> returnTypes, all already-converted `^`-prefixed AMIVM
-// type tokens — returnTypes has exactly one entry per the method's
-// declared goReturns(...) position, 0 or more, uniformly; weave_spec.md
-// §15.2's "every Go call always returns a list" rule) and returns its
-// deftype name, ready to use in an FGET.
-func (ctx *codegenCtx) newGoFnType(paramTypes, returnTypes []string) string {
-	name := fmt.Sprintf("^GoFn%d", ctx.goFnTypeCount)
-	ctx.goFnTypeCount++
-	ctx.topLevelDecls = append(ctx.topLevelDecls,
-		fmt.Sprintf("FNTYPE\t%s%s\t:%s\n", name, argSuffix(paramTypes), argSuffix(returnTypes)))
+// goSliceType returns the `^GoSlice_<elem>` type token backing a
+// "?[]<elem>" type hint for any supported element type other than
+// byte/uint8 (goBytesType's own separate, older path) — see
+// goTypeToken's own doc comment for the full reasoning. elem must
+// already be a valid bare Go type name (int, string, ...) — checked by
+// the caller against sliceElemGoFuncSuffix before this is ever reached.
+func (ctx *codegenCtx) goSliceType(elem string) string {
+	if tok, ok := ctx.goSliceTypeNames[elem]; ok {
+		return tok
+	}
+	name := "^GoSlice_" + elem
+	ctx.topLevelDecls = append(ctx.topLevelDecls, fmt.Sprintf("SLTYPE\t%s\t^%s\n", name, elem))
+	if ctx.goSliceTypeNames == nil {
+		ctx.goSliceTypeNames = map[string]string{}
+	}
+	ctx.goSliceTypeNames[elem] = name
 	return name
 }
 
@@ -236,6 +240,23 @@ func (fg *funcGen) newTemp(irType string) string {
 	return "%" + fg.declare(name, irType)
 }
 
+// newUndeclaredTemp mints a fresh temp name from the same counter
+// newTemp uses (so the two never collide), but — unlike newTemp — never
+// hoists a VAR declaration for it. METHOD (amivm_spec.md §4.21's
+// "メソッド値の取得") is the one instruction that requires this: its own
+// target must be a genuinely fresh `%xxx` token that was never VAR'd,
+// since METHOD performs its own `local := variable.method` declaration,
+// inferring the type directly from the real method's actual signature
+// (see internal/codegen/goasset.go's genNativeGoMethodCall for why this
+// matters — a pre-declared VAR of any named stand-in type, the way
+// every other typed value on this path works, would make the := no
+// longer possible and break entirely).
+func (fg *funcGen) newUndeclaredTemp() string {
+	name := fmt.Sprintf("__t%d", fg.tempCount)
+	fg.tempCount++
+	return "%" + fg.namePrefix + name
+}
+
 // Generate lowers a checked *ast.File into AMIVM-IR text.
 //
 // main's own parameter (weave_spec.md §12's command-line-arguments list,
@@ -262,8 +283,7 @@ func Generate(file *ast.File) (string, error) {
 	}
 
 	var b strings.Builder
-	// FNTYPE declarations (typed gomethod(...) calls, goasset.go's
-	// newGoFnType) and the shared SLTYPE for "?[]byte" hints
+	// The shared SLTYPE declarations for "?[]byte"-style slice hints
 	// (codegenCtx.goBytesType) must sit outside any FUNC — emit them
 	// first.
 	for _, d := range ctx.topLevelDecls {

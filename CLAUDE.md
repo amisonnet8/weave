@@ -84,6 +84,7 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | `@` | 関数外変数名(グローバル変数) |
 | `^` | 型名 |
 | `>` | 構造体フィールド名 |
+| `<` | メソッド名(`METHOD`用) |
 | `!` | amivm定義関数名(`!xxx`→`<関数名>_amivm_function`、`!main`→`main`) |
 | `?` | Go関数名(標準ライブラリ・Weave独自ランタイム問わず) |
 | `#` | ラベル名 |
@@ -104,6 +105,7 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | 条件分岐(ブロック形) | `IF boolean1` `ELIF boolean1` `ELSE` `ENDIF` |
 | ループ(ブロック形) | `LOOP` `BREAK` `CONTINUE` `ENDLOOP` |
 | 型アサーション | `ASSERT multi1 (multi2) variable type1` |
+| メソッド値の取得 | `METHOD local variable method`(`local := variable.method`。`local`は`VAR`で事前宣言しない`%xxx`のみ、`:=`で型推論しながら新規宣言する) |
 | 関数定義 | `FUNC defname type1 ... : type3 ...` / `RET` / `ENDFUNC` |
 | 関数呼び出し | `CALL multi1 ... : callname value1 ...` / `DEFER` / `SPAWN` |
 | チャネル | `CHTYPE` `CHMAKE` `CHSEND` `CHRECV` |
@@ -822,6 +824,28 @@ checkShape(PointShape, p)
 **発見: `weavert.Object`を直接構築する2箇所(`Args()`・`newList`)が、公開関数`ObjSet`(正規化を経由する)を通さず生のGoマップへ`strconv.Itoa(i)`を直接書き込んでいたため、最初の実装は`examples/args.weave`・`examples/goassets.weave`で回帰した。** `at(...)`(`ObjAt`、正規化された10桁キーで検索)と、`Args()`/`newList`(未正規化の生のキーで格納)が食い違い、「no element at index 0」というパニックになった——`internal/codegen/goasset.go`の`genBoxList`・`codegen.go`の`genListCall`はどちらも`?weavert.ObjSet`という**公開された・boxed-anyの**CALLを経由するため正規化の恩恵を自動的に受けていたが、`weavert.Args()`・`weavert.goasset.go`の`newList`はGoコード内で直接`Object{}`へ書き込む、**公開APIを経由しない内部ヘルパー**だったため、この2箇所だけ正規化から取り残されていた。**「1つの choke pointに正規化ロジックを集約する」という設計は、その choke pointを経由しない書き込み経路が他に無いかを全て洗い出して初めて安全になる**——`weavert`パッケージ内で`Object`型の値へ直接キーを書き込んでいる全箇所(`grep`で`Object{}`のリテラル構築+`[strconv.Itoa`のようなパターン)を機械的に確認し、`Args()`/`newList`の2箇所を同じ`listKey`ヘルパーへ揃えることで解決した。既存の単体テスト(`weavert_test.go`・`goasset_test.go`)もこの内部キー形式の変更に依存していた箇所(`Object`の生マップを直接`["0"]`のようにインデックスして中身を検証していた)があり、公開APIの`ObjAt`経由で検証する形に書き直した——**内部表現に依存したテストの書き方(生のマップインデックス)は、内部表現を変える変更のたびに壊れる**、という当たり前だが踏み外しやすい教訓の再確認。
 
 `examples/builtins.weave`の`for k, v in big`のコメントと出力を新しい正しい数値順(`0,1,2,...,11,`)に合わせて更新し、`amivm`→`go build`→実行で再検証した。weave_spec.md 7節・19.6節(数値順にならないという既知の制約)・3.1節(ゼロ埋めの内部表現に関する注記)を更新し、もはや正しくない「できないこと」の記述を削除した。単体テスト(`weavert`)にキー正規化・数値順ソート・パディング往復の専用テストを新規追加、全て green。既存の全19サンプル+`examples/modules`+`examples/multifile`の回帰も(この節で見つけて直した2件を除き)無変更で動作継続することを確認した。
+
+### スライス型ヒントの一般化(`"?[]byte"`以外の要素型)と、それを可能にしたAMIVM本体への`METHOD`命令の追加
+
+`"?[]byte"`専用だったスライス型ヒント(直前の節群)を、ユーザーから「`"?[]int"`・`"?[]string"`のような他の要素型にも対応してほしい」と依頼され、まず設計案を提示した——`weavert`側で要素ごとの反復変換を行う方式(reflect不使用、要素型ごとの専用Go関数を型ヒント文字列からコンパイル時に選ぶ)と、AMIVMのネイティブ命令(`AGET`/`ASET`)でループする方式の2案を比較し、前者を推奨・採用した(未検証命令に手を出さずに済み、実装量も小さいため)。
+
+**実装前のprobeで、この一般化とは別の、既存の`gomethod`型ヒント経路そのものに潜んでいた致命的な制約を発見した。** `gomethod`の型付き経路は`FNTYPE`(関数型宣言)+`FGET`(`single1 = variable.field`という、既存VARへの代入でメソッド値を取得する命令)を使っていたが、これはGoの**関数型の完全な同一性**を要求する——名前付きの代役型(`^GoBytes`のような、AMIVMが`type1`にスライスのリテラル形を持たないため必要になる、15.4節で確立済みの仕組み)は、基底型が同じでも実際のメソッドの型(`func(...) []byte`)とは別の型として扱われ、`FGET`の代入自体がコンパイルエラーになることを直接probeで確認した。**これは新しく追加するスライス型ヒントだけの問題ではなく、既存の`"?[]byte"`を`gomethod`の戻り値・引数に使った場合も同じく壊れる、これまで誰も踏んでいなかった潜在バグだった**(既存の全サンプルが`"?[]byte"`を`gofunc`側でしか使っていなかったため露見していなかった)。
+
+**この発見を受けてユーザーへ状況を報告し、いったん作業を中断して「AMIVM側の修正を含めた解決案はあるか」という追加の検討依頼を受けた。** ここから、ユーザーとの対話で新しいAMIVM命令`METHOD`を協働設計する流れになった——このプロジェクトで初めて、実装の途中でAMIVM本体に新しい専用命令を追加してもらうという展開になった。
+
+- 私から「`FGET`の生成コードを`=`(既存VARへの代入)から`:=`(型推論)へ変えれば、名前付き型と無名型の不一致という根本原因を回避できるはず」という方向性を提案
+- ユーザーが具体案として`EXFN local exname → local := exname`(外部パッケージ関数の変数束縛専用命令)を提示。これに対し「`gomethod`の問題は**レシーバーに紐づくメソッド値**の抽出であり、`EXFN`が対象とする`?pkg.Func`という静的な参照とは別物では」と確認したところ、ユーザーが本質を汲み取り`METHOD local variable method → local := variable.method`という、まさに必要だった形へ設計をまとめ直した
+- 「メソッド以外に誤用されないようにしたい」という要望に対し、既存の識別子プレフィックス方式(`>`=構造体フィールド名)を踏襲した専用プレフィックスの新設を提案し、ユーザーが`<`(メソッド名)として採用・実装した
+
+**実装前に、この新命令が本当に問題を解決するかを直接probeで検証してから着手した。** `local := recv.Method`という`:=`宣言に、(1)名前付き型(`^GoBytes`相当)の引数を渡す、(2)戻り値を名前付き型(`^GoSliceInt`相当)の変数へ代入する、という一連の流れが実際にコンパイル・実行できることをGoレベルで確認——理由は単純で、`METHOD`が解消するのは「関数型の完全一致」という制約だけで、その後の「引数を渡す」「戻り値を代入する」はどちらも代入可能性(assignability、名前付き↔無名で基底型が同じなら片方が無名なら変換なしで通る)のルールで済むため、既存の`gofunc`の直接呼び出しや`genAssertByteSliceParam`が既に使っているルールと変わらない。単一戻り値・複数戻り値(`([]int, error)`のような混在)のどちらも確認し、AMIVM側の実装完了後は実際の`amivm`バイナリ(`(*strings.Reader).Read(b []byte) (int, error)`相当のメソッドへの`METHOD`+名前付きスライス型)でも同じ結果を確認した。
+
+**`genNativeGoMethodCall`を`FNTYPE`+`FGET`から`ASSERT`+`METHOD`+`CALL`へ全面的に書き換え、`FNTYPE`生成ロジック(`newGoFnType`/`goFnTypeCount`)自体が丸ごと不要になった。** `METHOD`は`amivm_spec.md`が明記する通り「`local`は`VAR`で事前宣言しない」ため、既存の`funcGen.newTemp`(常に`VAR`を巻き上げる)をそのまま使えず、`newUndeclaredTemp`という新しいヘルパー(同じ`__tN`カウンタを共有しつつ`VAR`を追加しない)を新設した。この変更は`gomethod`の**振る舞いを一切変えない、内部実装だけのリファクタリング**であり、既存の全サンプルが無変更で動作継続することを確認した(既存のIRテキスト完全一致テストは`METHOD`の出力形に合わせて更新)。
+
+**一般スライス型ヒントの実装自体は、`METHOD`が土台を整えたことで`gofunc`・`gomethod`のどちらでも同じ仕組みで動くようになった。** 戻り値側は要素型ごとの専用Go関数(`weavert.IntsToList([]int) any`・`weavert.StringsToList([]string) any`等)へのネイティブ`CALL`1つ、引数側は逆方向の専用関数(`weavert.ListToInts(any) []int`等)——どちらも型ヒント文字列(`"?[]int"`等)からコンパイル時に選ばれる、要素型ごとの**個別の**Go関数であり、実行時にreflectで型を判定する仕組みは無い。**ここが実装上の最大の落とし穴だった**: 当初「`weavert.SliceToList(v any) any`という単一の関数に、Goの型スイッチ(`case []int:`)で振り分けさせる」設計を考えたが、直接probeで「型スイッチは値の**完全な**動的型でしか一致しない」ことを確認し、`raws[i]`が名前付き代役型(`^GoSlice_int`)で宣言されている限り、その値を`^any`へboxした時点の動的型は`GoSlice_int`(名前付き)のままで、`case []int:`には決して一致しないと判明した——これは`METHOD`命令自体を必要とした問題と全く同じ「名前付き型と無名型の型スイッチ/型同一性における不一致」であり、対策も同じ発想で解決した: 型スイッチの代わりに、要素型ごとに**具体的な`[]T`パラメータを取る**専用関数を用意すれば、値を渡す操作は型スイッチではなく代入可能性のルールで済み、名前付き型のままで問題なく動く。
+
+`sliceElemGoFuncSuffix`(codegen)・`sliceElemSupported`(sema)という2つの独立したテーブル(この2つが「サポートする要素型」の正になる、既存の`numericGoTypeNames`等と同じsema/codegen非共有パターン)に、`int`/`int8`/`int16`/`int32`/`int64`/`uint`/`uint16`/`uint32`/`uint64`/`float32`/`float64`/`string`/`bool`を登録した。`byte`/`uint8`は既存の`"?[]byte"`(→文字列変換)のまま特別扱いとして維持し、この新しい「→list変換」の対象からは意図的に除外した——Weaveの唯一のテキスト表現は文字列であり、既に確立された変換(型ヒント無し経路の`NormalizeGoValue`も同じ選択をしている)を保つため。
+
+`examples/gomethods.weave`に`(*regexp.Regexp).SubexpNames() []string`(`gomethod`のスライス戻り値、`METHOD`修正の直接の動機)を、`examples/goassets.weave`に`strings.Fields`/`strings.Join`/`sort.Ints`(`gofunc`の一般スライス戻り値・引数)を追加し、`amivm`→`go build`→実行まで実地検証した。単体テスト(codegen/sema/weavert)を新規追加、全て green。既存の全19サンプル+`examples/modules`+`examples/multifile`の回帰も(`gomethods.weave`/`goassets.weave`の意図的な拡張を除き)無変更で動作継続することを確認した。weave_spec.md §15.4/§15.6/§19.7・CLAUDE.md「AMIVM-IRの書き方」節(`<`プレフィックス・`METHOD`命令の追記)も更新した。
 
 ## 開発の進め方
 

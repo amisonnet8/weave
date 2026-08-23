@@ -27,18 +27,44 @@ main = fn(args) {
 	print(at(fileResult, 0))
 
 	// The same os.ReadFile, this time with a typed signature declared via
-	// goReturns("?[]byte", "?error") (weave_spec.md §15.4) — "?[]byte" is
-	// the one supported slice type hint, lowering to a fully native call
-	// (internal/codegen/goasset.go's genGoFuncCall, no reflect) via a
-	// compiler-generated named slice type (SLTYPE ^GoBytes ^byte, since
-	// AMIVM has no literal `^[]byte` type operand at all). The raw []byte
-	// result is converted to a Weave string automatically, same as the
-	// untyped call above — the type hint changes how the call dispatches,
-	// not what value comes back.
+	// goReturns("?[]byte", "?error") (weave_spec.md §15.4) — lowering to
+	// a fully native call (internal/codegen/goasset.go's genGoFuncCall,
+	// no reflect) via a compiler-generated named slice type (SLTYPE
+	// ^GoBytes ^byte, since AMIVM has no literal `^[]byte` type operand
+	// at all). The raw []byte result is converted to a Weave string
+	// automatically, same as the untyped call above — the type hint
+	// changes how the call dispatches, not what value comes back.
 	readFileTyped = gofunc("?os.ReadFile", goReturns("?[]byte", "?error"), goParams("?string"))
 	typedFileResult = readFileTyped("examples/testdata.txt")
 	raiseIfError(at(typedFileResult, 1))
 	print(at(typedFileResult, 0))
+
+	// A general (non-byte) slice type hint: strings.Fields(s string)
+	// []string, typed via goReturns("?[]string"). Unlike "?[]byte"
+	// (which converts to a Weave string), any other supported element
+	// type converts to a Weave list(...) (weave_spec.md §15.4) — one
+	// native CALL to the compiler-selected weavert.StringsToList, chosen
+	// at compile time from the "?[]string" hint itself (no runtime
+	// dispatch/reflect at all).
+	fields = gofunc("?strings.Fields", goReturns("?[]string"), goParams("?string"))
+	fieldList = at(fields("  the quick brown fox  "), 0)
+	print(len(fieldList))
+	print(fieldList[0])
+	print(fieldList[3])
+
+	// The parameter-side counterpart: strings.Join(elems []string, sep
+	// string) string takes a "?[]string" parameter — the reverse
+	// conversion (weavert.ListToStrings), turning the Weave list built
+	// above back into a real Go []string before the native call.
+	join = gofunc("?strings.Join", goReturns("?string"), goParams("?[]string", "?string"))
+	print(at(join(fieldList, "-"), 0))
+
+	// sort.Ints(x []int) — a "?[]int" parameter with no return value at
+	// all (goReturns()), confirming numeric slice elements work the same
+	// way string ones do (weavert.ListToInts).
+	sortInts = gofunc("?sort.Ints", goReturns(), goParams("?[]int"))
+	sortInts(list(5, 3, 1, 4, 2))
+	print("sort.Ints ran without error")
 
 	// strconv.Atoi(s string) (int, error) — another (value, error) stdlib
 	// function, this time with a typed signature declared via
