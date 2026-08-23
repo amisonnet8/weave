@@ -6,7 +6,7 @@ A dynamically-typed programming language, implemented in Go, that unifies proper
 
 ## Status
 
-Weave's front end (lexer, parser, semantic checker, and AMIVM-IR code generator) implements the full language described in [`weave_spec.md`](weave_spec.md): dynamic values (numbers, strings, booleans, `nil`), operators, control flow, functions/closures/currying (including self-recursion), prototype-based objects and method dispatch, built-in functions, `for`-`in`, the actor model (`spawn`/`send`/`ask`/`reply`), static Go-asset integration (`gotype`/`gofunc`/`gomethod`, §15–16), and multi-file/multi-package modules (`package(...)`, §17), including `.wvz` (zip-archived) packages.
+Weave's front end (lexer, parser, semantic checker, and AMIVM-IR code generator) implements the full language described in [`weave_spec.md`](weave_spec.md): dynamic values (numbers, strings, booleans, `nil`), operators, control flow, functions/closures/currying (including self-recursion), prototype-based objects and method dispatch, list-like objects with `[index]` read/write sugar (§3.1), built-in functions, `for`-`in`, the actor model (`spawn`/`send`/`ask`/`reply`), static Go-asset integration including optional native type hints (`gotype`/`gofunc`/`gomethod`, `goReturns`/`goParams`, `govar`, §15–16), optional runtime shape checks for Weave's own objects (`shape`/`checkShape`, §4.3), and multi-file/multi-package modules (`package(...)`, §17), including `.wvz` (zip-archived) packages.
 
 ## Pipeline
 
