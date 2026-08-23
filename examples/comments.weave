@@ -1,0 +1,29 @@
+// weave_spec.md §1: two comment forms. `//` runs to end of line (as
+// used throughout every other example); `/* ... */` is the newer
+// addition demonstrated here — doesn't nest (same as Go), can sit
+// mid-line, and never itself acts as a statement terminator even when
+// it spans several physical lines.
+
+/* A block comment can sit at top level, on its own line(s),
+   before any code at all. */
+
+main = fn(args) {
+	x = /* mid-line */ 1 + 2
+	print(x)
+
+	/* A block comment that spans multiple lines is pure whitespace —
+	   it does NOT break the statement it sits inside of, unlike an
+	   actual newline would. */
+	y = 1 /* line one
+	         line two
+	         line three */ + 1
+	print(y)
+
+	// The two forms nest into each other just fine, since only "/*"
+	// itself starts a block comment — "//" has no special meaning once
+	// already inside one.
+	/* a block comment containing // is still just one block comment */
+	print("done")
+
+	return 0
+}

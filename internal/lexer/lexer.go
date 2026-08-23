@@ -59,7 +59,9 @@ func (l *Lexer) advanceRune() rune {
 }
 
 func (l *Lexer) next() (Token, error) {
-	l.skipSpacesAndComments()
+	if err := l.skipSpacesAndComments(); err != nil {
+		return Token{}, err
+	}
 
 	line := l.line
 	if l.pos >= len(l.src) {
@@ -69,7 +71,9 @@ func (l *Lexer) next() (Token, error) {
 	r := l.peekRune()
 
 	if r == '\n' {
-		l.skipNewlines()
+		if err := l.skipNewlines(); err != nil {
+			return Token{}, err
+		}
 		return Token{Kind: Newline, Line: line}, nil
 	}
 
@@ -85,10 +89,17 @@ func (l *Lexer) next() (Token, error) {
 	return l.lexOperator(line)
 }
 
-// skipSpacesAndComments skips spaces, tabs, and // comments, but leaves
-// newlines in place: they are significant statement terminators
-// (weave_spec.md §1).
-func (l *Lexer) skipSpacesAndComments() {
+// skipSpacesAndComments skips spaces, tabs, `//` line comments, and
+// `/* ... */` block comments, but leaves newlines in place: they are
+// significant statement terminators (weave_spec.md §1). A block comment
+// is always treated as pure whitespace — even one spanning several
+// physical lines never itself produces a Newline token (only an actual
+// `\n` in the source outside of a comment does); this keeps Weave's
+// newline-is-a-terminator model simple, unlike Go's own block comments,
+// which participate in automatic semicolon insertion. Block comments
+// don't nest (same as Go): the first `*/` found closes the comment,
+// regardless of how many `/*` appeared before it.
+func (l *Lexer) skipSpacesAndComments() error {
 	for l.pos < len(l.src) {
 		r := l.peekRune()
 		switch {
@@ -98,22 +109,50 @@ func (l *Lexer) skipSpacesAndComments() {
 			for l.pos < len(l.src) && l.peekRune() != '\n' {
 				l.pos++
 			}
+		case r == '/' && l.peekRuneAt(1) == '*':
+			if err := l.skipBlockComment(); err != nil {
+				return err
+			}
 		default:
-			return
+			return nil
 		}
+	}
+	return nil
+}
+
+// skipBlockComment consumes a `/* ... */` comment, positioned at the
+// opening `/`. advanceRune (not a bare l.pos++) tracks line numbers as it
+// goes, so a comment spanning several lines still leaves l.line correct
+// for whatever token follows it.
+func (l *Lexer) skipBlockComment() error {
+	startLine := l.line
+	l.advanceRune() // '/'
+	l.advanceRune() // '*'
+	for {
+		if l.pos >= len(l.src) {
+			return fmt.Errorf("line %d: unterminated block comment", startLine)
+		}
+		if l.peekRune() == '*' && l.peekRuneAt(1) == '/' {
+			l.advanceRune() // '*'
+			l.advanceRune() // '/'
+			return nil
+		}
+		l.advanceRune()
 	}
 }
 
 // skipNewlines consumes one or more newlines (interleaved with
 // whitespace/comments), collapsing them into a single Newline token.
-func (l *Lexer) skipNewlines() {
+func (l *Lexer) skipNewlines() error {
 	for {
-		l.skipSpacesAndComments()
+		if err := l.skipSpacesAndComments(); err != nil {
+			return err
+		}
 		if l.pos < len(l.src) && l.peekRune() == '\n' {
 			l.advanceRune()
 			continue
 		}
-		return
+		return nil
 	}
 }
 

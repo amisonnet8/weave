@@ -41,6 +41,90 @@ func TestTokenize_CommentsAndBlankLinesCollapseToOneNewline(t *testing.T) {
 	}
 }
 
+func TestTokenize_BlockCommentMidLine(t *testing.T) {
+	// weave_spec.md §1: /* ... */ can appear mid-line, same as Go.
+	src := "a /* comment */ b\n"
+	toks, err := Tokenize(src)
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	want := []Kind{Ident, Ident, Newline, EOF}
+	if len(toks) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(toks), len(want), toks)
+	}
+	for i, k := range want {
+		if toks[i].Kind != k {
+			t.Errorf("token %d: got Kind %d, want %d", i, toks[i].Kind, k)
+		}
+	}
+}
+
+func TestTokenize_BlockCommentSpanningLinesActsAsPureWhitespace(t *testing.T) {
+	// A block comment containing a newline does NOT itself produce a
+	// Newline token — unlike Go's ASI (where a multi-line block comment
+	// counts as a newline for semicolon insertion), Weave's newlines are
+	// literal terminators (weave_spec.md §1) with no synthesized-token
+	// concept to begin with, so the simpler, consistent choice is: only
+	// an actual `\n` outside any comment ends a statement.
+	src := "a /* line one\nline two */ b\n"
+	toks, err := Tokenize(src)
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	want := []Kind{Ident, Ident, Newline, EOF}
+	if len(toks) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(toks), len(want), toks)
+	}
+	for i, k := range want {
+		if toks[i].Kind != k {
+			t.Errorf("token %d: got Kind %d, want %d", i, toks[i].Kind, k)
+		}
+	}
+}
+
+func TestTokenize_BlockCommentsDoNotNest(t *testing.T) {
+	// weave_spec.md §1: block comments don't nest, same as Go — the
+	// first `*/` closes the comment regardless of any `/*` seen since.
+	// "/* /* */ */" therefore leaves a stray " */" as real tokens after
+	// the comment closes at the first "*/".
+	src := "/* /* */ */\n"
+	toks, err := Tokenize(src)
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	// After the comment "/* /* */" closes, "*/" remains: a Star token
+	// then a Slash token (neither combines into a single operator).
+	want := []Kind{Star, Slash, Newline, EOF}
+	if len(toks) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(toks), len(want), toks)
+	}
+	for i, k := range want {
+		if toks[i].Kind != k {
+			t.Errorf("token %d: got Kind %d, want %d", i, toks[i].Kind, k)
+		}
+	}
+}
+
+func TestTokenize_UnterminatedBlockCommentIsAnError(t *testing.T) {
+	if _, err := Tokenize("a /* never closed\n"); err == nil {
+		t.Fatal("expected an error for an unterminated block comment")
+	}
+}
+
+func TestTokenize_LineCommentInsideBlockCommentIsLiteralText(t *testing.T) {
+	// "//" has no special meaning once inside a block comment — only the
+	// closing "*/" matters.
+	src := "a /* // still a comment */ b\n"
+	toks, err := Tokenize(src)
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	want := []Kind{Ident, Ident, Newline, EOF}
+	if len(toks) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(toks), len(want), toks)
+	}
+}
+
 func TestTokenize_UnterminatedString(t *testing.T) {
 	if _, err := Tokenize(`"abc`); err == nil {
 		t.Fatal("expected an error for an unterminated string literal")
