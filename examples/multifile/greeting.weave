@@ -1,0 +1,8 @@
+// A sibling file in the same directory as main.weave — no
+// package(...) needed to reach it from there (weave_spec.md §17.1).
+// Capitalization has no special meaning here (unlike a package(...)
+// import, §17.2): every top-level binding in the same directory is
+// equally visible to every other file in it.
+greet = fn(name) {
+	return "hello, " + name
+}

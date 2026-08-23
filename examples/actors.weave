@@ -23,5 +23,35 @@ main = fn(args) {
 	b = spawn({ __proto__: base, name: "Bob" })
 	print(ask(b)("greet"))
 
+	// weave_spec.md §10: spawn copies obj, but only shallowly (a new
+	// top-level map; nested values are shared, not deep-copied).
+	sharedInner = { value: 1 }
+	watcherProto = {
+		inner: sharedInner,
+		readInner: fn(self, replyTo) { reply(replyTo, self.inner.value) }
+	}
+	c = spawn(watcherProto)
+	sharedInner.value = 99   // mutating the shared NESTED object after spawn...
+	print(ask(c)("readInner"))   // ...is visible to the actor (nested values aren't copied)
+
+	watcherProto.readInner = fn(self, replyTo) { reply(replyTo, "replaced") }
+	print(ask(c)("readInner"))   // ...but reassigning a TOP-LEVEL property on the original
+	                              // after spawn has no effect (that layer really was copied)
+
+	// An actor's own handler can spawn (and talk to) further actors —
+	// weave_spec.md §6 places no restriction on where spawn/ask/send may
+	// be called from.
+	workerProto = {
+		respond: fn(self, replyTo) { reply(replyTo, "worker done") }
+	}
+	managerProto = {
+		delegate: fn(self, replyTo) {
+			worker = spawn(workerProto)
+			reply(replyTo, ask(worker)("respond"))
+		}
+	}
+	m = spawn(managerProto)
+	print(ask(m)("delegate"))
+
 	return ask(a)("get")
 }

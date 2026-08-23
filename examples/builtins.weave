@@ -1,12 +1,19 @@
 main = fn(args) {
-	// weave_spec.md §3 explains how list(...) builds a numeric-keyed
-	// object but never shows how to read an element back — Weave's only
-	// property-access syntax is `.identifier` (§4.1), and identifiers
-	// can't start with a digit, so `.0` isn't valid syntax at all. In
-	// practice a list's elements are consumed via `for k, v in ...`
-	// (see CLAUDE.md's Step 8 "確定した設計判断").
+	// list(...) builds a numeric-keyed object (weave_spec.md §3); at(...)
+	// reads one element back by position (§11) — the counter-loop idiom
+	// below is the one that stays correct regardless of how many
+	// elements the list has (see the sort-order note further down for
+	// why for-in doesn't).
 	nums = list(10, 20, 30)
 	print(len(nums))
+
+	idx = 0
+	total3 = 0
+	while idx < len(nums) {
+		total3 = total3 + at(nums, idx)
+		idx = idx + 1
+	}
+	print(total3)
 
 	print(string(42))
 	print(string(1.5))
@@ -52,6 +59,18 @@ main = fn(args) {
 		acc = add5(acc + v)
 	}
 	print(acc)
+
+	// weave_spec.md §7: for-in enumerates keys in string-lexicographic
+	// order, not numeric order — for a list of 10+ elements this means
+	// "10" sorts before "2". Printed out, the effect is visible directly:
+	// this list has 12 elements (indices "0".."11"), and "10"/"11" land
+	// right after "1" instead of at the end.
+	big = list(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+	order = ""
+	for k, v in big {
+		order = order + k + ","
+	}
+	print(order)
 
 	return len(nums)
 }

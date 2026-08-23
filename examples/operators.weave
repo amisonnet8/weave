@@ -12,6 +12,14 @@ main = fn(args) {
 	print(1 == "1")
 	print("abc" < "abd")
 
+	// weave_spec.md §8: numbers are always float64, so `%` is a
+	// floating-point remainder (not integer-only), and division by zero
+	// follows IEEE754 rather than erroring.
+	print(5.5 % 2)
+	print(1 / 0)
+	print(-1 / 0)
+	print(0 / 0)
+
 	x = 1 + 2
 	y = x * 10
 	return y

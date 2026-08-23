@@ -1,0 +1,17 @@
+// weave_spec.md §12: main's sole parameter (named `args` here, but any
+// name works) is the command-line arguments list — position 0 is always
+// the program's own invocation name (Go's os.Args[0], included as-is),
+// so len(args) is always at least 1 even with no user-supplied
+// arguments at all.
+main = fn(args) {
+	print(len(args))
+	print(at(args, 0))
+
+	i = 1
+	while i < len(args) {
+		print(at(args, i))
+		i = i + 1
+	}
+
+	return len(args)
+}

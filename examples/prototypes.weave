@@ -4,17 +4,28 @@ main = fn(args) {
 	}
 
 	alice = { __proto__: base, name: "Alice" }
-	// weave_spec.md §9 spells out alice.greet() (no explicit args) as
-	// the correct sugar for greet(alice) when greet is fn(self) {...} —
-	// §4.2's own alice.greet(alice) example over-applies (self injected
-	// PLUS an explicit alice) and is a spec inconsistency; see
-	// CLAUDE.md's Step 7 "確定した設計判断".
+	// weave_spec.md §9's self-injection sugar: alice.greet() (no
+	// explicit args) is the correct form for greet(alice) when greet is
+	// fn(self) {...} — writing alice.greet(alice) would over-apply
+	// (self injected PLUS an explicit alice) and error at runtime.
 	alice.greet()
 
 	print(alice.name)
 	print(has(alice, "greet"))
 	print(has(alice, "name"))
 	print(alice.missing)
+
+	// __proto__ is an ordinary property (weave_spec.md §4.2): it can be
+	// read directly, and reassigned after the object already exists —
+	// prototype-swapping is not limited to object-literal construction.
+	// (Objects can't be compared with == — weave_spec.md §8/§19 — so
+	// this just stashes the old prototype to restore later, rather than
+	// comparing it against `base`.)
+	oldProto = alice.__proto__
+	alice.__proto__ = { greet: fn(self) { print("yo, " + self.name) } }
+	alice.greet()
+	alice.__proto__ = oldProto
+	alice.greet()
 
 	middle = { __proto__: base, tag: "middle" }
 	bottom = { __proto__: middle, name: "Bottom" }
@@ -30,6 +41,16 @@ main = fn(args) {
 	c1.increment(5)
 	c1.increment(3)
 	print(c1.get())
+
+	// weave_spec.md §9: self-injection happens only on the outermost
+	// direct `.method(...)` call — `combine(1, 2)` (multi-arg sugar) and
+	// `combine(1)(2)` (explicit curry chaining after the sugar-triggered
+	// first application) both self-inject exactly once and give the same
+	// result.
+	adder = { combine: fn(self, a, b) { return self.base + a + b } }
+	withBase = { __proto__: adder, base: 10 }
+	print(withBase.combine(1, 2))
+	print(withBase.combine(1)(2))
 
 	return c1.get()
 }
