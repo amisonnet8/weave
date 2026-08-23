@@ -317,9 +317,48 @@ func TestParse_MultiParamSugarMatchesChainedSugar(t *testing.T) {
 	}
 }
 
-func TestParse_FuncLitNoParamsIsAnError(t *testing.T) {
-	if _, err := Parse("main = fn(args) {\n\tf = fn() { return 1 }\n\treturn 0\n}\n"); err == nil {
-		t.Fatal("expected an error: fn(...) requires at least one parameter")
+func TestParse_FuncLitNoParamsDesugarsToUnderscoreParam(t *testing.T) {
+	// weave_spec.md §5: fn() {...} desugars to fn(_) {...} — every
+	// Weave function still takes exactly one parameter underneath.
+	file, err := Parse("main = fn(args) {\n\tf = fn() { return 1 }\n\treturn 0\n}\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	assign, ok := file.Main.Body[0].(*ast.AssignStmt)
+	if !ok {
+		t.Fatalf("statement 0: got %T, want *ast.AssignStmt", file.Main.Body[0])
+	}
+	lit, ok := assign.Value.(*ast.FuncLit)
+	if !ok || lit.Param != "_" {
+		t.Fatalf("f's value = %#v, want *ast.FuncLit with Param \"_\"", assign.Value)
+	}
+}
+
+func TestParse_EmptyCallArgsStayEmpty(t *testing.T) {
+	// weave_spec.md §5: f() desugars to f(nil), but NOT at parse time —
+	// the parser stays name-agnostic and leaves an empty argument list
+	// exactly as written, for both an ordinary call and method-sugar
+	// (obj.method()); see internal/codegen/codegen.go's genGeneralCall
+	// for where (and why) the desugar actually happens, and why it must
+	// not happen here (it would corrupt goReturns()/goParams()/list()'s
+	// own, unrelated "zero arguments" meaning).
+	tests := []struct {
+		name, src string
+	}{
+		{"plain call", "f()"},
+		{"method-sugar call", "obj.method()"},
+		{"chained call after method-sugar", "obj.method(a)()"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			call, ok := parseExprForTest(t, tt.src).(*ast.CallExpr)
+			if !ok {
+				t.Fatalf("got %T, want *ast.CallExpr", call)
+			}
+			if len(call.Args) != 0 {
+				t.Errorf("got %d args, want 0 (parser leaves empty parens empty)", len(call.Args))
+			}
+		})
 	}
 }
 

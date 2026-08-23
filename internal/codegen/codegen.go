@@ -602,14 +602,29 @@ func genGeneralCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 			return genGoFuncCall(fg, info, call)
 		}
 	}
-	if len(call.Args) == 0 {
-		return "", fmt.Errorf("line %d: a call needs at least one argument (weave_spec.md §5: every Weave function takes exactly one)", call.Line)
+	// Every Weave function takes exactly one argument (weave_spec.md
+	// §5), so `f()` desugars to `f(nil)` here — deliberately at this
+	// exact point, not in the parser: by now every reserved/builtin name
+	// (gotype/gofunc/gomethod/goReturns/goParams/shape/checkShape/
+	// package, and every genBuiltinCall-dispatched name like list/print)
+	// has already had first claim on this call's own Args shape and
+	// returned before reaching here, and the two branches above
+	// (method-call sugar, direct gofunc calls) have also already ruled
+	// themselves out — so nothing else's own "zero arguments" meaning
+	// (goParams()'s "no parameters", list()'s "empty list", ...) can
+	// ever be corrupted by this substitution. What's left is genuinely
+	// always "an ordinary Weave function *value*, called with no
+	// explicit argument" — parser.go's own parseCallArgs doc comment has
+	// the full reasoning for why the desugar lives here and not there.
+	args := call.Args
+	if len(args) == 0 {
+		args = []ast.Expr{&ast.NilLit{Line: call.Line}}
 	}
 	result, err := genExpr(fg, call.Callee)
 	if err != nil {
 		return "", err
 	}
-	for _, arg := range call.Args {
+	for _, arg := range args {
 		argVal, err := genExpr(fg, arg)
 		if err != nil {
 			return "", err

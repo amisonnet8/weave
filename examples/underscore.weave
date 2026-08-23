@@ -1,0 +1,33 @@
+// weave_spec.md §5/§10: fn() {...}/f() are sugar over fn(_) {...}/f(nil) —
+// every Weave function still takes exactly one argument underneath. `_` is
+// a reserved, write-once-per-scope name: it can be bound (as a parameter or
+// via `_ = value`) but never read or reassigned afterward.
+main = fn(args) {
+	always5 = fn() { return 5 }
+	print(always5())       // 5 — same as always5(nil)
+
+	// Explicit fn(_) {...} is the same thing spelled out, useful when a
+	// function needs to ignore an argument it's still required to accept
+	// (e.g. a callback shape) rather than genuinely taking none.
+	ignoreArg = fn(_) { return "ignored" }
+	print(ignoreArg("whatever"))
+
+	// _ = value discards a result whose value doesn't matter, only its
+	// side effect does.
+	_ = print("side effect only")
+
+	counter = {
+		count: 0,
+		// fn() {...} works as a method body too — self-injection (§9)
+		// still supplies `self` as the sole (here, discarded) argument.
+		bump: fn() { return "bumped" }
+	}
+	// obj.method() is NOT affected by the f()->f(nil) sugar: it already
+	// means "self only," and stays that way (§5's explicit exception).
+	print(counter.bump())
+
+	getConst = fn() { return fn() { return 42 } }
+	print(getConst()())
+
+	return 0
+}

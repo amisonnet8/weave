@@ -95,6 +95,121 @@ func TestCheck_AssignToReservedNameIsAnError(t *testing.T) {
 	}
 }
 
+func TestCheck_UnderscoreParamNeverReadIsValid(t *testing.T) {
+	// weave_spec.md §5/§10: fn(_) {...} — a parameter genuinely never
+	// referenced in the body — must compile cleanly (this is exactly
+	// what fn() {...} desugars to at the parser level).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
+				Param: "_",
+				Body:  []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_ReadingUnderscoreIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
+				Param: "_",
+				Body:  []ast.Stmt{&ast.ReturnStmt{Value: &ast.Ident{Name: "_"}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: \"_\" cannot be read")
+	}
+}
+
+func TestCheck_ReassigningUnderscoreInSameScopeIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "_", Value: &ast.NumberLit{Value: 1}},
+			&ast.AssignStmt{Name: "_", Value: &ast.NumberLit{Value: 2}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: \"_\" cannot be reassigned")
+	}
+}
+
+func TestCheck_UnderscoreParamCannotBeReassignedInsideItsOwnBody(t *testing.T) {
+	// fn(_) { _ = 5 } — the parameter binding already occupies "_" in
+	// the function's own (fresh) scope, so a later assignment to "_"
+	// inside that same body is a reassignment, not a fresh first bind.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
+				Param: "_",
+				Body: []ast.Stmt{
+					&ast.AssignStmt{Name: "_", Value: &ast.NumberLit{Value: 5}},
+					&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}},
+				},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: \"_\" cannot be reassigned inside fn(_) {...}'s own body")
+	}
+}
+
+func TestCheck_UnderscoreInSiblingScopesIsIndependent(t *testing.T) {
+	// Two unrelated sibling `if` blocks, each binding "_" once, are each
+	// their own fresh scope — neither sees the other's "_" at all, so
+	// neither counts as a reassignment (weave_spec.md §10's own
+	// "checkBlankAssign only checks THIS scope" rule).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.IfStmt{Clauses: []ast.IfClause{{
+				Cond: &ast.BoolLit{Value: true},
+				Body: []ast.Stmt{&ast.AssignStmt{Name: "_", Value: &ast.NumberLit{Value: 1}}},
+			}}},
+			&ast.IfStmt{Clauses: []ast.IfClause{{
+				Cond: &ast.BoolLit{Value: true},
+				Body: []ast.Stmt{&ast.AssignStmt{Name: "_", Value: &ast.NumberLit{Value: 2}}},
+			}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_UnderscoreInNestedClosureIsIndependentOfOuter(t *testing.T) {
+	// An outer `_ = ...` must not block an unrelated nested closure's
+	// own `fn(_) {...}` parameter — "_" deliberately doesn't participate
+	// in ordinary lexical inheritance.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "_", Value: &ast.NumberLit{Value: 1}},
+			&ast.AssignStmt{Name: "f", Value: &ast.FuncLit{
+				Param: "_",
+				Body:  []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 2}}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
 func TestCheck_AssignToDoubleUnderscorePrefixIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", Param: "args",

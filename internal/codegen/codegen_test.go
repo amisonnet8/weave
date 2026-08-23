@@ -505,11 +505,52 @@ func TestGenerate_MultiArgCallCurriesThroughWeavertCall(t *testing.T) {
 	}
 }
 
-func TestGenerate_ZeroArgGeneralCallIsAnError(t *testing.T) {
+func TestGenerate_ZeroArgGeneralCallDesugarsToNil(t *testing.T) {
+	// weave_spec.md §5: f() desugars to f(nil) — an ordinary Weave
+	// function value called with no explicit argument still gets a
+	// value applied underneath (every Weave function takes exactly one
+	// argument).
 	fg := newFuncGen(&codegenCtx{})
-	_, err := genGeneralCall(fg, &ast.CallExpr{Callee: &ast.Ident{Name: "f"}})
-	if err == nil {
-		t.Fatal("expected an error: a call needs at least one argument")
+	fg.declare("f", "^any")
+	result, err := genGeneralCall(fg, &ast.CallExpr{Callee: &ast.Ident{Name: "f"}})
+	if err != nil {
+		t.Fatalf("genGeneralCall: %v", err)
+	}
+	if !strings.Contains(fg.body.String(), "?weavert.Call\t%f\tnil\n") {
+		t.Errorf("expected a CALL applying %%f to a literal nil, got:\n%s", fg.body.String())
+	}
+	if result == "" {
+		t.Error("expected a non-empty result token")
+	}
+}
+
+func TestGenerate_ZeroArgMethodCallStaysSelfOnly(t *testing.T) {
+	// obj.method() must NOT gain a synthetic nil on top of self — the
+	// desugar in genGeneralCall only ever reaches the "ordinary function
+	// value" branch, which method-sugar calls (handled earlier, via
+	// genMethodCall) never fall through to.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "obj", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+				{Name: "greet", Value: &ast.FuncLit{Param: "self", Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}}}}},
+			}}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "obj"}, Prop: "greet"}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.ObjGet\t%obj\t\"greet\"\n") {
+		t.Errorf("expected the usual ObjGet-based method dispatch, got:\n%s", ir)
+	}
+	// Exactly one weavert.Call applying the found method to self — a
+	// second one chaining a synthetic nil on top would mean the general-
+	// call desugar leaked into method-sugar dispatch.
+	if n := strings.Count(ir, "?weavert.Call\t"); n != 1 {
+		t.Errorf("expected exactly 1 weavert.Call (self only), got %d:\n%s", n, ir)
 	}
 }
 

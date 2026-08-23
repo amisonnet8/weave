@@ -208,6 +208,9 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 				return err
 			}
 		}
+		if s.Name == "_" {
+			return c.checkBlankAssign(s, sc)
+		}
 		if why, ok := reservedName(s.Name); ok {
 			return fmt.Errorf("line %d: %q is a reserved name (%s)", s.Line, s.Name, why)
 		}
@@ -283,6 +286,40 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 	}
 }
 
+// checkBlankAssign handles `_ = value` (weave_spec.md §10): `_` is a
+// write-only placeholder name, always available for discarding a value
+// once, but deliberately kept from behaving like an ordinary reusable
+// variable in two ways — checkExpr's *ast.Ident case rejects any read of
+// it unconditionally (regardless of visibility), and this function
+// rejects a *second* binding of it within the same scope as an illegal
+// reassignment, rather than silently reusing the existing one the way
+// scope's own "assignment reuses the nearest visible binding" rule
+// (see scope's doc comment) would for any other name.
+//
+// The check is deliberately scoped to sc's own `declared` map, not
+// sc.has (which walks outward through every enclosing scope) — `_`
+// intentionally does not participate in ordinary lexical
+// inheritance/shadowing at all: an outer `_ = ...` never blocks an
+// inner, unrelated `_` binding (e.g. a nested function's own `fn(_)
+// {...}` parameter, or a sibling block's own `_ = ...`), since neither
+// one can ever be read regardless of visibility, so there is nothing an
+// outer binding could leak into an inner one. What IS rejected is a
+// second bind attempt reachable from the exact same scope as an earlier
+// one — most notably, a function whose parameter is `_` (weave_spec.md
+// §5's `fn(_) {...}` — checkFuncLit declares it directly into the
+// function body's own fresh scope) can never rebind `_` again anywhere
+// in its own body.
+func (c *checker) checkBlankAssign(s *ast.AssignStmt, sc *scope) error {
+	if sc.declared["_"] {
+		return fmt.Errorf("line %d: \"_\" cannot be reassigned (weave_spec.md §10) — it may be bound at most once per scope", s.Line)
+	}
+	if err := c.checkExpr(s.Value, sc); err != nil {
+		return err
+	}
+	sc.declared["_"] = true
+	return nil
+}
+
 // checkExpr validates identifier references. A builtin CallExpr's own
 // Callee is deliberately not checked as a variable reference (see
 // builtinNames) — codegen separately rejects any non-FuncLit-value
@@ -290,6 +327,9 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 	switch e := expr.(type) {
 	case *ast.Ident:
+		if e.Name == "_" {
+			return fmt.Errorf("line %d: \"_\" cannot be read (weave_spec.md §10) — it is write-only", e.Line)
+		}
 		if !sc.has(e.Name) {
 			return fmt.Errorf("line %d: undefined name %q", e.Line, e.Name)
 		}
