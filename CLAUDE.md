@@ -653,6 +653,52 @@ checkShape(PointShape, p)
 
 `examples/goassets.weave`に`os.ReadFile`の実例(`examples/testdata.txt`を読んで表示)を追加し、`amivm`→`go build`→実行まで実地検証した。存在しないファイルを渡した場合も個別に検証し、`weave: open does-not-exist.txt: no such file or directory`という実際のGoのエラーメッセージがそのままpanicすることを確認した(`(int, int)`のような非error多値もテストで確認: 先頭の値だけが黙って返る、という限定的な既存動作を維持)。
 
+### 型ヒント付き`(値, error)`対応: `goError(型)`(上記の直後に追加)
+
+上記の「型付き経路には今回は手を付けていない」という持ち越しを、ユーザーからの「型ヒント付きも対応します。戻り値と引数がわかるよな構文を考えて」という依頼を受けて実装した。
+
+**新しい予約語`goError(型)`を1つだけ導入した。** `gomethod`/`gofunc`の戻り値型の位置に、`"?T"`という普通の文字列の代わりに`goError("?T")`を書くと、そのメソッド/関数がGoの`(T, error)`を返すという宣言になる(weave_spec.md §15.5)。既存の位置(`gomethod`の第2引数、`gofunc`の第3引数以降の先頭)をそのまま再利用し、**AST上のノード種別(`*ast.CallExpr`かどうか)で判定する**ことで後方互換性を保証した——`gofunc(goName, protoOrNil, paramType1, ...)`という既存の書き方は、`paramType1`が常に`*ast.StringLit`である限り誤判定されようがない、という設計を先に立ててから実装した(位置やコンテンツの中身を見て判定する方式は、既存の引数を誤って戻り値型と読み違えるリスクを持つため意図的に避けた)。
+
+**sema側は`GoMethodInfo.HasError`/`GoFuncInfo.ReturnType`という新フィールドと、`returnTypeArg`という共通ヘルパー(戻り値型の位置が「プレーンな文字列」か「`goError(...)`」かを判定し、両方に共通の検証——`?`プレフィックス必須——を適用する)で実装した。** `gofunc`はStep3以来「戻り値の型を宣言する必要が無い」という非対称性を持っていた(直接呼び出しなので型を知らなくても`^any`へそのまま代入できるため)が、`goError(...)`で明示された場合に限り`ReturnType`を持つ、という形でこの非対称性を保ったまま両立させた——`goError(...)`を書かない限り、`gofunc`の戻り値型は相変わらず宣言不要のまま(15.2節の従来通りの挙動)。
+
+**codegen側は、AMIVMが元々ネイティブにサポートする`CALL`の複数代入(`CALL raw errVar : ...`)をそのまま使い、`error`側をネイティブな`NEQ ... nil`で判定するだけで実装できた。** 型ヒント無し経路(`weavert.CallGoFunc`/`CallGoMethod`のreflectベース`panicIfTrailingError`)とは全く別の、AMIVM命令だけで完結する経路になった——「型が分かっている場合はASSERT+ネイティブ、わからない場合だけweavert」という15.4節確立済みの判断軸が、`(値, error)`判定という新しい局面でもそのまま貫けた。エラーメッセージの整形(`%v`が必要)だけは、`TypeError`と全く同じ理由で新設した`weavert.GoError(desc string, err error)`に委ねている。
+
+**`gomethod`の型ヒント経路(`genNativeGoMethodCall`)は、`FNTYPE`が元々複数の戻り値型を宣言できる命令だったため、`HasError`のとき戻り値リストへ`^error`を追加で足すだけで対応できた。** `newGoFnType`のシグネチャを`returnType string`から`returnTypes []string`へ変更する1箇所の改修で済み、`FNTYPE`命令自体への依存の仕方は変わっていない——AMIVMの命令セットが元から持っていた表現力(複数戻り値の`FNTYPE`/`CALL`)に、後から気づいて乗っただけだった。
+
+**戻り値のfloat64正規化ロジックを`genNativeReturnValue`という共有ヘルパーに切り出した。** 従来`genNativeGoMethodCall`だけが持っていた「numeric Go型ならfloat64へキャストしてから`^any`へ格納する」処理を、`gofunc`の型ヒント付き戻り値(今回新設)とも共有する形に一般化し、`numericGoTypeNames`のテーブルに`byte`/`rune`(`uint8`/`int32`の別名——Goの型トークンとしては別の綴りになるため、reflectの型switchとは違い明示的なエントリが必要だった)も追加した。
+
+`examples/gomethods.weave`に`(*strings.Reader).ReadByte() (byte, error)`を`goError("?byte")`付きで、`examples/goassets.weave`に`strconv.Atoi(s string) (int, error)`を`goError("?int")`付きで追加し、`amivm`→`go build`→実行まで実地検証した(`ReadByte`で読んだ1バイト分`Len()`が減ること、`Atoi("42")+1`が`43`になることを確認)。エラー経路も個別に検証し(`strconv.Atoi("not-a-number")`)、`weave: call to ?strconv.Atoi: strconv.Atoi: parsing "not-a-number": invalid syntax`という分かりやすいメッセージでpanicすることを確認した。**`os.ReadFile`自身は今回も型ヒント付き経路の実例には使えなかった**——戻り値の`[]byte`はAMIVMの`type1`オペランドカテゴリに「スライスのリテラル形」が無く(`^[]byte`は「型として解釈できない形式です」というamivmのエラーになる、名前付き`SLTYPE`を経由しない限り表現できない——amivm_spec.md §5)、`examples/goassets.weave`では型ヒント無し経路の実例として維持しつつ、型ヒント付きの実例は別の`(値, error)`関数(`strconv.Atoi`)で示す形にした。全既存サンプル(`examples/*.weave`・`examples/modules`)も無変更で動作継続を確認済み。
+
+### Go資産の戻り値を「常にlist」へ全面再設計、`goError(...)`を`goReturns(...)`/`goParams(...)`へ置き換え(型ヒント付き`(値, error)`対応の直後に追加)
+
+ユーザーから「Go関数の戻り値表現をいちから見直したい」という提案を受け、2つの設計案(1: 戻り値1個ならスカラー・複数ならlist、2: 常にlist)を比較検討した。**「Weaveの利用者は現時点でこのコンテナ内だけであり、後方互換性は一切意識しなくてよい」という前提を明示されたため、両案とも既存実装からの差分ではなく完全にフラットな視点で評価した。** 結論は案2(常にlist)——CLAUDE.mdの核心的な設計原理(「0節: 1つの仕組みへ統一する」)に最も一貫する案で、1案が抱える「戻り値の個数(呼び出し先のGoシグネチャという、Weaveコードからは見えない実装詳細)によって受け取る値の形(スカラーかlistか)が変わる」という不透明な分岐を避けられる。この判断過程・トレードオフの詳細はユーザーとの協議記録(このセッションの会話)に残っている。
+
+この再設計を機に、**今後の大きな変更に対する開発方針を2つ、正式にCLAUDE.mdへ明文化した**(「開発の進め方」7・8として追記):後方互換性を気にせずフラットに設計し直してよいこと、大きな変更は方針を提示してユーザーのOKを得てから実装に着手すること。今回の`goReturns`/`goParams`設計自体もこの2つの方針に従って進めた——2案の比較を提示してから2を選んでもらい、続けて型ヒント構文(`goReturns`/`goParams`)の設計案を提示してユーザーの1点の指摘(`goParams`の追加提案)を反映してから、初めて実装に着手した。
+
+**`goError(...)`(直前の節)は今回の再設計で完全に廃止した。** `(値, error)`という特定のパターンだけを特別扱いする理由が、「Weaveの戻り値は基本的に単一スカラーであり、複数値を返すGoの慣用パターンだけ橋渡しする必要があった」という前提に依存していたため——常にlistへ統一した以上、`(値, error)`はもはや「2要素のlistのうち末尾がGoの`error`」という何の変哲もないケースになり、専用構文で特別扱いする理由が消えた。
+
+**新設計の核**:
+
+- **`gotype`/`gomethod`/`gofunc`のGo呼び出しは、戻り値の個数によらず常にWeaveのlist(3節、連番数値キーのオブジェクト)を返す。** 型ヒント無し(reflect経由)・型ヒント付き(ネイティブ経由)のどちらでも同じ規約
+- **`goReturns(型1, 型2, ...)`/`goParams(型1, 型2, ...)`という2つの新しい予約ラッパーが、旧`gomethod(名前, 戻り値型, 引数型...)`・旧`gofunc(名前, プロトタイプ, 引数型...)`・`goError(...)`の3つを置き換えた。** `goReturns(...)`の各要素は`"?pkg.Type"`という型文字列、または`gotype(...)`宣言のIdent(その位置がGo構造体/ポインタで、自動的にそのプロトタイプと結びつく——旧`gofunc`の「プロトタイプ」引数の後継)のどちらか
+- **型ヒントはall-or-nothing。** `gomethod`/`gofunc`は「名前だけ(1引数、未型付き)」か「名前+`goReturns(...)`+`goParams(...)`(3引数、型付き)」のどちらかしか受け付けない——「戻り値だけ型ヒント」「引数だけ型ヒント」という中間状態を構文レベルで作れなくした。ユーザー自身がこの簡略化を明示的に承認した設計判断(旧設計は`gofunc`が戻り値型を宣言する必要が無いという非対称性を持っていたが、今回はこの非対称性ごと削除した)
+- **新設ビルトイン`at(list, index)`**——listから要素を読み出す、新しい構文を増やさない代わりの手段(Weaveには添字アクセス構文が無く、`3.` リテラルセクションに記録されていた既存の仕様の欠落でもある——Go資産に限らず`list(...)`全般に使える一般解決にした)。範囲外・非数値indexはその場でエラー(`weave_spec.md`§4.2の「無ければnil」というルールはここでは意図的に適用しない——listの範囲外アクセスは大抵プログラミングミスであり、`nil`を静かに伝播させるよりその場で落とす方が有用と判断した)
+- **新設ビルトイン`raiseIfError(value)`**——`value`がGoの`error`を実装する非`nil`値ならその場でエラー、それ以外は何もしない。旧`goError(...)`が担っていた「自動でエラーを検出してpanicする」という制御フローの責務を、型宣言(`goReturns(...)`)から完全に切り離し、呼び出し側が明示的に呼ぶ形にした——「`goReturns`は型を宣言するだけの純粋な機能」という単純さと、「小さな部品を組み合わせる」という0節の統一原理により忠実な設計を優先した(1行の自動処理より一手間増えるトレードオフは、ユーザーとの事前協議で承認済み)
+
+**静的プロトタイプ追跡は「listの1要素」を追うため2段構成に拡張した。** 旧`goStaticVars`(変数名→gotype名)1段だけでは、「変数が直接Go構造体を保持している」ケースしか追えなかった——常にlistを返す新設計では、変数はまず「listを保持している」状態を経由し、`at(...)`で特定の要素を取り出して初めて「Go構造体を直接保持している」状態になる。そこで`goListShapes`(変数名→位置ごとのプロトタイプ名の並び)という新しい追跡テーブルを追加し、`goStaticVars`と2段で連携させた:
+
+1. `result = typedGoFunc(...)`(`goReturns(...)`で型付きの呼び出し)——`result`の`goListShapes`に、`goReturns(...)`の各位置が持つプロトタイプ名の並び(プロトタイプ無しの位置は`""`)を記録する
+2. `r = at(result, i)`——`result`が`goListShapes`に載っていて、位置`i`がプロトタイプ`""`でなければ、`r`の`goStaticVars`にそのプロトタイプ名を記録する(旧来の1段構成と同じ形に合流)
+3. `r.Method()`——旧来通り`goStaticVars`を引いて静的解決する(この段の実装は無変更)
+
+この2段構成はsema・codegenそれぞれが独立に持つ(前半から一貫する「semaとcodegenは内部状態を共有しない」方針をそのまま踏襲)。`obj.Method(...)`という呼び出し結果自体も型付きなら新たな`goListShapes`を生む(`typeInfo.Methods[callee.Prop].Returns != nil`のケース)ため、`gofunc`由来のlistと`gomethod`由来のlistの両方が同じ2段の仕組みで扱える。**`at(...)`のインデックスがリテラル数値でない場合(変数・式)は追跡を諦める**(黙って`goStaticVars`/`goListShapes`に何も記録しない)——完全なデータフロー解析ではなく、コンパイル時の簡易な便宜機能と割り切った。
+
+**この再設計により、コード生成側はむしろ単純になった箇所がある。** 旧`weavert.CallGoFunc`/`CallGoMethod`が持っていた「戻り値の最後の型が`error`インタフェースを満たすかどうかをreflectで判定し、満たしていて非nilならpanicする」という`panicIfTrailingError`のロジックは丸ごと不要になった——新しい`CallGoFuncList`/`CallGoMethodList`は、reflectで得られる戻り値を**個数・型を問わず**そのまま全部listに詰めるだけでよい。型付き経路の`genPanicIfGoError`(ネイティブ`NEQ`+`IF`+`weavert.GoError`呼び出し)も丸ごと削除し、`genNativeGoMethodCall`/`genGoFuncCall`はN個の戻り値をN個のネイティブCALLターゲットとして受け取り、`weavert.NewObject`+`weavert.ObjSet`でlistへ詰めるだけの単純な形になった(既存の`genListCall`が`list(...)`リテラル用に使っていたのと全く同じ2命令の組み合わせを、Go資産の戻り値にも再利用できた)。
+
+**発見: `strings.NewReader`が返す`*strings.Reader`(ポインタ)を、`examples/integration.weave`の`GoReader`宣言が`"?strings.Reader"`(値型、`*`無し)のまま宣言していた——型ヒント無しの旧設計ではreflectがGoの実行時型をそのまま見るため問題が表面化しなかったが、型付き経路(`goReturns(GoReader)`)に切り替えるとASSERTが失敗するはずだった箇所。** 今回の書き換えで`examples/gomethods.weave`と同じ`"?*strings.Reader"`(ポインタ型)に修正した——型ヒントを新たに導入したことで、これまで気づかれていなかった宣言の不正確さが顕在化した一例。
+
+`examples/gomethods.weave`・`examples/goassets.weave`・`examples/integration.weave`を新構文へ全面的に書き換え、`amivm`→`go build`→実行まで実地検証した(出力は`goError(...)`時代と完全に一致——`12`/`20`/`true`/`104`/終了コード`11`、`HELLO, WEAVE`/`padded`/ファイル内容/`43`、`12`/終了コード`12`)。エラー経路(`strconv.Atoi("not-a-number")`・存在しないファイル・`at(...)`の範囲外アクセス)も個別に実地検証し、いずれも分かりやすいメッセージでpanicすることを確認した。`gomethod`/`gofunc`のall-or-nothing違反(戻り値だけ・引数だけ型ヒント)も実際に`weave build`へ通し、意図通りコンパイルエラーになることを確認した。sema・codegenの単体テストも全面的に書き換え(旧`goError`系のテストを削除し、`goReturns`/`goParams`のall-or-nothing検証・`at(...)`によるプロトタイプ伝播・複数戻り値のlist化を検証するテストに置き換えた)、`examples/`直下15個全サンプル+`examples/modules`の回帰も無変更で動作継続することを確認した。
+
 ## 開発の進め方
 
 1. `weave_spec.md`を正として実装する。仕様に曖昧な点や矛盾を見つけたら、まず仕様側を疑い、確定させてからコードを直す
@@ -661,3 +707,6 @@ checkShape(PointShape, p)
 4. Weaveの意味検査(スコープ解決・構文検査)は、amivmに渡す前にWeave側で完了させる。amivmの`go/types`エラーをユーザー向けエラーとしてそのまま出さない。ただし動的型に起因する実行時エラーはこの限りではない(上記「意味検証の責任分担」参照)
 5. 新しい構文・組み込み関数を実装したら、対応するサンプルWeaveプログラムを`examples/`に追加し、生成されたIR・Goコード・実行結果まで確認する
 6. amivm本体の仕様が更新された場合(`ignored/amivm/docs/amivm_spec.md`を再確認)、本ファイルの「AMIVM-IRの書き方」節が古くなっていないか照合し、必要なら更新する
+7. **後方互換性は現時点では意識しなくてよい**(2026年時点でWeaveの利用者はこのコンテナ内のみ)。既存の構文・API・戻り値の意味論との整合性よりも、いちから設計し直すような「フラットな視点」で良い設計を優先してよい——過去の実装を出発点にした差分思考ではなく、まっさらな前提で考え直すこと
+8. **大きな変更(既存の構文・意味論を作り直す規模の変更)は、いきなり実装を始めない。** まず設計方針(新しい構文・意味論・既存コードへの影響)をユーザーに提示し、明示的なOKを得てから実装に着手する。小さな変更(バグ修正・既存パターンの延長)はこの限りではない
+9. **作業内容のSummary(要約)は常に日本語で書く。** タスク完了時にユーザーへ提示する変更内容のまとめは、英語ではなく日本語で書くこと

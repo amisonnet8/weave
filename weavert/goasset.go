@@ -3,48 +3,57 @@ package weavert
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 )
 
-// errorType is the reflect.Type of Go's built-in `error` interface —
-// used to detect the common `(value, error)` Go return-value idiom
-// (CallGoMethod/CallGoFunc's own doc comments).
-var errorType = reflect.TypeOf((*error)(nil)).Elem()
+// CallGoFuncList implements an untyped (no goReturns(...)/goParams(...))
+// gofunc(...)-declared call (weave_spec.md §15.2) via reflection: fn is
+// the real Go function passed as a value (amivm's `value` operand
+// category accepts a bare `?pkg.Func` token directly, per
+// amivm_spec.md §5 — see internal/codegen/goasset.go's genGoFuncCall),
+// invoked with args coerced to each parameter's real type via
+// reflect.Value.Convert (Weave's numbers are always float64, so the
+// only conversions that ever actually happen are float64->int and
+// similar well-defined numeric narrowings/widenings — never the
+// int->string rune-conversion trap Seed/Cascade documented, since a
+// float64->string Convert simply isn't legal in Go and fails loudly
+// instead of silently doing the wrong thing).
+//
+// Every Go function/method call — typed or not — now always returns a
+// Weave list (weave_spec.md §15.2's "常にlist" rule, a from-scratch
+// redesign of the old single-scalar-or-(value,error) behavior — see
+// CLAUDE.md's design-decision note on why): this collects ALL of fn's
+// actual return values, in order, each run through NormalizeGoValue,
+// with no special detection of Go's `(value, error)` idiom at all — the
+// caller decides what to do with whatever sits at the last position via
+// the ordinary `at(...)`/`raiseIfError(...)` builtins, exactly like any
+// other list element.
+func CallGoFuncList(fn any, args ...any) any {
+	fv := reflect.ValueOf(fn)
+	fType := fv.Type()
 
-// panicIfTrailingError implements the `(value, error)` idiom's single
-// rule: if fn/method's declared return types end in a genuine `error`
-// (checked via the *type*, not just how many values came back — a
-// function that legitimately returns two non-error values must not be
-// misread as one), and that slot actually holds a non-nil error at this
-// call, panic with it. weave_spec.md has no multi-value concept, so
-// there is no way to hand both the value and the error back to Weave
-// code — panicking on a non-nil error and returning just the leading
-// value otherwise is the closest single-value equivalent, and matches
-// how many single-return-value host languages bridge this exact Go
-// idiom. A 2+-value return whose last type is *not* `error` (rare, but
-// real — e.g. `(int, int)`) is left alone here; only its first value is
-// ever visible to Weave (a pre-existing, narrower limitation: weave_spec.md
-// never addresses non-error multi-value returns at all).
-func panicIfTrailingError(outTypes []reflect.Type, out []reflect.Value) {
-	if len(out) < 2 || !outTypes[len(outTypes)-1].Implements(errorType) {
-		return
+	argVals := make([]reflect.Value, len(args))
+	for i, a := range args {
+		if a == nil {
+			argVals[i] = reflect.Zero(fType.In(i))
+		} else {
+			argVals[i] = reflect.ValueOf(a).Convert(fType.In(i))
+		}
 	}
-	if errVal := out[len(out)-1].Interface(); errVal != nil {
-		panic(fmt.Sprintf("weave: %v", errVal))
-	}
+
+	return newList(fv.Call(argVals))
 }
 
-// CallGoMethod implements a gomethod(...)-declared method call
-// (weave_spec.md §15.1, §16): target is a Go value returned by some
-// gofunc call (an ordinary Weave `any`, holding whatever the wrapped Go
-// function actually returned — no wrapper struct needed, see Step 3's
-// genGoFuncCall), and methodName is the *real* Go method name
-// gomethod(...) named, already resolved at compile time by
-// internal/codegen/goasset.go (no dynamic prototype-chain search, per
-// §16 — CLAUDE.md's 後半 Step 4 "確定した設計判断" has the full
-// reasoning for why this still needs reflection despite that: target's
-// static Go type isn't known to the *generated* code, only to codegen
-// itself, so invoking it can't be a literal Go method-call expression).
-func CallGoMethod(target any, methodName string, args ...any) any {
+// CallGoMethodList implements an untyped gomethod(...)-declared method
+// call (weave_spec.md §15.1/§16) via reflection: target is a Go value
+// returned by some earlier gofunc call (an ordinary Weave `any`), and
+// methodName is the *real* Go method name gomethod(...) named, already
+// resolved at compile time (internal/codegen/goasset.go's
+// genGoMethodCall — no dynamic prototype-chain search, per §16).
+// Same "always a list" landing point as CallGoFuncList above — see its
+// own doc comment for why there's no separate (value, error) handling
+// here any more.
+func CallGoMethodList(target any, methodName string, args ...any) any {
 	v := reflect.ValueOf(target)
 	m := v.MethodByName(methodName)
 	if !m.IsValid() {
@@ -61,63 +70,36 @@ func CallGoMethod(target any, methodName string, args ...any) any {
 		}
 	}
 
-	out := m.Call(argVals)
-	if len(out) == 0 {
-		return nil
-	}
-	outTypes := make([]reflect.Type, mType.NumOut())
-	for i := range outTypes {
-		outTypes[i] = mType.Out(i)
-	}
-	panicIfTrailingError(outTypes, out)
-	return NormalizeGoValue(out[0].Interface())
+	return newList(m.Call(argVals))
 }
 
-// CallGoFunc implements a direct call to a gofunc(...)-declared Go
-// function (weave_spec.md §16), invoked via reflection instead of a
-// literal Go call expression. internal/codegen/goasset.go's genGoFuncCall
-// used to emit a literal `CALL raw : ?pkg.Func arg1 arg2` — which works
-// when every argument is a literal Weave constant (an untyped Go
-// constant is assignable to whatever concrete parameter type the real
-// function wants), but fails go/types the moment an argument is an
-// ordinary `any`-typed Weave value (a variable, an object property, ...:
-// `cannot use v (variable of type any) as string value`, caught running
-// a spawn/gofunc integration example through the real pipeline — see
-// CLAUDE.md's 後半 Step 5 "確定した設計判断"). fn is the real Go
-// function passed as a value (amivm's `value` operand category accepts
-// a bare `?pkg.Func` token, per amivm_spec.md §5 — unlike a `CALL`
-// callname, this needs no wrapping), so this can use the exact same
-// reflection-based argument coercion CallGoMethod already established
-// for the same underlying reason (target's static Go type only exists
-// at codegen time, never in the generated source itself).
-//
-// A wrapped function returning Go's common `(value, error)` shape (e.g.
-// os.ReadFile) is handled via panicIfTrailingError: a non-nil error
-// panics, otherwise only the leading value is returned to Weave — see
-// its own doc comment for the full reasoning.
-func CallGoFunc(fn any, args ...any) any {
-	fv := reflect.ValueOf(fn)
-	fType := fv.Type()
+// newList boxes a reflect-obtained return-value slice into a Weave list
+// (weave_spec.md §3 — the same weavert.Object every list(...) literal
+// and every typed Go-asset call (internal/codegen/goasset.go's
+// genBoxList) produces), normalizing each element individually via
+// NormalizeGoValue.
+func newList(out []reflect.Value) any {
+	list := Object{}
+	for i, v := range out {
+		list[strconv.Itoa(i)] = NormalizeGoValue(v.Interface())
+	}
+	return list
+}
 
-	argVals := make([]reflect.Value, len(args))
-	for i, a := range args {
-		if a == nil {
-			argVals[i] = reflect.Zero(fType.In(i))
-		} else {
-			argVals[i] = reflect.ValueOf(a).Convert(fType.In(i))
-		}
+// RaiseIfError implements the `raiseIfError(...)` builtin (weave_spec.md
+// §11/§15.4): if v holds a non-nil value implementing Go's built-in
+// `error` interface, panics with a clear message; otherwise (nil, or any
+// non-error value) it's a no-op. This is the explicit, composable
+// replacement for the old goError(...)-declared automatic panic — under
+// the "every Go call returns a list" design, error-checking is no
+// longer folded into the type declaration itself; the caller extracts
+// the position it expects an error at (via `at(...)`) and decides
+// whether/when to check it, exactly like any other list element.
+func RaiseIfError(v any) any {
+	if err, ok := v.(error); ok && err != nil {
+		panic(fmt.Sprintf("weave: %v", err))
 	}
-
-	out := fv.Call(argVals)
-	if len(out) == 0 {
-		return nil
-	}
-	outTypes := make([]reflect.Type, fType.NumOut())
-	for i := range outTypes {
-		outTypes[i] = fType.Out(i)
-	}
-	panicIfTrailingError(outTypes, out)
-	return NormalizeGoValue(out[0].Interface())
+	return nil
 }
 
 // TypeError panics with a clear, Weave-flavored message for a failed
@@ -140,7 +122,7 @@ func TypeError(desc, want string, got any) {
 // type never satisfies an assertion to any named type, regardless of
 // its signature (internal/codegen/shape.go's genCheckShapeCall explains
 // why in full). reflect.Kind() sidesteps that without needing the value
-// to ever actually be called — unlike CallGoMethod/CallGoFunc's
+// to ever actually be called — unlike CallGoMethodList/CallGoFuncList's
 // reflection, there's no equivalent "reflect tax" here, just one cheap
 // Kind() check. Used by checkShape(...)'s "function" type hint.
 func IsWeaveFunc(v any) bool {
@@ -161,8 +143,9 @@ func IsWeaveFunc(v any) bool {
 // 後半 Step 4 "確定した設計判断"). Strings, bools, float64 itself,
 // nil, and any Go struct/pointer (returned as-is per §15.2, since it
 // has no Weave equivalent to convert to) all pass through unchanged.
-// Both CallGoMethod and genGoFuncCall's direct native calls
-// (internal/codegen/goasset.go) route their results through this.
+// Both CallGoMethodList/CallGoFuncList (via newList, above) and
+// genBoxList's native path (internal/codegen/goasset.go) route their
+// per-element results through this.
 func NormalizeGoValue(v any) any {
 	switch x := v.(type) {
 	case int:

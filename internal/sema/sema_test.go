@@ -1,6 +1,7 @@
 package sema
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/amisonnet8/weave/internal/ast"
@@ -490,6 +491,21 @@ func TestCheck_ListLenStringAreBuiltins(t *testing.T) {
 	}
 }
 
+func TestCheck_AtAndRaiseIfErrorAreBuiltins(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "l", Value: &ast.CallExpr{Callee: &ast.Ident{Name: "list"}, Args: []ast.Expr{&ast.NumberLit{Value: 1}}}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "at"}, Args: []ast.Expr{&ast.Ident{Name: "l"}, &ast.NumberLit{Value: 0}}}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "raiseIfError"}, Args: []ast.Expr{&ast.NilLit{}}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
 func TestCheck_ActorBuiltinsDoNotRequireCalleeVariableCheck(t *testing.T) {
 	// send(a)("increment", 5) — the OUTER call's callee is itself a
 	// CallExpr rooted at the builtin `send`, not a plain Ident, so it
@@ -525,15 +541,51 @@ func goTypeDeclExpr(goName string, members []ast.ObjectField) *ast.CallExpr {
 	}
 }
 
+// gomethodExpr builds the untyped `gomethod("GoName")` form
+// (weave_spec.md §15.1) — reflect-dispatched, no goReturns/goParams.
 func gomethodExpr(goMethodName string) ast.Expr {
 	return &ast.CallExpr{Callee: &ast.Ident{Name: "gomethod"}, Args: []ast.Expr{&ast.StringLit{Value: goMethodName}}}
 }
 
-func goFuncDeclExpr(goName string, proto ast.Expr) *ast.CallExpr {
-	return &ast.CallExpr{
-		Callee: &ast.Ident{Name: "gofunc"},
-		Args:   []ast.Expr{&ast.StringLit{Value: goName}, proto},
+// goReturnsExpr builds `goReturns(item1, item2, ...)` (weave_spec.md
+// §15.4) — each item is either a *ast.StringLit ("?pkg.Type") or an
+// *ast.Ident naming an earlier gotype(...) declaration (a proto-bound
+// position).
+func goReturnsExpr(items ...ast.Expr) ast.Expr {
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "goReturns"}, Args: items}
+}
+
+// goParamsExpr builds `goParams("?T1", "?T2", ...)` (weave_spec.md §15.4).
+func goParamsExpr(types ...string) ast.Expr {
+	args := make([]ast.Expr, len(types))
+	for i, t := range types {
+		args[i] = &ast.StringLit{Value: t}
 	}
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "goParams"}, Args: args}
+}
+
+// typedGomethodExpr builds the typed `gomethod(goMethodName,
+// goReturns(...), goParams(...))` form (weave_spec.md §15.1/§15.4's
+// all-or-nothing shape — see GoMethodInfo's doc comment).
+func typedGomethodExpr(goMethodName string, returns ast.Expr, paramTypes ...string) ast.Expr {
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "gomethod"}, Args: []ast.Expr{
+		&ast.StringLit{Value: goMethodName}, returns, goParamsExpr(paramTypes...),
+	}}
+}
+
+// goFuncDeclExpr builds the untyped `gofunc("?pkg.Func")` form
+// (weave_spec.md §15.2) — a single argument, no goReturns/goParams.
+func goFuncDeclExpr(goName string) *ast.CallExpr {
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "gofunc"}, Args: []ast.Expr{&ast.StringLit{Value: goName}}}
+}
+
+// typedGoFuncDeclExpr builds the typed `gofunc("?pkg.Func",
+// goReturns(...), goParams(...))` form (weave_spec.md §15.2/§15.4's
+// all-or-nothing shape — see GoFuncInfo's doc comment).
+func typedGoFuncDeclExpr(goName string, returns ast.Expr, paramTypes ...string) *ast.CallExpr {
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "gofunc"}, Args: []ast.Expr{
+		&ast.StringLit{Value: goName}, returns, goParamsExpr(paramTypes...),
+	}}
 }
 
 func TestCheck_GoTypeAndGoFuncDeclAreValid(t *testing.T) {
@@ -543,8 +595,8 @@ func TestCheck_GoTypeAndGoFuncDeclAreValid(t *testing.T) {
 			&ast.AssignStmt{Name: "GoFile", Value: goTypeDeclExpr("?os.File", []ast.ObjectField{
 				{Name: "Close", Value: gomethodExpr("Close")},
 			})},
-			&ast.AssignStmt{Name: "goOpen", Value: goFuncDeclExpr("?os.Open", &ast.Ident{Name: "GoFile"})},
-			&ast.AssignStmt{Name: "toUpper", Value: goFuncDeclExpr("?strings.ToUpper", &ast.NilLit{})},
+			&ast.AssignStmt{Name: "goOpen", Value: typedGoFuncDeclExpr("?os.Open", goReturnsExpr(&ast.Ident{Name: "GoFile"}), "?string")},
+			&ast.AssignStmt{Name: "toUpper", Value: goFuncDeclExpr("?strings.ToUpper")},
 			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "toUpper"}, Args: []ast.Expr{&ast.StringLit{Value: "hi"}}}},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 		},
@@ -558,7 +610,7 @@ func TestCheck_GoFuncNameMustHaveQuestionMarkPrefix(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
 		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "f", Value: goFuncDeclExpr("strings.ToUpper", &ast.NilLit{})},
+			&ast.AssignStmt{Name: "f", Value: goFuncDeclExpr("strings.ToUpper")},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 		},
 	}}
@@ -571,12 +623,87 @@ func TestCheck_GoFuncUnknownProtoIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", ReturnType: "int",
 		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "f", Value: goFuncDeclExpr("?os.Open", &ast.Ident{Name: "NeverDeclared"})},
+			&ast.AssignStmt{Name: "f", Value: typedGoFuncDeclExpr("?os.Open", goReturnsExpr(&ast.Ident{Name: "NeverDeclared"}), "?string")},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 		},
 	}}
 	if err := Check(file); err == nil {
 		t.Fatal("expected an error: NeverDeclared is not a gotype(...)")
+	}
+}
+
+func TestCheck_GoFuncAllOrNothingMismatchIsAnError(t *testing.T) {
+	// Exactly 1 argument (untyped) or exactly 3 (typed) are the only
+	// valid gofunc(...) shapes now — no partial typing (weave_spec.md
+	// §15.4's all-or-nothing rule).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "f", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "gofunc"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "?strings.ToUpper"}, goReturnsExpr(&ast.StringLit{Value: "?string"})},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: gofunc(...) with goReturns(...) but no goParams(...) is neither 1 nor 3 arguments")
+	}
+}
+
+func TestCheck_GomethodAllOrNothingMismatchIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
+				{Name: "len", Value: &ast.CallExpr{
+					Callee: &ast.Ident{Name: "gomethod"},
+					Args:   []ast.Expr{&ast.StringLit{Value: "Len"}, goReturnsExpr(&ast.StringLit{Value: "?int"})},
+				}},
+			})},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: gomethod(...) with goReturns(...) but no goParams(...) is neither 1 nor 3 arguments")
+	}
+}
+
+func TestCheck_BareGoReturnsCallIsAnError(t *testing.T) {
+	// goReturns(...) is only recognized inside a gomethod(...)/gofunc(...)
+	// signature position — used bare, it must be rejected with a clear
+	// "reserved name" error, not a confusing "undefined name"
+	// (goAssetReservedName).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{goReturnsExpr(&ast.StringLit{Value: "?int"})}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	err := Check(file)
+	if err == nil {
+		t.Fatal("expected an error: goReturns(...) used outside a signature position")
+	}
+	if !strings.Contains(err.Error(), "goReturns") {
+		t.Fatalf("expected error to mention goReturns, got: %v", err)
+	}
+}
+
+func TestCheck_BareGoParamsCallIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", ReturnType: "int",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{goParamsExpr("?int")}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	err := Check(file)
+	if err == nil {
+		t.Fatal("expected an error: goParams(...) used outside a signature position")
+	}
+	if !strings.Contains(err.Error(), "goParams") {
+		t.Fatalf("expected error to mention goParams, got: %v", err)
 	}
 }
 
@@ -611,109 +738,75 @@ func TestCheck_GoTypeMemberMustBeGomethod(t *testing.T) {
 	}
 }
 
+// atExpr builds `at(listExpr, index)` (weave_spec.md §11/§15.4) —
+// helper for tests exercising the proto-bound `at(...)` static-typing
+// propagation (trackAtResult).
+func atExpr(list ast.Expr, index float64) *ast.CallExpr {
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "at"}, Args: []ast.Expr{list, &ast.NumberLit{Value: index}}}
+}
+
+// typedGoReaderStmts declares a typed GoReader gotype (a proto-bound
+// `len` method) and a typed newReader gofunc whose sole return position
+// is bound to that proto, then extracts a call result into `r` via
+// `at(...)` — the sequence that makes `r` statically Go-typed
+// (goStaticVars) and lets `r.len()` resolve natively. Shared by several
+// tests below.
+func typedGoReaderStmts() []ast.Stmt {
+	return []ast.Stmt{
+		&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
+			{Name: "len", Value: typedGomethodExpr("Len", goReturnsExpr(&ast.StringLit{Value: "?int"}))},
+		})},
+		&ast.AssignStmt{Name: "newReader", Value: typedGoFuncDeclExpr("?strings.NewReader", goReturnsExpr(&ast.Ident{Name: "GoReader"}), "?string")},
+		&ast.AssignStmt{Name: "result", Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "newReader"},
+			Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+		}},
+		&ast.AssignStmt{Name: "r", Value: atExpr(&ast.Ident{Name: "result"}, 0)},
+	}
+}
+
 func TestCheck_StaticGoMethodCallIsValid(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?strings.Reader", []ast.ObjectField{
-				{Name: "len", Value: gomethodExpr("Len")},
-			})},
-			&ast.AssignStmt{Name: "newReader", Value: goFuncDeclExpr("?strings.NewReader", &ast.Ident{Name: "GoReader"})},
-			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "newReader"},
-				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{
-				Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
-			}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
+	body := append(typedGoReaderStmts(),
+		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	)
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
 	if err := Check(file); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 }
 
 func TestCheck_StaticGoMethodCallRejectsUnknownMember(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?strings.Reader", []ast.ObjectField{
-				{Name: "len", Value: gomethodExpr("Len")},
-			})},
-			&ast.AssignStmt{Name: "newReader", Value: goFuncDeclExpr("?strings.NewReader", &ast.Ident{Name: "GoReader"})},
-			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "newReader"},
-				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{
-				Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "notDeclared"},
-			}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
+	body := append(typedGoReaderStmts(),
+		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "notDeclared"}}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	)
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
 	if err := Check(file); err == nil {
 		t.Fatal("expected an error: notDeclared was never gomethod(...)-declared on GoReader")
 	}
 }
 
-// typedGomethodExpr builds `gomethod(goMethodName, returnType, paramTypes...)`
-// (weave_spec.md §15.1's typed form — see GoMethodInfo's doc comment).
-func typedGomethodExpr(goMethodName, returnType string, paramTypes ...string) ast.Expr {
-	args := []ast.Expr{&ast.StringLit{Value: goMethodName}, &ast.StringLit{Value: returnType}}
-	for _, pt := range paramTypes {
-		args = append(args, &ast.StringLit{Value: pt})
-	}
-	return &ast.CallExpr{Callee: &ast.Ident{Name: "gomethod"}, Args: args}
-}
-
 func TestCheck_TypedGomethodAndGofuncDeclAreValid(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
-				{Name: "len", Value: typedGomethodExpr("Len", "?int")},
-			})},
-			&ast.AssignStmt{Name: "newReader", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gofunc"},
-				Args: []ast.Expr{
-					&ast.StringLit{Value: "?strings.NewReader"},
-					&ast.Ident{Name: "GoReader"},
-					&ast.StringLit{Value: "?string"},
-				},
-			}},
-			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "newReader"},
-				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
+	body := append(typedGoReaderStmts(),
+		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	)
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
 	if err := Check(file); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 }
 
 func TestCheck_TypedGomethodWrongArgCountIsAnError(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
-				{Name: "len", Value: typedGomethodExpr("Len", "?int")}, // 0 params declared
-			})},
-			&ast.AssignStmt{Name: "newReader", Value: goFuncDeclExpr("?strings.NewReader", &ast.Ident{Name: "GoReader"})},
-			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "newReader"},
-				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{
-				Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
-				Args:   []ast.Expr{&ast.NumberLit{Value: 1}}, // len takes none
-			}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
+	body := append(typedGoReaderStmts(),
+		&ast.ExprStmt{X: &ast.CallExpr{
+			Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
+			Args:   []ast.Expr{&ast.NumberLit{Value: 1}}, // len takes none
+		}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	)
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
 	if err := Check(file); err == nil {
 		t.Fatal("expected an error: len(...) declared 0 params but was called with 1")
 	}
@@ -724,7 +817,7 @@ func TestCheck_GomethodTypeArgMissingQuestionMarkIsAnError(t *testing.T) {
 		Name: "main", ReturnType: "int",
 		Body: []ast.Stmt{
 			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
-				{Name: "len", Value: typedGomethodExpr("Len", "int")}, // missing '?'
+				{Name: "len", Value: typedGomethodExpr("Len", goReturnsExpr(&ast.StringLit{Value: "int"}))}, // missing '?'
 			})},
 			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 		},
@@ -734,30 +827,46 @@ func TestCheck_GomethodTypeArgMissingQuestionMarkIsAnError(t *testing.T) {
 	}
 }
 
+func TestCheck_GoReturnsWithProtoAndAtExtractionIsValid(t *testing.T) {
+	// goReturns(GoReader, "?error") — a two-position typed return list
+	// where position 0 is proto-bound; at(result, 0) must propagate that
+	// binding to `r` so `r.len()` resolves natively, exactly like the
+	// single-position case above.
+	body := []ast.Stmt{
+		&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?*strings.Reader", []ast.ObjectField{
+			{Name: "len", Value: typedGomethodExpr("Len", goReturnsExpr(&ast.StringLit{Value: "?int"}))},
+		})},
+		&ast.AssignStmt{Name: "newReaderChecked", Value: typedGoFuncDeclExpr("?strings.NewReader",
+			goReturnsExpr(&ast.Ident{Name: "GoReader"}, &ast.StringLit{Value: "?error"}), "?string")},
+		&ast.AssignStmt{Name: "result", Value: &ast.CallExpr{
+			Callee: &ast.Ident{Name: "newReaderChecked"},
+			Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
+		}},
+		&ast.AssignStmt{Name: "r", Value: atExpr(&ast.Ident{Name: "result"}, 0)},
+		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	}
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
 func TestCheck_ReassignedVarLosesStaticGoType(t *testing.T) {
-	// r starts Go-typed, then gets reassigned to an ordinary object —
-	// r.someProp() afterward must be treated as an ordinary dynamic
-	// call, not a (now-stale) static Go method resolution.
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", ReturnType: "int",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "GoReader", Value: goTypeDeclExpr("?strings.Reader", []ast.ObjectField{
-				{Name: "len", Value: gomethodExpr("Len")},
-			})},
-			&ast.AssignStmt{Name: "newReader", Value: goFuncDeclExpr("?strings.NewReader", &ast.Ident{Name: "GoReader"})},
-			&ast.AssignStmt{Name: "r", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "newReader"},
-				Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
-			}},
-			&ast.AssignStmt{Name: "r", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
-				{Name: "len", Value: &ast.FuncLit{Param: "self", Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}}}}},
-			}}},
-			&ast.ExprStmt{X: &ast.CallExpr{
-				Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
-			}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
+	// r starts Go-typed (via at(...) extraction), then gets reassigned to
+	// an ordinary object — r.someProp() afterward must be treated as an
+	// ordinary dynamic call, not a (now-stale) static Go method
+	// resolution.
+	body := append(typedGoReaderStmts(),
+		&ast.AssignStmt{Name: "r", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+			{Name: "len", Value: &ast.FuncLit{Param: "self", Body: []ast.Stmt{&ast.ReturnStmt{Value: &ast.NumberLit{Value: 1}}}}},
+		}}},
+		&ast.ExprStmt{X: &ast.CallExpr{
+			Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"},
+		}},
+		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+	)
+	file := &ast.File{Main: &ast.FuncDecl{Name: "main", ReturnType: "int", Body: body}}
 	if err := Check(file); err != nil {
 		t.Fatalf("Check: %v", err)
 	}

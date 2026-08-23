@@ -7,16 +7,23 @@
 // 「Go資産はメッセージハンドラ1つの中で完結して使う」形に適応させ、単一
 // 戻り値のstrings.NewReaderを使う(CLAUDE.md 後半Step5「確定した設計判断」
 // 参照)。
+//
+// weave_spec.md §15.4: プロトタイプの結びつけは型ヒント付きのgoReturns(...)
+// 経由でのみ行える(型ヒント無しの経路にはもう「proto」引数が無い)ため、
+// newReaderはgoReturns(GoReader)/goParams("?string")を使う。§15.2: 戻り値は
+// 常にlistなので、結果からGoの値を取り出すのにat(...)を使う。
 
-GoReader = gotype("?strings.Reader", {
-	len: gomethod("Len")
+GoReader = gotype("?*strings.Reader", {
+	len: gomethod("Len", goReturns("?int"), goParams())
 })
-newReader = gofunc("?strings.NewReader", GoReader)
+newReader = gofunc("?strings.NewReader", goReturns(GoReader), goParams("?string"))
 
 readerProto = {
 	measure: fn(self, replyTo) {
-		r = newReader(self.text)
-		reply(replyTo, r.len())
+		result = newReader(self.text)
+		r = at(result, 0)
+		lenResult = r.len()
+		reply(replyTo, at(lenResult, 0))
 	}
 }
 

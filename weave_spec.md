@@ -70,7 +70,7 @@ false
 fn(a) { return a + 1 }    // 関数リテラル
 ```
 
-配列相当の値は「連番の数値キー(`0`, `1`, `2`, ...)を持つ普通のオブジェクト」として表現する(専用の配列型は持たない)。組み込み関数`list(...)`(11節)がこの形のオブジェクトを作る糖衣構文になっている。
+配列相当の値は「連番の数値キー(`0`, `1`, `2`, ...)を持つ普通のオブジェクト」として表現する(専用の配列型は持たない)。組み込み関数`list(...)`(11節)がこの形のオブジェクトを作る糖衣構文になっている。要素を読み出すには`at(list, index)`(11節)を使う——`.`によるプロパティアクセスは識別子が数字から始まれない(1節)ため使えない。
 
 ## 4. オブジェクトとプロトタイプ
 
@@ -293,6 +293,8 @@ alice.greet()
 | `has` | `(obj, name) -> bool` | `obj`自身(プロトタイプは辿らない)が指定プロパティを持つか判定する |
 | `list` | `(values...) -> obj` | 連番の数値キー(`0`,`1`,...)を持つオブジェクトを作る(3節) |
 | `len` | `(obj) -> int` | オブジェクトが自身に持つプロパティの数、または文字列の文字数 |
+| `at` | `(list, index) -> value` | `list`(3節の連番数値キーオブジェクト)の`index`番目(0始まり)の要素を読む。範囲外・非数値の`index`はその場でエラー(15.2節のGo資産呼び出し結果を読むのにも使う) |
+| `raiseIfError` | `(value) -> nil` | `value`がGoの`error`型を実装する非`nil`値であればその場でエラーとして停止する。それ以外(`nil`・普通の値)は何もしない(15.2節のGo資産呼び出し結果のエラー確認に使う) |
 
 ## 12. エントリーポイント
 
@@ -312,8 +314,8 @@ func main(): int {
 ```
 fn func true false nil
 if elif else while for in break continue return
-spawn send ask reply remove has list print string len
-gotype gofunc gomethod package
+spawn send ask reply remove has list print string len at raiseIfError
+gotype gofunc gomethod goReturns goParams package
 shape checkShape
 ```
 
@@ -326,7 +328,9 @@ shape checkShape
 
 ## 15. Go資産の利用
 
-WeaveはGoの構造体・関数を**宣言済みのものだけ**扱える(4節のプロトタイプオブジェクトとは違い、Go側の値は実行時にフィールドを追加できないため、動的な仕組みとは別扱いにする)。ただし宣言さえ済ませれば、以降は普通のWeaveのオブジェクトと**全く同じ`.`構文**で読み書き・呼び出しができる。
+WeaveはGoの構造体・関数を**宣言済みのものだけ**扱える(4節のプロトタイプオブジェクトとは違い、Go側の値は実行時にフィールドを追加できないため、動的な仕組みとは別扱いにする)。
+
+**Go関数・Goメソッドの呼び出しは、戻り値の個数によらず常に3節のlist(連番の数値キーを持つオブジェクト)を返す。** Weaveには複数戻り値という概念が無いため(現時点でこのコンテナ内でのみ使われる言語であることを踏まえ、後方互換を気にせず設計をやり直した結果の判断——過去には「戻り値1個ならスカラー、`(値, error)`だけ特別扱い」という非対称な設計だったが、常にlistへ統一した)、`at(list, index)`(11節)で個々の値を読み出す。
 
 ### 15.1 Go型の宣言
 
@@ -337,69 +341,63 @@ GoFile = gotype("?os.File", {
 })
 ```
 
-`gotype(型名, メンバー定義)`は、指定したGo型(`os.File`)の**メソッドテーブル**を表すプロトタイプオブジェクトを作る。`gomethod(名前)`は、Go側の実際のメソッド名(大文字始まりの公開メソッド)をWeave側から呼べるようにする印。このプロトタイプオブジェクトを、Go関数が返してきた値の`__proto__`として結びつけることで、以降その値は普通のWeaveオブジェクトと同じ`.`アクセスができるようになる。
+`gotype(型名, メンバー定義)`は、指定したGo型(`os.File`)の**メソッドテーブル**を表すプロトタイプオブジェクトを作る。`gomethod(名前)`は、Go側の実際のメソッド名(大文字始まりの公開メソッド)をWeave側から呼べるようにする印。
 
 ### 15.2 Go関数の宣言と呼び出し
 
 ```
-goOpen = gofunc("?os.Open", GoFile)
+GoFile = gotype("?os.File", { Close: gomethod("Close") })
+goOpen = gofunc("?os.Open", goReturns(GoFile, "?error"), goParams("?string"))
+
+result = goOpen("data.txt")   // 常にlistが返る
+f = at(result, 0)              // 位置0はGoFileプロトタイプが自動で結びつく
+raiseIfError(at(result, 1))    // 位置1はGoのerror(15.4節)
+f.Close()                       // 普通のメソッド呼び出しと同じ書き方
 ```
 
-`gofunc(関数の完全名, 戻り値のプロトタイプ)`は、Go関数をWeaveから呼べる普通の関数値にする(引数・戻り値の受け渡しは通常のWeaveの値と自動的に変換される。数値・文字列・真偽値はそのまま、Go構造体・ポインタは戻り値プロトタイプが自動的に`__proto__`として結びつけられたオブジェクトとして返る)。
-
-```
-f = goOpen("data.txt")     // 戻り値には自動でGoFileがプロトタイプとして結びつく
-name = f.Name()             // 普通のメソッド呼び出しと同じ書き方
-f.Close()
-```
-
-Weaveには複数戻り値という概念が無いため、`gofunc`で包んだGo関数がGoの`(値, error)`という形(標準ライブラリで最も一般的な多値戻りのパターン。例: `os.ReadFile(name string) ([]byte, error)`)を返す場合は、**`error`が`nil`でなければその場でエラーとして停止し、`nil`であれば先頭の値だけがWeave側に返る**。
-
-```
-readFile = gofunc("?os.ReadFile", nil)
-contents = readFile("data.txt")   // 成功時: ファイルの中身が文字列として返る。失敗時: その場でエラー
-```
-
-(`error`以外の2値以上を返すGo関数——`(int, int)`のような——は現状未対応で、先頭の値だけが黙って返る。)
+`gofunc(関数の完全名, goReturns(...), goParams(...))`は、Go関数をWeaveから呼べる普通の関数値にする。呼び出し結果は常にlistで、各位置の値は宣言した`goReturns(...)`の並びに対応する(数値・文字列・真偽値はそのまま、`gotype`宣言を渡した位置はその値に自動でプロトタイプが結びつく——15.4節で詳しく説明する型ヒント構文がこの宣言の実体)。
 
 ### 15.3 宣言はモジュールの入口で一度だけ
 
-`gotype`/`gofunc`による宣言は、通常はプログラム冒頭(あるいは専用の宣言ファイル)にまとめて書く。一度宣言してしまえば、それ以降のコードは4節のプロトタイプオブジェクトと15.2節のGo資産を**区別せず同じ書き方**で扱える。
+`gotype`/`gofunc`による宣言は、通常はプログラム冒頭(あるいは専用の宣言ファイル)にまとめて書く。一度宣言してしまえば、それ以降のコードは4節のプロトタイプオブジェクトと15.2節のGo資産を、`at(...)`で取り出した後は**区別せず同じ`.method()`という書き方**で扱える。
 
 ```
 counterProto = { increment: fn(self, n) { self.count = self.count + n } }
 // ↑ 純粋なWeaveオブジェクトの定義
 
 GoFile = gotype("?os.File", { Close: gomethod("Close") })
-goOpen = gofunc("?os.Open", GoFile)
+goOpen = gofunc("?os.Open", goReturns(GoFile, "?error"), goParams("?string"))
 // ↑ Go資産の宣言
 
-// これ以降、どちらも同じ .method() の書き方で呼べる
+// これ以降、どちらも同じ .method() の書き方で呼べる(Go資産側はat(...)で
+// listから取り出した後)
 ```
 
-### 15.4 型ヒント(任意)
+### 15.4 型ヒント —— `goReturns(...)`/`goParams(...)`
 
-`gotype`/`gomethod`/`gofunc`は、Goの型をそのまま書いた文字列を**追加で**渡すことで、呼び出し時の型を宣言できる。宣言は完全に任意——書かなくても15.1〜15.3節の挙動のままで動く。書いた場合は、実行時に実際の値がその型と一致するかを厳密に検証し、一致しなければその場で分かりやすいエラーで止まる(TypeScriptに対するJavaScript、Pythonの型ヒントと同じ位置づけで、実行速度のための機能ではない——安全性・保守性のための機能)。
+`gotype`/`gomethod`/`gofunc`は、Goの型をそのまま書いた文字列を渡すことで、呼び出し時の型を宣言する。**`gomethod`/`gofunc`は「型ヒントを一切書かない(常に未型付き・reflect経由)」か「戻り値・引数のどちらも型を宣言する(常に型付き・完全ネイティブ)」のどちらか一方でなければならない**——一部だけ型を書く中間状態は無い(all-or-nothing)。型を書いた場合は、実行時に実際の値がその型と一致するかを厳密に検証し、一致しなければその場で分かりやすいエラーで止まる(TypeScriptに対するJavaScript、Pythonの型ヒントと同じ位置づけで、実行速度のための機能ではない——安全性・保守性のための機能)。
 
 ```
-GoReader = gotype("?*strings.Reader", {          // レシーバーの型(ポインタなら*を書く)
-    len: gomethod("Len", "?int")                   // 戻り値の型を追加
+GoReader = gotype("?*strings.Reader", {                       // レシーバーの型(ポインタなら*を書く)
+    len: gomethod("Len", goReturns("?int"), goParams())         // 戻り値1個・引数0個
 })
-newReader = gofunc("?strings.NewReader", GoReader, "?string")  // 各引数の型を追加
+newReader = gofunc("?strings.NewReader", goReturns(GoReader), goParams("?string"))
+
+result = newReader("hello")
+r = at(result, 0)
+n = at(r.len(), 0)   // r.len()自身もlistを返す(戻り値1個でもlist化される)
 ```
 
 - `gotype`の第1引数は、`*`を付けるとポインタ型、付けなければ値型として扱われる(実際にGoの値がどちらで保持されているかに正確に合わせる必要がある——多くのGo標準ライブラリの型はポインタで返ってくる)
-- `gomethod(名前, 戻り値型, 引数型1, 引数型2, ...)`——2つ目の引数(戻り値型)を書くと、以降そのメソッド呼び出しは全て型検証付きになる。引数の型は0個以上並べる
-- `gofunc(関数名, プロトタイプ, 引数型1, 引数型2, ...)`——3つ目以降に引数の型を並べると、それらの引数の呼び出しが型検証付きになる(戻り値の型は宣言不要——15.2節の自動変換がそのまま働く)
+- `gomethod(名前, goReturns(...), goParams(...))`/`gofunc(関数名, goReturns(...), goParams(...))`——型を宣言する場合は必ずこの3引数の形。`goReturns(...)`はそのGo呼び出しの戻り値の並びを宣言する(0個以上、実際のGoの戻り値の個数と一致させる)。各要素は`"?pkg.Type"`という型文字列、または`gotype(...)`で宣言済みの名前(その位置がGo構造体/ポインタで、自動的にそのプロトタイプと結びつく——旧設計の「戻り値のプロトタイプ」引数はここへ統合された)のどちらか。`goParams(...)`は引数の型を宣言する(0個以上)
 - 型が一致しなかった場合、実行時にその場でエラーになり、Weave側で意味の分かるメッセージ(どこで・何を期待して・実際は何だったか)を伴う
+- **エラー確認は型宣言と切り離されている**——`goReturns(...)`はあくまで型を宣言するだけで、Goの`(値, error)`という形を特別扱いして自動でエラーチェック・停止することはしない。`raiseIfError(at(result, N))`のように、呼び出し側が明示的にエラー位置を取り出して確認する(11節)
 
 ## 16. AMIVM-IRへの対応(Go資産の利用について)
 
 - `gotype`/`gofunc`はコンパイル時に評価される宣言であり、実行時のオブジェクトではない。コンパイラはこれらの宣言を見た時点で「この識別子(`GoFile`, `goOpen`)は動的なプロトタイプオブジェクトではなく、静的に確定したGo型・Go関数への参照である」と記録する
-- `gofunc`経由の呼び出し(`goOpen("data.txt")`)は、通常のプロトタイプ経由の関数呼び出し(9節のヘルパー、動的な名前解決)を使わず、宣言時に確定した実際のGo関数名(`?os.Open`)へ直接`CALL`する。戻り値がGo構造体・ポインタの場合は、`gotype`で宣言したプロトタイプを結びつけた**Weave側の薄いラッパーオブジェクト**(内部にGoの値そのものを1つだけプロパティとして保持する`STTYPE`)として返す
-- `gomethod`で宣言したメソッド呼び出し(`f.Name()`)も、実行時のプロトタイプ検索は経由せず、コンパイル時に「これは`GoFile`型の`Name`メソッド呼び出しだ」と確定しているため、`FGET`(メソッド値の取得)+`CALL`に直接展開する
-- この設計により、**Go資産を使うコードは、動的なプロトタイプ検索(14節のMGETベースの処理)を一切経由せず、Weave自身のオブジェクトと同等かそれ以上の速度で動く**。「宣言」という一手間と引き換えに、reflectのような重い仕組みを避けられる
-- **15.4節の型ヒントを書いた場合、その呼び出しはreflectすら経由しない完全にネイティブな命令列(型アサーション+ネイティブなメソッド値取得+ネイティブ呼び出し)に展開される。** 型が一致しない場合はこの型アサーションの時点で検出され、分かりやすいエラーになる——型ヒントを書かない場合(15.1〜15.3節の従来通りの挙動)は、引き続きreflectベースの動的呼び出しのままである
+- **型ヒント無し(15.1〜15.3節)の`gofunc`/`gomethod`呼び出しはreflect経由で実際のGo呼び出しを行い、戻り値の個数によらずその場で全ての戻り値を集めてWeaveのlistとして組み立てる。** `(値, error)`という形を特別扱いする判定ロジックは存在しない——常にlistという設計そのものが、個数で場合分けする必要を無くしている
+- **15.4節の型ヒントを書いた場合、その呼び出しはreflectすら経由しない完全にネイティブな命令列(型アサーション+ネイティブなメソッド値取得+ネイティブな複数代入`CALL`)に展開される。** `goReturns(...)`の宣言した個数だけAMIVMの`CALL`に結果代入先を並べる(AMIVMは元から複数の戻り値を1つの`CALL`で受け取れる)——0個・1個・2個以上のいずれも同じ仕組みで扱う。各結果は`weavert.NewObject`+`weavert.ObjSet`でlistへ詰め直され、`gotype`宣言と結びついた位置は結びつけの情報がコンパイル時にだけ追跡される(実行時の値自体はGoの生の値のまま、ラッパーオブジェクトは作らない)。型が一致しない場合はASSERTの時点で検出され、分かりやすいエラーになる
 
 ## 17. モジュールと複数ファイルの統合
 
@@ -499,17 +497,19 @@ weave wvz -o out.wvz ./mathutil # 出力先を明示
 ```
 // --- Go資産の宣言(冒頭でまとめて行う) ---
 GoFile = gotype("?os.File", {
-    Close: gomethod("Close")
+    Close: gomethod("Close", goReturns("?error"), goParams())
 })
-goOpen = gofunc("?os.Open", GoFile)
+goOpen = gofunc("?os.Open", goReturns(GoFile, "?error"), goParams("?string"))
 
 // --- Weave自身のプロトタイプ ---
 readerProto = {
     open: fn(self, path) {
-        self.file = goOpen(path)     // Go資産をプロパティとして保持
+        result = goOpen(path)
+        raiseIfError(at(result, 1))
+        self.file = at(result, 0)     // Go資産をプロパティとして保持
     },
     finish: fn(self, replyTo) {
-        self.file.Close()             // Go構造体のメソッドを普通の.呼び出しで
+        raiseIfError(at(self.file.Close(), 0))   // Go構造体のメソッドを普通の.呼び出しで
         reply(replyTo, true)
     }
 }

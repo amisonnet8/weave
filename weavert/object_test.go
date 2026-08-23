@@ -176,6 +176,39 @@ func TestObjKeys_EmptyObject(t *testing.T) {
 	}
 }
 
+func TestObjAt(t *testing.T) {
+	l := NewObject()
+	ObjSet(l, "0", "first")
+	ObjSet(l, "1", "second")
+
+	if got := ObjAt(l, 0.0); got != "first" {
+		t.Errorf("ObjAt(l, 0) = %v, want first", got)
+	}
+	if got := ObjAt(l, 1.0); got != "second" {
+		t.Errorf("ObjAt(l, 1) = %v, want second", got)
+	}
+}
+
+func TestObjAt_OutOfRangePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected ObjAt with an out-of-range index to panic")
+		}
+	}()
+	ObjAt(NewObject(), 0.0)
+}
+
+func TestObjAt_NonNumberIndexPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected ObjAt with a non-number index to panic")
+		}
+	}()
+	l := NewObject()
+	ObjSet(l, "0", "first")
+	ObjAt(l, "0")
+}
+
 func TestKeyAt(t *testing.T) {
 	keys := ObjKeys(func() any {
 		o := NewObject()

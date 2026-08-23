@@ -1,13 +1,29 @@
 func main(): int {
+	// weave_spec.md §15.2: every Go function/method call always returns
+	// a Weave list now, regardless of how many values the real Go call
+	// returns — at(list, i) reads one position back out.
 	GoReader = gotype("?*strings.Reader", {
-		len: gomethod("Len", "?int")
+		len: gomethod("Len", goReturns("?int"), goParams()),
+		// (*strings.Reader).ReadByte() (byte, error) — a typed gomethod
+		// declaring both return positions via goReturns(...), so the call
+		// below lowers to a fully native ASSERT+FNTYPE+FGET+2-target-CALL
+		// (internal/codegen/goasset.go's genNativeGoMethodCall), never
+		// reflect. Error-checking is no longer automatic (§15.4) — the
+		// caller extracts position 1 and decides via raiseIfError(...).
+		readByte: gomethod("ReadByte", goReturns("?byte", "?error"), goParams())
 	})
-	newReader = gofunc("?strings.NewReader", GoReader, "?string")
+	newReader = gofunc("?strings.NewReader", goReturns(GoReader), goParams("?string"))
 
-	r = newReader("hello, weave")
-	print(r.len())
-	print(r.len() + 8)
-	print(r.len() > 10)
+	result = newReader("hello, weave")
+	r = at(result, 0)
 
-	return r.len()
+	print(at(r.len(), 0))
+	print(at(r.len(), 0) + 8)
+	print(at(r.len(), 0) > 10)
+
+	readByteResult = r.readByte()
+	raiseIfError(at(readByteResult, 1))
+	print(at(readByteResult, 0))
+
+	return at(r.len(), 0)
 }

@@ -31,16 +31,18 @@ const (
 // values applied through weavert.Call — kept in sync manually with
 // sema.go's own copy (CLAUDE.md's "確定した設計判断").
 var builtinNames = map[string]bool{
-	"print":  true,
-	"has":    true,
-	"remove": true,
-	"list":   true,
-	"len":    true,
-	"string": true,
-	"spawn":  true,
-	"send":   true,
-	"ask":    true,
-	"reply":  true,
+	"print":        true,
+	"has":          true,
+	"remove":       true,
+	"list":         true,
+	"len":          true,
+	"string":       true,
+	"spawn":        true,
+	"send":         true,
+	"ask":          true,
+	"reply":        true,
+	"at":           true,
+	"raiseIfError": true,
 }
 
 // codegenCtx is shared by every funcGen created during one Generate()
@@ -74,13 +76,16 @@ type codegenCtx struct {
 }
 
 // newGoFnType mints and records a fresh top-level FNTYPE declaration
-// (paramTypes -> returnType, all already-converted `^`-prefixed AMIVM
-// type tokens) and returns its deftype name, ready to use in an FGET.
-func (ctx *codegenCtx) newGoFnType(paramTypes []string, returnType string) string {
+// (paramTypes -> returnTypes, all already-converted `^`-prefixed AMIVM
+// type tokens — returnTypes has exactly one entry per the method's
+// declared goReturns(...) position, 0 or more, uniformly; weave_spec.md
+// §15.2's "every Go call always returns a list" rule) and returns its
+// deftype name, ready to use in an FGET.
+func (ctx *codegenCtx) newGoFnType(paramTypes, returnTypes []string) string {
 	name := fmt.Sprintf("^GoFn%d", ctx.goFnTypeCount)
 	ctx.goFnTypeCount++
 	ctx.topLevelDecls = append(ctx.topLevelDecls,
-		fmt.Sprintf("FNTYPE\t%s%s\t:\t%s\n", name, argSuffix(paramTypes), returnType))
+		fmt.Sprintf("FNTYPE\t%s%s\t:%s\n", name, argSuffix(paramTypes), argSuffix(returnTypes)))
 	return name
 }
 
@@ -144,13 +149,15 @@ type funcGen struct {
 	body       strings.Builder
 	tempCount  int
 
-	// goStaticVars mirrors sema's own tracking (internal/sema/goasset.go's
-	// trackGoStaticVar) — kept per-funcGen, not on codegenCtx, since it
-	// tracks ordinary variable identities that don't cross function
-	// boundaries (unlike goTypes/goFuncs, true compile-time constants). A
-	// closure does not inherit an enclosing scope's static Go-typing
-	// knowledge (a narrow, pre-existing limitation, unchanged here).
+	// goStaticVars/goListShapes mirror sema's own tracking (internal/sema/
+	// goasset.go's trackGoAssetResult) — kept per-funcGen, not on
+	// codegenCtx, since they track ordinary variable identities that
+	// don't cross function boundaries (unlike goTypes/goFuncs, true
+	// compile-time constants). A closure does not inherit an enclosing
+	// scope's static Go-typing knowledge (a narrow, pre-existing
+	// limitation, unchanged here).
 	goStaticVars map[string]string
+	goListShapes map[string][]string
 }
 
 func newFuncGen(ctx *codegenCtx) *funcGen {
@@ -423,7 +430,7 @@ func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 	if err != nil {
 		return err
 	}
-	trackGoStaticVar(fg, s.Name, s.Value)
+	trackGoAssetResult(fg, s.Name, s.Value)
 	if !bound {
 		tok = fg.declare(s.Name, "^any")
 	}
@@ -476,6 +483,10 @@ func genBuiltinCall(fg *funcGen, name string, call *ast.CallExpr) (string, error
 		return genOneArgBuiltin(fg, call, "weavert.Ask")
 	case "reply":
 		return genTwoArgBuiltin(fg, call, "weavert.Reply")
+	case "at":
+		return genTwoArgBuiltin(fg, call, "weavert.ObjAt")
+	case "raiseIfError":
+		return genOneArgBuiltin(fg, call, "weavert.RaiseIfError")
 	default:
 		return "", fmt.Errorf("line %d: builtin %q not yet implemented", call.Line, name)
 	}

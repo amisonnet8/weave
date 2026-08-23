@@ -15,16 +15,18 @@ import (
 // with codegen.go's own copy (CLAUDE.md's "確定した設計判断" tracks
 // this alongside the other manually-synced name lists).
 var builtinNames = map[string]bool{
-	"print":  true,
-	"has":    true,
-	"remove": true,
-	"list":   true,
-	"len":    true,
-	"string": true,
-	"spawn":  true,
-	"send":   true,
-	"ask":    true,
-	"reply":  true,
+	"print":        true,
+	"has":          true,
+	"remove":       true,
+	"list":         true,
+	"len":          true,
+	"string":       true,
+	"spawn":        true,
+	"send":         true,
+	"ask":          true,
+	"reply":        true,
+	"at":           true,
+	"raiseIfError": true,
 }
 
 // reservedName reports whether name is off-limits for a user assignment
@@ -126,11 +128,14 @@ type checker struct {
 	goFuncs   map[string]*GoFuncInfo
 	shapes    map[string]*ShapeInfo // shape.go's shape(...) declarations
 
-	// goStaticVars tracks the narrow case Step 4 actually resolves
-	// statically: a plain variable's most recent assignment came
-	// directly from a gofunc(...) call whose declared proto is a known
-	// gotype — see goasset.go's trackGoStaticVar/checkGoMethodCall.
+	// goStaticVars/goListShapes track static Go-asset typing —
+	// goStaticVars maps a variable directly holding a single Go
+	// struct/pointer value to its gotype(...) name; goListShapes maps a
+	// variable holding a typed gofunc/gomethod call's list result to the
+	// ordered proto names its positions carry (see goasset.go's
+	// trackGoAssetResult/checkGoMethodCall for the full reasoning).
 	goStaticVars map[string]string
+	goListShapes map[string][]string
 }
 
 // Check validates file ahead of code generation.
@@ -216,7 +221,7 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 		if err := c.checkExpr(s.Value, sc); err != nil {
 			return err
 		}
-		c.trackGoStaticVar(s.Name, s.Value)
+		c.trackGoAssetResult(s.Name, s.Value)
 		sc.declareIfNew(s.Name)
 		return nil
 	case *ast.ExprStmt:

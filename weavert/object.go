@@ -3,6 +3,7 @@ package weavert
 import (
 	"fmt"
 	"sort"
+	"strconv"
 )
 
 // Every Weave object is represented as a Go map[string]any, boxed into
@@ -95,6 +96,32 @@ func ObjHas(obj any, key any) any {
 func ObjRemove(obj any, key any) any {
 	delete(objOf(obj), keyOf(key))
 	return nil
+}
+
+// ObjAt implements the `at(...)` builtin (weave_spec.md §3/§11/§15.2):
+// reads the element at a 0-based numeric index from a list-shaped
+// object (the same weavert.Object every list(...) literal and every
+// Go-asset call result now uses, keyed by sequential numeric strings —
+// see internal/codegen/codegen.go's genListCall and goasset.go's
+// genBoxList). Unlike ObjGet's own "missing property is nil" rule
+// (weave_spec.md §4.2), an out-of-range or non-numeric index panics —
+// an index into a list is far more likely to be a straightforward
+// programming mistake than an intentionally "maybe missing" property,
+// so surfacing it immediately is more useful than a silent nil that
+// would otherwise propagate confusingly far before something finally
+// breaks.
+func ObjAt(obj any, index any) any {
+	idx, ok := index.(float64)
+	if !ok {
+		panic(fmt.Sprintf("weave: at(...) requires a number index, got %T", index))
+	}
+	o := objOf(obj)
+	key := strconv.Itoa(int(idx))
+	v, ok := o[key]
+	if !ok {
+		panic(fmt.Sprintf("weave: at(...): no element at index %v", idx))
+	}
+	return v
 }
 
 // ObjKeys returns obj's own property names for `for k, v in obj`
