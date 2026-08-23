@@ -39,6 +39,7 @@ Goコード (.go)
 | `ignored/seed/` | Seedの実装済みリポジトリ(参考実装)。ディレクトリ構成・レイヤー分割(`lexer`/`parser`/`ast`/`sema`/`codegen`)・CLIの作り・テスト戦略の実例として参照してよい。**Weaveリポジトリの一部ではない** |
 | `ignored/cascade/` | Cascadeの実装済みリポジトリ(参考実装)。クロージャー・map・チャネル・パイプラインの実装パターンとして参照してよい。**Weaveリポジトリの一部ではない** |
 | `ignored/amivm/` | 参照用にローカルへ置かれているamivmリポジトリのクローン。**Weaveリポジトリの一部ではない。** amivmはWeaveから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照) |
+| `tour/` | Weave言語入門(A Tour of Goを参考にした、章ごとに1ファイルのマークダウン)。現状は日本語版のみ。仕様の再定義ではなく`weave_spec.md`の学習用ガイドという位置づけで、齟齬があれば`weave_spec.md`側を正とする |
 | 本ファイル(`CLAUDE.md`) | Weaveプロジェクトの規約・AIによる開発支援のための注意点 |
 
 `ignored/`配下はgit管理対象外(`.gitignore`参照)。参照専用であり、Weave本体のビルド成果物やimportパスがここに依存することがあってはならない。
@@ -202,6 +203,7 @@ Seed/Cascadeは静的型付け言語だったため、この防波堤として�
   internal/codegen/             AST → AMIVM-IR生成
   weavert/                      Weave独自ランタイム(go:embedで配布)
   examples/                     サンプルWeaveプログラム(`.weave`。実装した構文ごとに追加)
+  tour/                         Weave言語入門(A Tour of Go形式、章ごとに1ファイル。日本語版のみ)
   ignored/                      参照専用(git対象外)。amivm/seed/cascadeのクローンと各notes
 ```
 

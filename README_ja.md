@@ -87,6 +87,8 @@ Alice says hi
 
 スカラー値・演算子・制御構文・クロージャー/カリー化/再帰・オブジェクト/プロトタイプ・組み込み関数/`for`-`in`・アクター・Go資産連携・複数パッケージのモジュールを一通り網羅した実行可能なサンプルを[`examples/`](examples/)に置いています。
 
+Weaveが初めての方は、[A Tour of Go](https://go.dev/tour/)を参考にした章立て入門ガイド[`tour/`](tour/)からどうぞ。
+
 ## 言語仕様
 
 **唯一の正確な仕様は[`weave_spec.md`](weave_spec.md)です。** 本READMEを含む他のドキュメントと矛盾する場合は`weave_spec.md`を優先してください。
