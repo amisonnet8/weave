@@ -173,6 +173,9 @@ Seed/Cascadeは静的型付け言語だったため、この防波堤として�
 ```
 /workspaces/weave/              Weaveのホーム(このリポジトリのルート)
   weave_spec.md                 Weave言語仕様(唯一の正)
+  weave_implementation_notes.md
+                                次にAMIVM上で言語を実装する人向けの、AMIVM-IR生成に関する
+                                再利用可能な知見(このフロントエンドの実装で得たもの)
   CLAUDE.md                     本ファイル
   LICENSE                       MIT
   README.md / README_ja.md      導入ドキュメント

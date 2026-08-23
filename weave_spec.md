@@ -222,7 +222,7 @@ clampTo0_10(15)       // 10
 
 ```
 always5 = fn() { return 5 }   // fn(_) { return 5 } と同じ
-always5()                      // 5。always5(nil) と同じ
+always5()                      // 結果は5。always5(nil) と同じ
 ```
 
 **ただし、`obj.method()`(9節のメソッド呼び出し糖衣構文)には、この`f()`→`f(nil)`という書き換えは適用されない。** `obj.method()`は元から「`self`(=`obj`)自体が唯一の引数として自動的に渡る」という意味を持っており、そこにさらに`nil`を差し込んでしまうと、`self`+`nil`の2引数を渡すことになって既存の意味が壊れてしまう。`obj.method()`は今まで通り「引数0個・`self`のみ」を表す特別な形のまま。`obj.method(a)()`のように、メソッド呼び出しの**結果**をさらに引数無しで呼び出す場合は(その`()`の呼び出し対象は`obj.method`という直接のプロパティアクセスではなく、既に評価済みの値なので)、通常通り`f()`→`f(nil)`の対象になる。
@@ -619,6 +619,7 @@ result = readFile("data.bin")
 raiseIfError(at(result, 1))
 print(at(result, 0))   // Goの[]byteが自動でWeaveの文字列になる
 
+GoBytesReader = gotype("?*bytes.Reader", { len: gomethod("Len", goReturns("?int"), goParams()) })
 newReader = gofunc("?bytes.NewReader", goReturns(GoBytesReader), goParams("?[]byte"))
 newReader("raw bytes")   // Weaveの文字列が自動でGoの[]byteになる
 ```

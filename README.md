@@ -65,7 +65,7 @@ A package directory (or a `.wvz` archive of one, §17.6 of the spec) compiles ev
 ## Example
 
 ```weave
-func main(): int {
+main = fn(args) {
 	base = {
 		greet: fn(self) { print(self.name + " says hi") }
 	}
@@ -112,5 +112,8 @@ weavert/             Weave's Go runtime library (every Weave value is dynamicall
                       CLAUDE.md), embedded into every weave build
 examples/            runnable .weave sample programs, one group per language feature
 weave_spec.md        the Weave language specification (the only authoritative one)
+weave_implementation_notes.md
+                      reusable AMIVM-IR-generation lessons learned while building this
+                      frontend, for whoever implements the next one
 CLAUDE.md            project conventions for AI-assisted development
 ```

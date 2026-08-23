@@ -65,7 +65,7 @@ weave <コマンド> [フラグ] <file.weave | package-dir | package.wvz>
 ## 例
 
 ```weave
-func main(): int {
+main = fn(args) {
 	base = {
 		greet: fn(self) { print(self.name + " says hi") }
 	}
@@ -111,5 +111,8 @@ weavert/              Weaveのランタイムライブラリ(全ての値が動�
                        たびに埋め込まれる
 examples/             実行可能な.weaveサンプル(言語機能ごとにグループ化)
 weave_spec.md         Weave言語仕様(唯一の正確な仕様)
+weave_implementation_notes.md
+                      このフロントエンドの実装で得た、AMIVM-IR生成に関する再利用可能な知見
+                      (次にAMIVM上で言語を実装する人向け)
 CLAUDE.md             AIによる開発支援のためのプロジェクト規約
 ```
