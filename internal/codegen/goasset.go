@@ -37,14 +37,21 @@ type GoFuncInfo struct {
 	ParamTypes []string
 }
 
+// GoVarInfo mirrors sema's own (internal/sema/goasset.go's GoVarInfo) —
+// see its doc comment for why there's no typed/untyped split here.
+type GoVarInfo struct {
+	GoName string
+}
+
 // genGoDecl mirrors sema's own recognition of `name = gotype(...)` /
-// `name = gofunc(...)` (sema/goasset.go's checkGoDecl) — codegen has
-// already been told by sema.Check that the file is valid, so this just
-// re-derives the same symbol tables to know how to lower later
-// references. Neither declaration form emits any IR itself (weave_spec.md
-// §16: these are compile-time-only, never a runtime value) — genAssignStmt
-// calls this before its ordinary dynamic-value handling and, if it
-// reports true, skips VAR/SET entirely for this statement.
+// `name = gofunc(...)` / `name = govar(...)` (sema/goasset.go's
+// checkGoDecl) — codegen has already been told by sema.Check that the
+// file is valid, so this just re-derives the same symbol tables to know
+// how to lower later references. None of the three declaration forms
+// emits any IR itself (weave_spec.md §16: these are compile-time-only,
+// never a runtime value) — genAssignStmt calls this before its ordinary
+// dynamic-value handling and, if it reports true, skips VAR/SET entirely
+// for this statement.
 func genGoDecl(fg *funcGen, name string, call *ast.CallExpr) (bool, error) {
 	callee, ok := call.Callee.(*ast.Ident)
 	if !ok {
@@ -57,9 +64,47 @@ func genGoDecl(fg *funcGen, name string, call *ast.CallExpr) (bool, error) {
 	case "gofunc":
 		genGoFuncDecl(fg, name, call)
 		return true, nil
+	case "govar":
+		genGoVarDecl(fg, name, call)
+		return true, nil
 	default:
 		return false, nil
 	}
+}
+
+// genGoVarDecl re-derives one `X = govar("?pkg.Var")` declaration
+// (weave_spec.md §15.5) already validated by sema (checkGoVarDecl) —
+// just records GoName for genExpr's *ast.Ident case (below) to read live
+// on every later reference to X.
+func genGoVarDecl(fg *funcGen, name string, call *ast.CallExpr) {
+	goName := call.Args[0].(*ast.StringLit).Value
+	if fg.ctx.goVars == nil {
+		fg.ctx.goVars = map[string]*GoVarInfo{}
+	}
+	fg.ctx.goVars[name] = &GoVarInfo{GoName: goName}
+}
+
+// genGoVarRead lowers a read of a govar(...)-declared name (weave_spec.md
+// §15.5) to a single native CALL: info.GoName ("?pkg.Var") is already a
+// valid AMIVM `value` operand — the exact same "a bare ?pkg.xxx token is
+// just a raw Go expression, embeddable as a first-class value" trick
+// genGoFuncCall's own doc comment established for passing a *function*
+// value into weavert.CallGoFuncList, except here the raw expression IS
+// the whole read: no reflect is needed at all (there's no method-name
+// string to resolve dynamically the way CallGoMethodList needs — the
+// identifier itself is fully static). Every reference re-emits its own
+// CALL rather than caching a result anywhere (weave_spec.md §15.5's
+// "live" semantics: each read reflects pkg.Var's actual value at the
+// moment this line executes, not a value snapshotted once at
+// declaration — see CLAUDE.md's design-decision note on why this was
+// the deliberately chosen behavior over a one-time snapshot).
+// weavert.NormalizeGoValue is reused as-is (no new weavert helper
+// needed) purely for the same numeric/[]byte normalization every other
+// Go-asset boundary already applies.
+func genGoVarRead(fg *funcGen, info *GoVarInfo) string {
+	tmp := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?weavert.NormalizeGoValue\t%s\n", tmp, info.GoName)
+	return tmp
 }
 
 func genGoTypeDecl(fg *funcGen, name string, call *ast.CallExpr) {

@@ -787,6 +787,68 @@ func TestCheck_GoFuncAllOrNothingMismatchIsAnError(t *testing.T) {
 	}
 }
 
+// govarDeclExpr builds `govar("?pkg.Var")` (weave_spec.md §15.5).
+func govarDeclExpr(goName string) *ast.CallExpr {
+	return &ast.CallExpr{Callee: &ast.Ident{Name: "govar"}, Args: []ast.Expr{&ast.StringLit{Value: goName}}}
+}
+
+func TestCheck_GovarDeclAndReadAreValid(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "ErrRange", Value: govarDeclExpr("?strconv.ErrRange")},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{&ast.Ident{Name: "ErrRange"}}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestCheck_GovarNameMustHaveQuestionMarkPrefix(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "x", Value: govarDeclExpr("strconv.ErrRange")},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: Go variable name must start with '?'")
+	}
+}
+
+func TestCheck_GovarWrongArgCountIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "x", Value: &ast.CallExpr{Callee: &ast.Ident{Name: "govar"}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: govar(...) takes exactly one argument")
+	}
+}
+
+func TestCheck_BareGovarCallOutsideDeclarationIsAnError(t *testing.T) {
+	// govar is reserved (goAssetReservedName) and may only appear as
+	// `name = govar(...)` — an ordinary call site (even one that would
+	// otherwise typecheck, like passing its result to print) must be
+	// rejected with a clear message, not the generic "undefined name".
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{govarDeclExpr("?strconv.ErrRange")}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: govar(...) may only appear as name = govar(...)")
+	}
+}
+
 func TestCheck_GomethodAllOrNothingMismatchIsAnError(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", Param: "args",

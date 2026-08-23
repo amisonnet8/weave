@@ -105,6 +105,20 @@ type GoFuncInfo struct {
 	ParamTypes []string
 }
 
+// GoVarInfo is what `X = govar("?pkg.Var")` declares (weave_spec.md
+// §15.5) — read-only, live access to a Go package-level variable (or
+// constant; nothing at this string-token level distinguishes the two,
+// and read access behaves identically either way). GoName is the
+// "?pkg.Var" string exactly as written — already a valid AMIVM `value`
+// operand (internal/codegen/goasset.go's genGoVarDecl embeds it directly
+// as a CALL argument), unlike GoFuncInfo/GoMethodInfo there is no typed
+// vs. untyped distinction: reading a package variable is always a plain
+// Go expression (no method-name string to resolve, so no reflect is
+// ever needed either way — see genGoVarRead's own doc comment).
+type GoVarInfo struct {
+	GoName string
+}
+
 func goAssetReservedName(name string) (string, bool) {
 	switch name {
 	case "gotype":
@@ -113,6 +127,8 @@ func goAssetReservedName(name string) (string, bool) {
 		return "reserved for Go function declarations (weave_spec.md §15.2)", true
 	case "gomethod":
 		return "reserved for use inside a gotype(...) member list (weave_spec.md §15.1)", true
+	case "govar":
+		return "reserved for Go package-level variable declarations (weave_spec.md §15.5)", true
 	case "shape":
 		return "reserved for shape declarations (weave_spec.md §4.3)", true
 	case "goReturns":
@@ -137,6 +153,8 @@ func (c *checker) checkGoDecl(name string, call *ast.CallExpr, line int) (bool, 
 		return true, c.checkGoTypeDecl(name, call, line)
 	case "gofunc":
 		return true, c.checkGoFuncDecl(name, call, line)
+	case "govar":
+		return true, c.checkGoVarDecl(name, call, line)
 	default:
 		return false, nil
 	}
@@ -332,6 +350,32 @@ func (c *checker) checkGoFuncDecl(name string, call *ast.CallExpr, line int) err
 		return err
 	}
 	c.goFuncs[name] = &GoFuncInfo{GoName: goName.Value, Returns: returns, ParamTypes: params}
+	return nil
+}
+
+// checkGoVarDecl checks `X = govar("?pkg.Var")` (weave_spec.md §15.5) —
+// always exactly one argument, no typed/untyped distinction (unlike
+// gofunc/gomethod, GoVarInfo has no Returns/ParamTypes at all: see its
+// own doc comment for why one doesn't apply here).
+func (c *checker) checkGoVarDecl(name string, call *ast.CallExpr, line int) error {
+	if why, ok := reservedName(name); ok {
+		return fmt.Errorf("line %d: %q is a reserved name (%s)", line, name, why)
+	}
+	if len(call.Args) != 1 {
+		return fmt.Errorf("line %d: govar(...) takes exactly one argument (a Go variable name), got %d", call.Line, len(call.Args))
+	}
+	goName, ok := call.Args[0].(*ast.StringLit)
+	if !ok {
+		return fmt.Errorf("line %d: govar(...)'s argument must be a string literal like \"?pkg.Var\"", call.Line)
+	}
+	if !strings.HasPrefix(goName.Value, "?") {
+		return fmt.Errorf("line %d: govar(...)'s Go variable name must start with '?' (weave_spec.md §15.5's own \"?os.Stdout\" shape), got %q", call.Line, goName.Value)
+	}
+
+	if c.goVars == nil {
+		c.goVars = map[string]*GoVarInfo{}
+	}
+	c.goVars[name] = &GoVarInfo{GoName: goName.Value}
 	return nil
 }
 

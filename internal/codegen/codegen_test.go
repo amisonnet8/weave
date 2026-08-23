@@ -866,6 +866,52 @@ func TestGenerate_GoFuncCallRoutesThroughCallGoFuncList(t *testing.T) {
 	}
 }
 
+func TestGenerate_GovarDeclEmitsNoIR(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "ErrRange", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "govar"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "?strconv.ErrRange"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(ir, "VAR\t%ErrRange") {
+		t.Errorf("expected no VAR for a govar(...)-declared name, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_GovarReadEmitsLiveNativeCallPerReference(t *testing.T) {
+	// weave_spec.md §15.5: each read of a govar(...)-declared name is its
+	// own fresh CALL — not a cached snapshot — so referencing it twice
+	// must emit the CALL twice (see genGoVarRead's doc comment on why
+	// this is what "live" means here).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "ErrRange", Value: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "govar"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "?strconv.ErrRange"}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{&ast.Ident{Name: "ErrRange"}}}},
+			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "print"}, Args: []ast.Expr{&ast.Ident{Name: "ErrRange"}}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if n := strings.Count(ir, "?weavert.NormalizeGoValue\t?strconv.ErrRange\n"); n != 2 {
+		t.Errorf("expected 2 separate live reads of ErrRange, got %d:\n%s", n, ir)
+	}
+}
+
 func TestGenerate_GoTypeDeclEmitsNoIR(t *testing.T) {
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", Param: "args",

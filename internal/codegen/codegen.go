@@ -57,6 +57,7 @@ type codegenCtx struct {
 	// references — see genGoDecl's doc comment.
 	goTypes map[string]*GoTypeInfo
 	goFuncs map[string]*GoFuncInfo
+	goVars  map[string]*GoVarInfo
 
 	// shapes are populated as `shape(...)` declarations are compiled
 	// (shape.go) and consulted by later checkShape(...) calls.
@@ -734,6 +735,13 @@ func genClosureReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 func genExpr(fg *funcGen, expr ast.Expr) (string, error) {
 	switch e := expr.(type) {
 	case *ast.Ident:
+		// A govar(...)-declared name (weave_spec.md §15.5) never went
+		// through VAR/SET in the first place — see genGoVarDecl/
+		// genGoVarRead's own doc comments — so it must be checked before
+		// falling through to the ordinary declared-variable path below.
+		if info := fg.ctx.goVars[e.Name]; info != nil {
+			return genGoVarRead(fg, info), nil
+		}
 		// resolve walks out through any enclosing closures this
 		// reference sits inside (funcGen's doc comment), finding
 		// whichever funcGen instance actually declared e.Name and

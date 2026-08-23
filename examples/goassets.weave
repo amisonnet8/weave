@@ -42,5 +42,16 @@ main = fn(args) {
 	raiseIfError(at(atoiResult, 1))
 	print(at(atoiResult, 0) + 1)
 
+	// govar(...) (weave_spec.md §15.5) reads a Go package-level variable
+	// live — os.Stdout here, passed straight into another gofunc call
+	// (io.WriteString(w io.Writer, s string) (int, error), non-variadic
+	// so it's untyped-CallGoFuncList-friendly). Every reference to Stdout
+	// re-reads the real os.Stdout at that point, not a one-time snapshot.
+	Stdout = govar("?os.Stdout")
+	writeString = gofunc("?io.WriteString")
+	writeResult = writeString(Stdout, "written straight to os.Stdout via govar\n")
+	raiseIfError(at(writeResult, 1))
+	print(at(writeResult, 0))
+
 	return 0
 }

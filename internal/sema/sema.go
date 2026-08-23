@@ -129,6 +129,7 @@ type checker struct {
 	loopDepth int
 	goTypes   map[string]*GoTypeInfo
 	goFuncs   map[string]*GoFuncInfo
+	goVars    map[string]*GoVarInfo // govar(...) declarations (goasset.go)
 	shapes    map[string]*ShapeInfo // shape.go's shape(...) declarations
 
 	// goStaticVars/goListShapes track static Go-asset typing —
@@ -329,6 +330,13 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 	case *ast.Ident:
 		if e.Name == "_" {
 			return fmt.Errorf("line %d: \"_\" cannot be read (weave_spec.md §10) — it is write-only", e.Line)
+		}
+		if c.goVars[e.Name] != nil {
+			// govar(...)-declared names (weave_spec.md §15.5) never go
+			// through an ordinary assignment/scope binding at all — see
+			// checkGoVarDecl's own doc comment, and goFuncs' identical
+			// treatment a few lines below in the CallExpr case.
+			return nil
 		}
 		if !sc.has(e.Name) {
 			return fmt.Errorf("line %d: undefined name %q", e.Line, e.Name)
