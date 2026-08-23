@@ -87,7 +87,7 @@ Alice says hi
 
 More runnable examples covering scalars, operators, control flow, closures/currying/recursion, objects/prototypes, built-ins/`for`-`in`, actors, Go-asset integration, and multi-package modules live in [`examples/`](examples/).
 
-New to Weave? [`tour/`](tour/) is a chapter-by-chapter introduction modeled on [A Tour of Go](https://go.dev/tour/) (currently Japanese only).
+New to Weave? [`tour/`](tour/) is a chapter-by-chapter introduction (currently Japanese only).
 
 ## Language
 

@@ -59,6 +59,46 @@ main = fn(args) {
 }
 ```
 
+## アクター同士が直接やりとりする
+
+ここまでの例は、`main`が2つのアクターの間を仲介していました。実際には、アクターが持つプロパティに**別のアクターへの参照**を持たせておけば、アクターのハンドラの中から直接`send`/`ask`できます——`self`の中身がアクター参照かどうかを言語が区別する必要は無く、ここでも3章で見た「プロパティに何でも入れられる」という性質がそのまま活きています。
+
+次の例は`ping`と`pong`という2つのアクターに、互いへの参照(`partner`)を持たせ、`volley`というメッセージを何度もやり取りさせます。最後の1往復だけ`reply`で`main`へ結果を返すため、`remaining`(残り回数)と`replyTo`(最終的な返信先)をまとめて1つのオブジェクトとして運びます(§6.2で触れた「複数の値を渡したい場合はオブジェクトにまとめる」を実際に使う例です)。
+
+```weave
+main = fn(args) {
+	playerProto = {
+		partner: nil,
+		hits: 0,
+		setPartner: fn(self, p) { self.partner = p },
+		start: fn(self, replyTo) {
+			self.hits = self.hits + 1
+			send(self.partner)("volley", { remaining: 3, replyTo: replyTo })
+		},
+		volley: fn(self, msg) {
+			self.hits = self.hits + 1
+			if msg.remaining > 0 {
+				// 相手へ打ち返す——mainを経由せず、アクター自身が
+				// self.partnerへ直接sendしている
+				send(self.partner)("volley", { remaining: msg.remaining - 1, replyTo: msg.replyTo })
+			} else {
+				reply(msg.replyTo, self.hits)
+			}
+		}
+	}
+
+	ping = spawn(playerProto)
+	pong = spawn(playerProto)
+	send(ping)("setPartner", pong)
+	send(pong)("setPartner", ping)
+
+	print(ask(ping)("start"))   // 3(最後に受け取ったpingの打った回数)
+	return 0
+}
+```
+
+`ask(ping)("start")`をきっかけに、`volley`メッセージが`pong`→`ping`→`pong`→`ping`の順で2つのアクターの間だけを往復し(`main`は最初の`start`と最後の`reply`にしか関与しません)、`remaining`が`0`になった時点で受け取った`ping`が`main`へ直接`reply`します。
+
 ## 並行性の粒度(`weave_spec.md` §6.4)
 
 1つのアクターは、自分宛のメッセージを**常に1つずつ順番に**処理します(同じアクター内で2つのメッセージが同時に処理されることはありません)。異なるアクター同士は完全に並行に動きます。この性質により、アクター内部の状態(`self`のプロパティ)への読み書きは、アクター内で見る限り競合状態を考えなくてかまいません。
