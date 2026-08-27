@@ -9,9 +9,9 @@
 ```weave
 // --- Go資産の宣言(冒頭でまとめて行う。6章) ---
 GoReader = gotype("?*strings.Reader", {
-	len: gomethod("Len", goReturns("?int"), goParams())
+	len: gomethod("Len")
 })
-newReader = gofunc("?strings.NewReader", goReturns(GoReader), goParams("?string"))
+newReader = gofunc("?strings.NewReader", GoReader)
 
 // --- Weave自身のプロトタイプ(3章) ---
 readerProto = {

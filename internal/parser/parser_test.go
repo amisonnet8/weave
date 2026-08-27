@@ -340,8 +340,8 @@ func TestParse_EmptyCallArgsStayEmpty(t *testing.T) {
 	// exactly as written, for both an ordinary call and method-sugar
 	// (obj.method()); see internal/codegen/codegen.go's genGeneralCall
 	// for where (and why) the desugar actually happens, and why it must
-	// not happen here (it would corrupt goReturns()/goParams()/list()'s
-	// own, unrelated "zero arguments" meaning).
+	// not happen here (it would corrupt list()'s own, unrelated "zero
+	// arguments" meaning — an empty list).
 	tests := []struct {
 		name, src string
 	}{

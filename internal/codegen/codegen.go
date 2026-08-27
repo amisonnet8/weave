@@ -58,63 +58,6 @@ type codegenCtx struct {
 	goTypes map[string]*GoTypeInfo
 	goFuncs map[string]*GoFuncInfo
 	goVars  map[string]*GoVarInfo
-
-	// shapes are populated as `shape(...)` declarations are compiled
-	// (shape.go) and consulted by later checkShape(...) calls.
-	shapes map[string]*ShapeInfo
-
-	// goBytesTypeEmitted tracks whether the one shared `SLTYPE ^GoBytes
-	// ^byte` declaration (goTypeToken's "?[]byte" special case,
-	// weave_spec.md §15.4) has already been added to topLevelDecls —
-	// every "?[]byte" hint anywhere in the program means exactly the
-	// same Go type, so there's no reason to declare it more than once.
-	goBytesTypeEmitted bool
-
-	// goSliceTypeNames memoizes the one shared named slice type
-	// (`^GoSlice_int`, `^GoSlice_string`, ...) generated per distinct
-	// non-byte "?[]T" element type actually used in the program
-	// (goTypeToken's own doc comment) — keyed by the bare element type
-	// name ("int", "string", ...), so every "?[]int" hint anywhere in
-	// the program shares the same SLTYPE declaration, same spirit as
-	// goBytesTypeEmitted above.
-	goSliceTypeNames map[string]string
-
-	// topLevelDecls collects IR lines that must sit outside any FUNC —
-	// the SLTYPE lines below. Emitted by Generate() before FUNC
-	// !weave_main, since funcGen.body/decls are both scoped inside one
-	// FUNC/CLOS and have nowhere to put a package-level declaration.
-	topLevelDecls []string
-}
-
-// goBytesType returns the `^GoBytes` type token backing every "?[]byte"
-// type hint (goTypeToken's own doc comment has the full reasoning for
-// why a named SLTYPE is needed at all), emitting its one shared SLTYPE
-// declaration into topLevelDecls the first time it's needed.
-func (ctx *codegenCtx) goBytesType() string {
-	if !ctx.goBytesTypeEmitted {
-		ctx.topLevelDecls = append(ctx.topLevelDecls, "SLTYPE\t^GoBytes\t^byte\n")
-		ctx.goBytesTypeEmitted = true
-	}
-	return "^GoBytes"
-}
-
-// goSliceType returns the `^GoSlice_<elem>` type token backing a
-// "?[]<elem>" type hint for any supported element type other than
-// byte/uint8 (goBytesType's own separate, older path) — see
-// goTypeToken's own doc comment for the full reasoning. elem must
-// already be a valid bare Go type name (int, string, ...) — checked by
-// the caller against sliceElemGoFuncSuffix before this is ever reached.
-func (ctx *codegenCtx) goSliceType(elem string) string {
-	if tok, ok := ctx.goSliceTypeNames[elem]; ok {
-		return tok
-	}
-	name := "^GoSlice_" + elem
-	ctx.topLevelDecls = append(ctx.topLevelDecls, fmt.Sprintf("SLTYPE\t%s\t^%s\n", name, elem))
-	if ctx.goSliceTypeNames == nil {
-		ctx.goSliceTypeNames = map[string]string{}
-	}
-	ctx.goSliceTypeNames[elem] = name
-	return name
 }
 
 // funcGen accumulates one AMIVM FUNC or CLOS body's VAR declarations
@@ -177,7 +120,7 @@ type funcGen struct {
 	body       strings.Builder
 	tempCount  int
 
-	// goStaticVars/goListShapes mirror sema's own tracking (internal/sema/
+	// goStaticVars/goListProto mirror sema's own tracking (internal/sema/
 	// goasset.go's trackGoAssetResult) — kept per-funcGen, not on
 	// codegenCtx, since they track ordinary variable identities that
 	// don't cross function boundaries (unlike goTypes/goFuncs, true
@@ -185,7 +128,7 @@ type funcGen struct {
 	// scope's static Go-typing knowledge (a narrow, pre-existing
 	// limitation, unchanged here).
 	goStaticVars map[string]string
-	goListShapes map[string][]string
+	goListProto  map[string]string
 }
 
 func newFuncGen(ctx *codegenCtx) *funcGen {
@@ -240,23 +183,6 @@ func (fg *funcGen) newTemp(irType string) string {
 	return "%" + fg.declare(name, irType)
 }
 
-// newUndeclaredTemp mints a fresh temp name from the same counter
-// newTemp uses (so the two never collide), but — unlike newTemp — never
-// hoists a VAR declaration for it. METHOD (amivm_spec.md §4.21's
-// "メソッド値の取得") is the one instruction that requires this: its own
-// target must be a genuinely fresh `%xxx` token that was never VAR'd,
-// since METHOD performs its own `local := variable.method` declaration,
-// inferring the type directly from the real method's actual signature
-// (see internal/codegen/goasset.go's genNativeGoMethodCall for why this
-// matters — a pre-declared VAR of any named stand-in type, the way
-// every other typed value on this path works, would make the := no
-// longer possible and break entirely).
-func (fg *funcGen) newUndeclaredTemp() string {
-	name := fmt.Sprintf("__t%d", fg.tempCount)
-	fg.tempCount++
-	return "%" + fg.namePrefix + name
-}
-
 // Generate lowers a checked *ast.File into AMIVM-IR text.
 //
 // main's own parameter (weave_spec.md §12's command-line-arguments list,
@@ -283,12 +209,6 @@ func Generate(file *ast.File) (string, error) {
 	}
 
 	var b strings.Builder
-	// The shared SLTYPE declarations for "?[]byte"-style slice hints
-	// (codegenCtx.goBytesType) must sit outside any FUNC — emit them
-	// first.
-	for _, d := range ctx.topLevelDecls {
-		b.WriteString(d)
-	}
 	// Every closure literal compiled while generating weave_main is now
 	// an inline, nested CLOS block already sitting inside fg.body (see
 	// genFuncLit) — nothing to emit separately here.
@@ -478,9 +398,6 @@ func genAssignStmt(fg *funcGen, s *ast.AssignStmt) error {
 		if handled, err := genGoDecl(fg, s.Name, call); handled {
 			return err
 		}
-		if handled, err := genShapeDecl(fg, s.Name, call); handled {
-			return err
-		}
 	}
 	tok, bound := fg.resolve(s.Name)
 	if !bound {
@@ -515,9 +432,6 @@ func genExprStmt(fg *funcGen, s *ast.ExprStmt) error {
 // (genBuiltinCall) and a general call to a Weave function value
 // (genGeneralCall) — see builtinNames.
 func genCallExpr(fg *funcGen, call *ast.CallExpr) (string, error) {
-	if callee, ok := call.Callee.(*ast.Ident); ok && callee.Name == "checkShape" {
-		return genCheckShapeCall(fg, call)
-	}
 	if callee, ok := call.Callee.(*ast.Ident); ok && builtinNames[callee.Name] {
 		return genBuiltinCall(fg, callee.Name, call)
 	}
@@ -653,17 +567,17 @@ func genGeneralCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 	// Every Weave function takes exactly one argument (weave_spec.md
 	// §5), so `f()` desugars to `f(nil)` here — deliberately at this
 	// exact point, not in the parser: by now every reserved/builtin name
-	// (gotype/gofunc/gomethod/goReturns/goParams/shape/checkShape/
-	// package, and every genBuiltinCall-dispatched name like list/print)
-	// has already had first claim on this call's own Args shape and
-	// returned before reaching here, and the two branches above
-	// (method-call sugar, direct gofunc calls) have also already ruled
-	// themselves out — so nothing else's own "zero arguments" meaning
-	// (goParams()'s "no parameters", list()'s "empty list", ...) can
-	// ever be corrupted by this substitution. What's left is genuinely
-	// always "an ordinary Weave function *value*, called with no
-	// explicit argument" — parser.go's own parseCallArgs doc comment has
-	// the full reasoning for why the desugar lives here and not there.
+	// (gotype/gofunc/gomethod/govar/package, and every
+	// genBuiltinCall-dispatched name like list/print) has already had
+	// first claim on this call's own Args shape and returned before
+	// reaching here, and the two branches above (method-call sugar,
+	// direct gofunc calls) have also already ruled themselves out — so
+	// nothing else's own "zero arguments" meaning (list()'s "empty
+	// list", ...) can ever be corrupted by this substitution. What's
+	// left is genuinely always "an ordinary Weave function *value*,
+	// called with no explicit argument" — parser.go's own parseCallArgs
+	// doc comment has the full reasoning for why the desugar lives here
+	// and not there.
 	args := call.Args
 	if len(args) == 0 {
 		args = []ast.Expr{&ast.NilLit{Line: call.Line}}

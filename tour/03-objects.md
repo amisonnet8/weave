@@ -75,27 +75,10 @@ greet = greeter.greet   // ただのプロパティ読み取り(糖衣構文の�
 print(greet("weave"))    // selfを自分で渡す必要が無い(greetはselfを取らない関数だから)
 ```
 
-## 型ヒント(任意)——`shape`/`checkShape`(`weave_spec.md` §4.3)
-
-オブジェクトが期待通りのプロパティを持っているかを、任意のタイミングで検証できます。Pythonの型ヒントと同じ位置づけで、実行速度のためではなく安全性・保守性のための機能です。
-
-```weave
-main = fn(args) {
-	PointShape = shape({ x: "number", y: "number" })
-
-	origin = { x: 0, y: 0 }
-	checkShape(PointShape, origin)   // 一致すれば何も起きない
-	print("origin matches PointShape")
-	return 0
-}
-```
-
-`"種類"`に書けるのは`"number"`/`"string"`/`"bool"`/`"object"`/`"function"`の5つです。不一致があれば`checkShape`を呼んだ場所で即座に停止し、どのプロパティで・何を期待して・実際は何だったかが分かるエラーになります。
-
 ## 演習
 
 1. `{ __proto__: 親, ... }`を使って、`animal`(`describe: fn(self) { return "a " + self.kind }`を持つ)を継承した`dog`(`kind: "dog"`)を作り、`dog.describe()`を呼んで`"a dog"`と表示してください。
-2. `{ width: "number", height: "number" }`という形を検証する`shape`を作り、`{ width: 10, height: 20 }`というオブジェクトに対して`checkShape`を呼んでください。次に、`height`が文字列になっている壊れたオブジェクトを渡すとどんなエラーになるか確かめてください。
+2. `greet: fn(name) { return "hello, " + name }`を持つ`greeter`オブジェクトを作り、`greeter.greet`をいったん変数`greet`に代入してから`greet("weave")`を呼んでください(`.method(...)`という直接呼び出しの形を経由しないため、`self`は自動的には渡りません)。
 
 <details>
 <summary>解答例</summary>
@@ -111,19 +94,12 @@ main = fn(args) {
 
 ```weave
 main = fn(args) {
-	RectShape = shape({ width: "number", height: "number" })
-
-	ok = { width: 10, height: 20 }
-	checkShape(RectShape, ok)
-	print("ok matches RectShape")
-
-	broken = { width: 10, height: "20" }
-	checkShape(RectShape, broken)   // 実行時エラー: heightがnumberでない
+	greeter = { greet: fn(name) { return "hello, " + name } }
+	greet = greeter.greet
+	print(greet("weave"))   // "hello, weave"
 	return 0
 }
 ```
-
-2問目は`checkShape(RectShape, broken)`の行でプログラムが停止します——`weave: property "height" of shape RectShape: expected ^float64, got string`のような、どのプロパティが・何を期待して・実際は何だったかが分かるメッセージになります。
 
 </details>
 

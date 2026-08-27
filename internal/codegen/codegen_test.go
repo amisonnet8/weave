@@ -966,33 +966,17 @@ func TestGenerate_GoTypeDeclEmitsNoIR(t *testing.T) {
 	}
 }
 
-// goReturnsExpr builds `goReturns(item1, item2, ...)` (weave_spec.md
-// §15.4) — mirrors internal/sema's own test helper of the same name
-// (kept independently, per this project's "sema/codegen tests never
-// share fixtures" convention, same as the production code itself).
-func goReturnsExpr(items ...ast.Expr) ast.Expr {
-	return &ast.CallExpr{Callee: &ast.Ident{Name: "goReturns"}, Args: items}
-}
-
-// goParamsExpr builds `goParams("?T1", "?T2", ...)` (weave_spec.md §15.4).
-func goParamsExpr(types ...string) ast.Expr {
-	args := make([]ast.Expr, len(types))
-	for i, t := range types {
-		args[i] = &ast.StringLit{Value: t}
-	}
-	return &ast.CallExpr{Callee: &ast.Ident{Name: "goParams"}, Args: args}
-}
-
 // atExpr builds `at(list, index)`.
 func atExpr(list ast.Expr, index float64) *ast.CallExpr {
 	return &ast.CallExpr{Callee: &ast.Ident{Name: "at"}, Args: []ast.Expr{list, &ast.NumberLit{Value: index}}}
 }
 
-// goReaderDeclStmts declares an entirely untyped GoReader/newReader pair
-// (no goReturns/goParams anywhere) — every call through these always
-// returns a Weave list via reflection (weave_spec.md §15.2), and `r`
-// itself is never statically Go-typed (proto-binding is only available
-// through a typed goReturns(...) position — weave_spec.md §15.4).
+// goReaderDeclStmts declares an entirely unbound GoReader/newReader pair
+// (gofunc with no second/proto argument) — every call through these
+// always returns a Weave list via reflection (weave_spec.md §15.2), and
+// `r` itself is never statically Go-typed (proto-binding requires the
+// gofunc(...)/gomethod(...) declaration's own optional second argument —
+// weave_spec.md §15.1/§15.2 — contrast protoGoReaderDeclStmts below).
 func goReaderDeclStmts() []ast.Stmt {
 	return []ast.Stmt{
 		&ast.AssignStmt{Name: "GoReader", Value: &ast.CallExpr{
@@ -1036,15 +1020,14 @@ func TestGenerate_GoFuncCallAlwaysBuildsListViaReflect(t *testing.T) {
 	}
 }
 
-// protoGoReaderDeclStmts declares a gotype with an UNTYPED `len` method
-// (gomethod("Len"), no goReturns/goParams) but a TYPED newReader gofunc
-// (goReturns(GoReader) — proto-binding only lives on the typed path
-// now, weave_spec.md §15.4), then extracts the returned list's sole
-// element into `r` via at(...). This is the "method name resolved
-// statically, but the method's own Go call still reflects" tier —
-// distinct from goReaderDeclStmts (nothing static at all) and
-// typedGoReaderDeclStmts below (the method itself is also fully
-// native).
+// protoGoReaderDeclStmts declares a gotype with an untyped `len` method
+// (gomethod("Len"), no proto of its own) but a proto-bound newReader
+// gofunc (gofunc(name, GoReader) — weave_spec.md §15.2's optional second
+// argument), then extracts the returned list's position 0 into `r` via
+// at(...). The method name is resolved statically (genGoMethodCall), but
+// the Go call itself still always dispatches via reflection
+// (weavert.CallGoMethodList) — there is no separate "fully native" tier
+// any more (weave_spec.md §15.4's type hints were removed).
 func protoGoReaderDeclStmts() []ast.Stmt {
 	return []ast.Stmt{
 		&ast.AssignStmt{Name: "GoReader", Value: &ast.CallExpr{
@@ -1063,8 +1046,7 @@ func protoGoReaderDeclStmts() []ast.Stmt {
 			Callee: &ast.Ident{Name: "gofunc"},
 			Args: []ast.Expr{
 				&ast.StringLit{Value: "?strings.NewReader"},
-				goReturnsExpr(&ast.Ident{Name: "GoReader"}),
-				goParamsExpr("?string"),
+				&ast.Ident{Name: "GoReader"},
 			},
 		}},
 		&ast.AssignStmt{Name: "result", Value: &ast.CallExpr{
@@ -1093,270 +1075,36 @@ func TestGenerate_StaticGoMethodCallBypassesWeavertObjGet(t *testing.T) {
 	}
 }
 
-// typedGoReaderDeclStmts mirrors protoGoReaderDeclStmts but additionally
-// declares Len's own signature (return type only, no params) — the
-// shape that turns the method call itself into fully native
-// ASSERT/FNTYPE/FGET/CALL dispatch (weave_spec.md §15.1/§15.4, see
-// genNativeGoMethodCall/genGoFuncCall's own doc comments).
-func typedGoReaderDeclStmts() []ast.Stmt {
-	return []ast.Stmt{
-		&ast.AssignStmt{Name: "GoReader", Value: &ast.CallExpr{
+func TestGenerate_GoMethodProtoBindingRoutesChainedCallThroughCallGoMethodList(t *testing.T) {
+	// gomethod(...) itself can be proto-bound too (not just gofunc) —
+	// mirrors sema's TestCheck_GoMethodProtoBindingPropagatesThroughChainedCall.
+	// obj.first() returns a list whose position 0 is bound to a second
+	// gotype; extracting that (at(..., 0), assigned to its own variable
+	// first) must let a further `.Method()` call resolve the method name
+	// statically too, dispatching through CallGoMethodList rather than
+	// ObjGet.
+	body := append(protoGoReaderDeclStmts(),
+		&ast.AssignStmt{Name: "GoOuter", Value: &ast.CallExpr{
 			Callee: &ast.Ident{Name: "gotype"},
 			Args: []ast.Expr{
-				&ast.StringLit{Value: "?*strings.Reader"},
+				&ast.StringLit{Value: "?pkg.Outer"},
 				&ast.ObjectLit{Fields: []ast.ObjectField{
-					{Name: "len", Value: &ast.CallExpr{
+					{Name: "inner", Value: &ast.CallExpr{
 						Callee: &ast.Ident{Name: "gomethod"},
-						Args:   []ast.Expr{&ast.StringLit{Value: "Len"}, goReturnsExpr(&ast.StringLit{Value: "?int"}), goParamsExpr()},
+						Args:   []ast.Expr{&ast.StringLit{Value: "Inner"}, &ast.Ident{Name: "GoReader"}},
 					}},
 				}},
 			},
 		}},
-		&ast.AssignStmt{Name: "newReader", Value: &ast.CallExpr{
+		&ast.AssignStmt{Name: "outer", Value: &ast.CallExpr{
 			Callee: &ast.Ident{Name: "gofunc"},
-			Args: []ast.Expr{
-				&ast.StringLit{Value: "?strings.NewReader"},
-				goReturnsExpr(&ast.Ident{Name: "GoReader"}),
-				goParamsExpr("?string"),
-			},
+			Args:   []ast.Expr{&ast.StringLit{Value: "?pkg.NewOuter"}, &ast.Ident{Name: "GoOuter"}},
 		}},
-		&ast.AssignStmt{Name: "result", Value: &ast.CallExpr{
-			Callee: &ast.Ident{Name: "newReader"},
-			Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
-		}},
-		&ast.AssignStmt{Name: "r", Value: atExpr(&ast.Ident{Name: "result"}, 0)},
-	}
-}
-
-func TestGenerate_TypedGoFuncCallIsFullyNative(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: append(typedGoReaderDeclStmts(), &ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}}),
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if strings.Contains(ir, "?weavert.CallGoFuncList") {
-		t.Errorf("a typed gofunc(...) call must not go through weavert.CallGoFuncList, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "ASSERT\t") {
-		t.Errorf("expected the argument to be ASSERTed to its declared type, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "CALL\t") || !strings.Contains(ir, "\t?strings.NewReader\t") {
-		t.Errorf("expected a direct native CALL to ?strings.NewReader, got:\n%s", ir)
-	}
-	// The single raw result is boxed into a one-element Weave list
-	// (genBoxList) — weave_spec.md §15.2's "always a list" rule applies
-	// to the typed/native path too, not just the reflect path.
-	if !strings.Contains(ir, "?weavert.NewObject\n") || !strings.Contains(ir, "?weavert.ObjSet\t") {
-		t.Errorf("expected the native result to be boxed into a Weave list via NewObject+ObjSet, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_TypedGoFuncCallByteSliceReturnConvertsToString(t *testing.T) {
-	// os.ReadFile(name string) ([]byte, error) declared with a "?[]byte"
-	// return hint (weave_spec.md §15.4) — the native path can't use a
-	// literal `^[]byte` type operand at all (amivm rejects it), so this
-	// routes through the one shared `SLTYPE ^GoBytes ^byte` declaration
-	// (goTypeToken) and converts the raw result to a Weave string via a
-	// native `?string` CALL (nativeReturnConversion), mirroring
-	// weavert.NormalizeGoValue's identical choice on the untyped path.
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "readFile", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gofunc"},
-				Args: []ast.Expr{
-					&ast.StringLit{Value: "?os.ReadFile"},
-					goReturnsExpr(&ast.StringLit{Value: "?[]byte"}, &ast.StringLit{Value: "?error"}),
-					goParamsExpr("?string"),
-				},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "readFile"}, Args: []ast.Expr{&ast.StringLit{Value: "f.txt"}}}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if !strings.Contains(ir, "SLTYPE\t^GoBytes\t^byte\n") {
-		t.Errorf("expected a top-level SLTYPE declaring GoBytes, got:\n%s", ir)
-	}
-	if strings.Index(ir, "SLTYPE\t") > strings.Index(ir, "FUNC\t!weave_main") {
-		t.Errorf("expected SLTYPE to precede FUNC !weave_main, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "\tGoBytes\t") && !strings.Contains(ir, "\t?os.ReadFile\t") {
-		t.Errorf("expected the native CALL to ?os.ReadFile to target a ^GoBytes temp, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?string\t") {
-		t.Errorf("expected a native ?string conversion of the raw []byte result, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_TypedGoFuncCallByteSliceParamConvertsFromString(t *testing.T) {
-	// bytes.NewReader(b []byte) *bytes.Reader declared with a "?[]byte"
-	// parameter hint — the reverse direction of the return-side test
-	// above: ASSERT the incoming Weave value as the ^string it actually
-	// is, then a native ?GoBytes conversion (genAssertByteSliceParam)
-	// produces the []byte-shaped argument the real Go call needs.
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "GoBytesReader", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gotype"},
-				Args:   []ast.Expr{&ast.StringLit{Value: "?*bytes.Reader"}, &ast.ObjectLit{}},
-			}},
-			&ast.AssignStmt{Name: "newReader", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gofunc"},
-				Args: []ast.Expr{
-					&ast.StringLit{Value: "?bytes.NewReader"},
-					goReturnsExpr(&ast.Ident{Name: "GoBytesReader"}),
-					goParamsExpr("?[]byte"),
-				},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "newReader"}, Args: []ast.Expr{&ast.StringLit{Value: "hi"}}}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if !strings.Contains(ir, "SLTYPE\t^GoBytes\t^byte\n") {
-		t.Errorf("expected a top-level SLTYPE declaring GoBytes, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "ASSERT\t") || !strings.Contains(ir, "^string\n") {
-		t.Errorf("expected the argument to first be ASSERTed as ^string, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?GoBytes\t") {
-		t.Errorf("expected a native ?GoBytes conversion before the call, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "\t?bytes.NewReader\t") {
-		t.Errorf("expected a native CALL to ?bytes.NewReader, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_TypedGoFuncCallGeneralSliceReturnConvertsToList(t *testing.T) {
-	// strings.Fields(s string) []string declared with a "?[]string"
-	// return hint (weave_spec.md §15.4) — routes through the one shared
-	// `SLTYPE ^GoSlice_string ^string` declaration (goTypeToken) and
-	// converts the raw result to a Weave list via a native CALL to
-	// weavert.StringsToList (genNativeReturnValue), unlike "?[]byte"'s
-	// own single-cast conversion — see slices.go's own doc comment for
-	// why a compile-time-dispatched conversion function (not a runtime
-	// type switch) is required here.
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "fields", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gofunc"},
-				Args: []ast.Expr{
-					&ast.StringLit{Value: "?strings.Fields"},
-					goReturnsExpr(&ast.StringLit{Value: "?[]string"}),
-					goParamsExpr("?string"),
-				},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "fields"}, Args: []ast.Expr{&ast.StringLit{Value: "a b"}}}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if !strings.Contains(ir, "SLTYPE\t^GoSlice_string\t^string\n") {
-		t.Errorf("expected a top-level SLTYPE declaring GoSlice_string, got:\n%s", ir)
-	}
-	if strings.Index(ir, "SLTYPE\t") > strings.Index(ir, "FUNC\t!weave_main") {
-		t.Errorf("expected SLTYPE to precede FUNC !weave_main, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "\t?strings.Fields\t") {
-		t.Errorf("expected a native CALL to ?strings.Fields, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?weavert.StringsToList\t") {
-		t.Errorf("expected a native CALL to ?weavert.StringsToList converting the raw []string result, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_TypedGoFuncCallGeneralSliceParamConvertsFromList(t *testing.T) {
-	// sort.Ints(x []int) declared with a "?[]int" parameter hint — the
-	// reverse direction: a native CALL to weavert.ListToInts converts the
-	// Weave list argument into a real []int before the native call.
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "sortInts", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gofunc"},
-				Args: []ast.Expr{
-					&ast.StringLit{Value: "?sort.Ints"},
-					goReturnsExpr(),
-					goParamsExpr("?[]int"),
-				},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "sortInts"}, Args: []ast.Expr{&ast.Ident{Name: "nums"}}}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if !strings.Contains(ir, "SLTYPE\t^GoSlice_int\t^int\n") {
-		t.Errorf("expected a top-level SLTYPE declaring GoSlice_int, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?weavert.ListToInts\t") {
-		t.Errorf("expected a native CALL to ?weavert.ListToInts converting the Weave list argument, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "\t?sort.Ints\t") {
-		t.Errorf("expected a native CALL to ?sort.Ints, got:\n%s", ir)
-	}
-}
-
-// TestGenerate_TypedGoFuncCallNumericParamAssertsFloat64ThenCasts covers
-// genAssertNumericParam: a numeric parameter hint ("?int" here) can't be
-// ASSERTed directly (the Weave value is always a float64 underneath,
-// weave_spec.md §2), so the value must first be ASSERTed to ^float64,
-// then native-cast to the declared type via `?int` — mirroring
-// nativeReturnConversion's own return-side conversion in reverse.
-func TestGenerate_TypedGoFuncCallNumericParamAssertsFloat64ThenCasts(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "repeat", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gofunc"},
-				Args: []ast.Expr{
-					&ast.StringLit{Value: "?strings.Repeat"},
-					goReturnsExpr(&ast.StringLit{Value: "?string"}),
-					goParamsExpr("?string", "?int"),
-				},
-			}},
-			&ast.ExprStmt{X: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "repeat"},
-				Args:   []ast.Expr{&ast.StringLit{Value: "ab"}, &ast.NumberLit{Value: 3}},
-			}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if !strings.Contains(ir, "ASSERT\t") || !strings.Contains(ir, "^float64\n") {
-		t.Errorf("expected the count argument to be ASSERTed to ^float64 first, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "\t?int\t") {
-		t.Errorf("expected a native CALL casting the asserted float64 to ?int, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "\t?strings.Repeat\t") {
-		t.Errorf("expected a native CALL to ?strings.Repeat, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_TypedGoMethodCallIsFullyNative(t *testing.T) {
-	body := append(typedGoReaderDeclStmts(),
-		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
+		&ast.AssignStmt{Name: "outerResult", Value: &ast.CallExpr{Callee: &ast.Ident{Name: "outer"}}},
+		&ast.AssignStmt{Name: "o", Value: atExpr(&ast.Ident{Name: "outerResult"}, 0)},
+		&ast.AssignStmt{Name: "innerResult", Value: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "o"}, Prop: "inner"}}},
+		&ast.AssignStmt{Name: "inner", Value: atExpr(&ast.Ident{Name: "innerResult"}, 0)},
+		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "inner"}, Prop: "len"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
 	)
 	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
@@ -1364,227 +1112,21 @@ func TestGenerate_TypedGoMethodCallIsFullyNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if strings.Contains(ir, "?weavert.CallGoMethodList") {
-		t.Errorf("a typed gomethod(...) call must not go through weavert.CallGoMethodList, got:\n%s", ir)
+	if !strings.Contains(ir, "?weavert.CallGoMethodList\t%inner\t\"Len\"\n") {
+		t.Errorf("expected the chained call's method name to resolve statically too, got:\n%s", ir)
 	}
-	if !strings.Contains(ir, "ASSERT\t") || !strings.Contains(ir, "^*strings.Reader\n") {
-		t.Errorf("expected the receiver to be ASSERTed to ^*strings.Reader, got:\n%s", ir)
-	}
-	// METHOD (amivm_spec.md §4.21) replaced FNTYPE+FGET for method-value
-	// extraction — see genNativeGoMethodCall's own doc comment for why:
-	// its target is a fresh, never-VAR'd %-token (`local := recv.<Len`).
-	if !strings.Contains(ir, "METHOD\t") || !strings.Contains(ir, "\t<Len\n") {
-		t.Errorf("expected a native METHOD extracting the Len method value, got:\n%s", ir)
-	}
-	if strings.Contains(ir, "FNTYPE\t") || strings.Contains(ir, "FGET\t") {
-		t.Errorf("expected no FNTYPE/FGET at all (METHOD replaced both), got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?float64\t") {
-		t.Errorf("expected the int result to be cast to float64 before boxing into ^any, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?weavert.NewObject\n") || !strings.Contains(ir, "?weavert.ObjSet\t") {
-		t.Errorf("expected the native result to be boxed into a Weave list via NewObject+ObjSet, got:\n%s", ir)
-	}
-}
-
-// TestGenerate_TypedGoMethodCallWithSliceReturnUsesMethodNotFget is the
-// combination that motivated introducing amivm's METHOD instruction in
-// the first place: a typed gomethod(...) whose own return position is a
-// general (non-byte) slice hint. The old FNTYPE+FGET design could never
-// support this — FGET's `single1 = variable.field` requires Go function
-// *type identity* between the FNTYPE-declared signature and the real
-// method's actual signature, which a named SLTYPE stand-in like
-// `^GoSlice_string` never has with the real unnamed `[]string` (see
-// genNativeGoMethodCall's own doc comment) — confirmed broken by direct
-// probe before METHOD existed, and confirmed fixed by direct probe
-// (including a real amivm run) after.
-func TestGenerate_TypedGoMethodCallWithSliceReturnUsesMethodNotFget(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "GoRegexp", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gotype"},
-				Args: []ast.Expr{
-					&ast.StringLit{Value: "?*regexp.Regexp"},
-					&ast.ObjectLit{Fields: []ast.ObjectField{
-						{Name: "subexpNames", Value: &ast.CallExpr{
-							Callee: &ast.Ident{Name: "gomethod"},
-							Args: []ast.Expr{
-								&ast.StringLit{Value: "SubexpNames"},
-								goReturnsExpr(&ast.StringLit{Value: "?[]string"}),
-								goParamsExpr(),
-							},
-						}},
-					}},
-				},
-			}},
-			&ast.AssignStmt{Name: "compile", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "gofunc"},
-				Args: []ast.Expr{
-					&ast.StringLit{Value: "?regexp.Compile"},
-					goReturnsExpr(&ast.Ident{Name: "GoRegexp"}),
-					goParamsExpr("?string"),
-				},
-			}},
-			&ast.AssignStmt{Name: "result", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "compile"},
-				Args:   []ast.Expr{&ast.StringLit{Value: "a"}},
-			}},
-			&ast.AssignStmt{Name: "re", Value: atExpr(&ast.Ident{Name: "result"}, 0)},
-			&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "re"}, Prop: "subexpNames"}}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if !strings.Contains(ir, "SLTYPE\t^GoSlice_string\t^string\n") {
-		t.Errorf("expected a top-level SLTYPE declaring GoSlice_string, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "METHOD\t") || !strings.Contains(ir, "\t<SubexpNames\n") {
-		t.Errorf("expected a native METHOD extracting the SubexpNames method value, got:\n%s", ir)
-	}
-	if strings.Contains(ir, "FNTYPE\t") || strings.Contains(ir, "FGET\t") {
-		t.Errorf("expected no FNTYPE/FGET at all, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?weavert.StringsToList\t") {
-		t.Errorf("expected a native CALL to ?weavert.StringsToList converting the raw []string result, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_TypedGoMethodCallWithMultipleReturnsBuildsMultiElementList(t *testing.T) {
-	// (*strings.Reader).ReadByte() (byte, error) declared via
-	// gomethod("ReadByte", goReturns("?byte", "?error"), goParams()) —
-	// dispatched as a genuine 2-target native CALL, boxed into a
-	// 2-element list (index "0" the byte, index "1" the error) — no
-	// automatic error-checking baked in any more (weave_spec.md §15.4:
-	// that's now the caller's job via raiseIfError(at(result, 1))).
-	body := []ast.Stmt{
-		&ast.AssignStmt{Name: "GoReader", Value: &ast.CallExpr{
-			Callee: &ast.Ident{Name: "gotype"},
-			Args: []ast.Expr{
-				&ast.StringLit{Value: "?*strings.Reader"},
-				&ast.ObjectLit{Fields: []ast.ObjectField{
-					{Name: "readByte", Value: &ast.CallExpr{
-						Callee: &ast.Ident{Name: "gomethod"},
-						Args: []ast.Expr{
-							&ast.StringLit{Value: "ReadByte"},
-							goReturnsExpr(&ast.StringLit{Value: "?byte"}, &ast.StringLit{Value: "?error"}),
-							goParamsExpr(),
-						},
-					}},
-				}},
-			},
-		}},
-		&ast.AssignStmt{Name: "newReader", Value: &ast.CallExpr{
-			Callee: &ast.Ident{Name: "gofunc"},
-			Args: []ast.Expr{
-				&ast.StringLit{Value: "?strings.NewReader"},
-				goReturnsExpr(&ast.Ident{Name: "GoReader"}),
-				goParamsExpr("?string"),
-			},
-		}},
-		&ast.AssignStmt{Name: "result", Value: &ast.CallExpr{
-			Callee: &ast.Ident{Name: "newReader"},
-			Args:   []ast.Expr{&ast.StringLit{Value: "hi"}},
-		}},
-		&ast.AssignStmt{Name: "r", Value: atExpr(&ast.Ident{Name: "result"}, 0)},
-		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "readByte"}}},
-		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-	}
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if strings.Contains(ir, "?weavert.CallGoMethodList") {
-		t.Errorf("a typed gomethod(...) call must not go through weavert.CallGoMethodList, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "METHOD\t") || !strings.Contains(ir, "\t<ReadByte\n") {
-		t.Errorf("expected a native METHOD extracting the ReadByte method value, got:\n%s", ir)
-	}
-	if strings.Contains(ir, "FNTYPE\t") || strings.Contains(ir, "FGET\t") {
-		t.Errorf("expected no FNTYPE/FGET at all (METHOD replaced both), got:\n%s", ir)
-	}
-	if strings.Count(ir, "?weavert.ObjSet\t") < 3 {
-		// One ObjSet for the `result` list (position 0, the *strings.Reader
-		// itself) plus two more for readByte's own 2-element list.
-		t.Errorf("expected at least 3 ObjSet calls (1 for newReader's list, 2 for readByte's), got:\n%s", ir)
-	}
-	if strings.Contains(ir, "\tNEQ\t") || strings.Contains(ir, "?weavert.GoError") {
-		t.Errorf("a typed call must not auto-check the error position any more — that's raiseIfError's job now, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_TypedGoFuncCallWithMultipleReturnsBuildsMultiElementList(t *testing.T) {
-	// strconv.Atoi(s string) (int, error) declared via gofunc(...,
-	// goReturns("?int", "?error"), goParams("?string")).
-	body := []ast.Stmt{
-		&ast.AssignStmt{Name: "atoi", Value: &ast.CallExpr{
-			Callee: &ast.Ident{Name: "gofunc"},
-			Args: []ast.Expr{
-				&ast.StringLit{Value: "?strconv.Atoi"},
-				goReturnsExpr(&ast.StringLit{Value: "?int"}, &ast.StringLit{Value: "?error"}),
-				goParamsExpr("?string"),
-			},
-		}},
-		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "atoi"}, Args: []ast.Expr{&ast.StringLit{Value: "42"}}}},
-		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-	}
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if strings.Contains(ir, "?weavert.CallGoFuncList") {
-		t.Errorf("a typed gofunc(...) call must not go through weavert.CallGoFuncList, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "\t:\t?strconv.Atoi\t") {
-		t.Errorf("expected a direct 2-target native CALL to ?strconv.Atoi, got:\n%s", ir)
-	}
-	if strings.Count(ir, "?weavert.ObjSet\t") != 2 {
-		t.Errorf("expected exactly 2 ObjSet calls building atoi's 2-element result list, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_TypedNiladicReturnBuildsEmptyList(t *testing.T) {
-	// A Go function declared with goReturns() (no return values at all)
-	// must still compile to a valid native CALL — no target operands
-	// before the `:` — and box into an empty Weave list (NewObject, no
-	// ObjSet at all).
-	body := []ast.Stmt{
-		&ast.AssignStmt{Name: "reset", Value: &ast.CallExpr{
-			Callee: &ast.Ident{Name: "gofunc"},
-			Args: []ast.Expr{
-				&ast.StringLit{Value: "?somepkg.Reset"},
-				goReturnsExpr(),
-				goParamsExpr(),
-			},
-		}},
-		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.Ident{Name: "reset"}}},
-		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-	}
-	file := &ast.File{Main: &ast.FuncDecl{Name: "main", Param: "args", Body: body}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if !strings.Contains(ir, "\tCALL\t:\t?somepkg.Reset\n") {
-		t.Errorf("expected a 0-target native CALL (no leading operand before ':'), got:\n%s", ir)
-	}
-	if strings.Contains(ir, "?weavert.ObjSet\t") {
-		t.Errorf("a 0-return-value call must build an empty list (no ObjSet at all), got:\n%s", ir)
+	if strings.Contains(ir, "?weavert.ObjGet\t%inner") {
+		t.Errorf("a static Go method call must not go through weavert.ObjGet, got:\n%s", ir)
 	}
 }
 
 func TestGenerate_UntypedGoMethodCallStillUsesReflectFallback(t *testing.T) {
-	// A bare gomethod("Name") (no signature) reached through an
-	// otherwise-untyped gofunc (no static Go typing anywhere) must keep
-	// using ordinary dynamic dispatch — see
-	// TestGenerate_OrdinaryObjectMethodStillUsesDynamicDispatch for the
-	// ObjGet assertion; this just confirms goReaderDeclStmts's `r` really
-	// isn't statically typed (contrast protoGoReaderDeclStmts above).
+	// A bare gomethod("Name") reached through an otherwise-unbound
+	// gofunc (no proto argument anywhere) must keep using ordinary
+	// dynamic dispatch — see TestGenerate_OrdinaryObjectMethodStillUsesDynamicDispatch
+	// for the ObjGet assertion; this just confirms goReaderDeclStmts's
+	// `r` really isn't statically typed (contrast protoGoReaderDeclStmts
+	// above).
 	body := append(goReaderDeclStmts(),
 		&ast.ExprStmt{X: &ast.CallExpr{Callee: &ast.PropExpr{Obj: &ast.Ident{Name: "r"}, Prop: "len"}}},
 		&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
@@ -1597,8 +1139,8 @@ func TestGenerate_UntypedGoMethodCallStillUsesReflectFallback(t *testing.T) {
 	if !strings.Contains(ir, "?weavert.ObjGet\t%r\t\"len\"\n") {
 		t.Errorf("expected ordinary dynamic dispatch via ObjGet (r is never statically Go-typed here), got:\n%s", ir)
 	}
-	if strings.Contains(ir, "FNTYPE\t") || strings.Contains(ir, "ASSERT\t") || strings.Contains(ir, "?weavert.CallGoMethodList") {
-		t.Errorf("an untyped, non-proto-bound gomethod call must not emit any FNTYPE/ASSERT/CallGoMethodList, got:\n%s", ir)
+	if strings.Contains(ir, "ASSERT\t") || strings.Contains(ir, "?weavert.CallGoMethodList") {
+		t.Errorf("an unbound gomethod call must not emit any ASSERT/CallGoMethodList, got:\n%s", ir)
 	}
 }
 
@@ -1726,64 +1268,5 @@ func TestGenerate_SelfRecursiveFuncLitReferencesOwnHoistedVar(t *testing.T) {
 	}
 	if !strings.Contains(ir, "SET\t%fact\t%__t0\n") {
 		t.Errorf("expected the closure value to still be assigned to %%fact after compiling it, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_ShapeDeclEmitsNoIR(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "PointShape", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "shape"},
-				Args: []ast.Expr{&ast.ObjectLit{Fields: []ast.ObjectField{
-					{Name: "x", Value: &ast.StringLit{Value: "number"}},
-				}}},
-			}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if strings.Contains(ir, "PointShape") {
-		t.Errorf("shape(...) declaration must emit no IR referencing the Weave name itself, got:\n%s", ir)
-	}
-}
-
-func TestGenerate_CheckShapeUsesAssertForScalarFieldsAndIsWeaveFuncForFunctions(t *testing.T) {
-	file := &ast.File{Main: &ast.FuncDecl{
-		Name: "main", Param: "args",
-		Body: []ast.Stmt{
-			&ast.AssignStmt{Name: "S", Value: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "shape"},
-				Args: []ast.Expr{&ast.ObjectLit{Fields: []ast.ObjectField{
-					{Name: "x", Value: &ast.StringLit{Value: "number"}},
-					{Name: "cb", Value: &ast.StringLit{Value: "function"}},
-				}}},
-			}},
-			&ast.AssignStmt{Name: "p", Value: &ast.ObjectLit{}},
-			&ast.ExprStmt{X: &ast.CallExpr{
-				Callee: &ast.Ident{Name: "checkShape"},
-				Args:   []ast.Expr{&ast.Ident{Name: "S"}, &ast.Ident{Name: "p"}},
-			}},
-			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
-		},
-	}}
-	ir, err := Generate(file)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if !strings.Contains(ir, "?weavert.ObjGet\t%p\t\"cb\"\n") || !strings.Contains(ir, "?weavert.ObjGet\t%p\t\"x\"\n") {
-		t.Errorf("expected both fields to be read via ObjGet, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "ASSERT\t") || !strings.Contains(ir, "^float64\n") {
-		t.Errorf("expected the number field to be checked via a real ASSERT, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?weavert.IsWeaveFunc\t") {
-		t.Errorf("expected the function field to be checked via weavert.IsWeaveFunc, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "?weavert.TypeError\t") {
-		t.Errorf("expected a TypeError call on the failure path, got:\n%s", ir)
 	}
 }

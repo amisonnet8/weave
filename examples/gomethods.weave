@@ -2,17 +2,21 @@ main = fn(args) {
 	// weave_spec.md §15.2: every Go function/method call always returns
 	// a Weave list now, regardless of how many values the real Go call
 	// returns — at(list, i) reads one position back out.
+	//
+	// weave_spec.md §15.1/§15.2: gofunc(...)/gomethod(...) declarations
+	// are always reflect-dispatched now (weavert.CallGoFuncList/
+	// CallGoMethodList) — the only thing that can be declared ahead of
+	// time is, optionally, a second "proto" argument binding position 0
+	// of the returned list to an earlier gotype(...), so a later
+	// `.Method()` call on the extracted value still resolves at compile
+	// time (checkGoMethodCall) instead of falling back to dynamic
+	// prototype-chain search. len below has no proto of its own (its
+	// return value is just a plain number).
 	GoReader = gotype("?*strings.Reader", {
-		len: gomethod("Len", goReturns("?int"), goParams()),
-		// (*strings.Reader).ReadByte() (byte, error) — a typed gomethod
-		// declaring both return positions via goReturns(...), so the call
-		// below lowers to a fully native ASSERT+METHOD+2-target-CALL
-		// (internal/codegen/goasset.go's genNativeGoMethodCall), never
-		// reflect. Error-checking is no longer automatic (§15.4) — the
-		// caller extracts position 1 and decides via raiseIfError(...).
-		readByte: gomethod("ReadByte", goReturns("?byte", "?error"), goParams())
+		len: gomethod("Len"),
+		readByte: gomethod("ReadByte")
 	})
-	newReader = gofunc("?strings.NewReader", goReturns(GoReader), goParams("?string"))
+	newReader = gofunc("?strings.NewReader", GoReader)
 
 	result = newReader("hello, weave")
 	r = at(result, 0)
@@ -25,43 +29,16 @@ main = fn(args) {
 	raiseIfError(at(readByteResult, 1))
 	print(at(readByteResult, 0))
 
-	// bytes.NewReader(b []byte) *bytes.Reader — the parameter-side
-	// counterpart to goassets.weave's "?[]byte" return-hint example
-	// (weave_spec.md §15.4): a Weave string passed where the real Go
-	// call expects []byte is automatically converted via the same
-	// compiler-generated named slice type (SLTYPE ^GoBytes ^byte), fully
-	// natively (internal/codegen/goasset.go's genAssertByteSliceParam) —
-	// no reflect here either.
-	GoBytesReader = gotype("?*bytes.Reader", {
-		len: gomethod("Len", goReturns("?int"), goParams())
-	})
-	newBytesReader = gofunc("?bytes.NewReader", goReturns(GoBytesReader), goParams("?[]byte"))
+	// bytes.NewReader(b []byte) *bytes.Reader — CallGoFuncList's own
+	// reflect.Value.Convert already turns a Weave string into []byte for
+	// the real call (Go itself treats string<->[]byte as a defined
+	// conversion, and reflect.Convert follows the same rule) — no
+	// special declaration needed on the Weave side for this direction.
+	GoBytesReader = gotype("?*bytes.Reader", { len: gomethod("Len") })
+	newBytesReader = gofunc("?bytes.NewReader", GoBytesReader)
 	bytesResult = newBytesReader("raw bytes")
 	br = at(bytesResult, 0)
 	print(at(br.len(), 0))
-
-	// A general (non-byte) slice type hint on a *gomethod*'s own return
-	// position — weave_spec.md §15.4. This combination didn't work at
-	// all until amivm's own METHOD instruction was introduced
-	// specifically to enable it: the old FNTYPE+FGET design required an
-	// exact Go function-type match between the declared signature and
-	// the real method's actual one, which a named slice stand-in
-	// (SLTYPE ^GoSlice_string) could never have with the real method's
-	// unnamed `[]string` return type (see CLAUDE.md's own record of this
-	// discovery). (*regexp.Regexp).SubexpNames() []string returns the
-	// names of a pattern's capture groups — the unnamed one (the whole
-	// match itself) is always "".
-	GoRegexp = gotype("?*regexp.Regexp", {
-		subexpNames: gomethod("SubexpNames", goReturns("?[]string"), goParams())
-	})
-	compile = gofunc("?regexp.Compile", goReturns(GoRegexp, "?error"), goParams("?string"))
-	compileResult = compile("(?P<year>[0-9]+)-(?P<month>[0-9]+)")
-	raiseIfError(at(compileResult, 1))
-	re = at(compileResult, 0)
-	names = at(re.subexpNames(), 0)
-	print(len(names))
-	print(names[1])
-	print(names[2])
 
 	return at(r.len(), 0)
 }

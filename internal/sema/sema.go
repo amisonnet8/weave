@@ -130,16 +130,16 @@ type checker struct {
 	goTypes   map[string]*GoTypeInfo
 	goFuncs   map[string]*GoFuncInfo
 	goVars    map[string]*GoVarInfo // govar(...) declarations (goasset.go)
-	shapes    map[string]*ShapeInfo // shape.go's shape(...) declarations
 
-	// goStaticVars/goListShapes track static Go-asset typing —
+	// goStaticVars/goListProto track static Go-asset typing —
 	// goStaticVars maps a variable directly holding a single Go
-	// struct/pointer value to its gotype(...) name; goListShapes maps a
-	// variable holding a typed gofunc/gomethod call's list result to the
-	// ordered proto names its positions carry (see goasset.go's
-	// trackGoAssetResult/checkGoMethodCall for the full reasoning).
+	// struct/pointer value to its gotype(...) name; goListProto maps a
+	// variable holding a proto-bound gofunc/gomethod call's list result
+	// to the gotype name position 0 of that list carries (see
+	// goasset.go's trackGoAssetResult/checkGoMethodCall for the full
+	// reasoning).
 	goStaticVars map[string]string
-	goListShapes map[string][]string
+	goListProto  map[string]string
 }
 
 // Check validates file ahead of code generation.
@@ -203,9 +203,6 @@ func (c *checker) checkStmt(stmt ast.Stmt, sc *scope) error {
 	case *ast.AssignStmt:
 		if call, ok := s.Value.(*ast.CallExpr); ok {
 			if handled, err := c.checkGoDecl(s.Name, call, s.Line); handled {
-				return err
-			}
-			if handled, err := c.checkShapeDecl(s.Name, call, s.Line); handled {
 				return err
 			}
 		}
@@ -340,7 +337,7 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 			return fmt.Errorf("line %d: \"_\" cannot be read (weave_spec.md §10) — it is write-only", e.Line)
 		}
 		if c.goVars[e.Name] != nil {
-			// govar(...)-declared names (weave_spec.md §15.5) never go
+			// govar(...)-declared names (weave_spec.md §15.4) never go
 			// through an ordinary assignment/scope binding at all — see
 			// checkGoVarDecl's own doc comment, and goFuncs' identical
 			// treatment a few lines below in the CallExpr case.
@@ -353,14 +350,6 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 	case *ast.NumberLit, *ast.StringLit, *ast.BoolLit, *ast.NilLit:
 		return nil
 	case *ast.CallExpr:
-		if callee, ok := e.Callee.(*ast.Ident); ok && callee.Name == "checkShape" {
-			// checkShape's first argument is a shape(...) name, never an
-			// ordinary in-scope value (shape.go's checkCheckShapeCall
-			// validates it directly) — handled entirely separately from
-			// the generic arg-checking loop below, which would otherwise
-			// reject it as an undefined name.
-			return c.checkCheckShapeCall(e, sc)
-		}
 		switch callee := e.Callee.(type) {
 		case *ast.Ident:
 			if why, ok := goAssetReservedName(callee.Name); ok {
@@ -374,7 +363,7 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 				}
 			}
 		case *ast.PropExpr:
-			if err := c.checkGoMethodCall(callee, e.Args, sc); err != nil {
+			if err := c.checkGoMethodCall(callee, sc); err != nil {
 				return err
 			}
 		default:

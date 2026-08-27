@@ -8,15 +8,14 @@
 // 戻り値のstrings.NewReaderを使う(CLAUDE.md 後半Step5「確定した設計判断」
 // 参照)。
 //
-// weave_spec.md §15.4: プロトタイプの結びつけは型ヒント付きのgoReturns(...)
-// 経由でのみ行える(型ヒント無しの経路にはもう「proto」引数が無い)ため、
-// newReaderはgoReturns(GoReader)/goParams("?string")を使う。§15.2: 戻り値は
-// 常にlistなので、結果からGoの値を取り出すのにat(...)を使う。
+// weave_spec.md §15.2: gofunc(...)の任意の第2引数(gotype(...)の名前)が、
+// 戻り値list(常にlist——§15.2)の位置0をそのプロトタイプへ結びつける。結果
+// からGoの値を取り出すのにat(...)を使う。
 
 GoReader = gotype("?*strings.Reader", {
-	len: gomethod("Len", goReturns("?int"), goParams())
+	len: gomethod("Len")
 })
-newReader = gofunc("?strings.NewReader", goReturns(GoReader), goParams("?string"))
+newReader = gofunc("?strings.NewReader", GoReader)
 
 readerProto = {
 	measure: fn(self, replyTo) {

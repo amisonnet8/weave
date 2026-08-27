@@ -151,46 +151,6 @@ func TestRaiseIfError_NonErrorValueIsANoOp(t *testing.T) {
 	}
 }
 
-func TestTypeError_PanicsWithClearMessage(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected TypeError to panic")
-		}
-		msg, ok := r.(string)
-		if !ok {
-			t.Fatalf("panic value = %v (%T), want a string", r, r)
-		}
-		for _, want := range []string{"argument 1 to strings.Reader.Len", "^*strings.Reader", "float64"} {
-			if !strings.Contains(msg, want) {
-				t.Errorf("panic message %q missing %q", msg, want)
-			}
-		}
-	}()
-	TypeError("argument 1 to strings.Reader.Len", "^*strings.Reader", 42.0)
-}
-
-func TestIsWeaveFunc(t *testing.T) {
-	tests := []struct {
-		name string
-		v    any
-		want bool
-	}{
-		{"a weave closure", func(a any) any { return a }, true},
-		{"a differently-shaped func value is still Kind Func", func() {}, true},
-		{"number", 1.0, false},
-		{"string", "hi", false},
-		{"nil", nil, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := IsWeaveFunc(tt.v); got != tt.want {
-				t.Errorf("IsWeaveFunc(%v) = %v, want %v", tt.v, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestNormalizeGoValue(t *testing.T) {
 	tests := []struct {
 		name string

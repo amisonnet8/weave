@@ -9,6 +9,10 @@ main = fn(args) {
 	// weave_spec.md §15.2: every gofunc(...)/gomethod(...) call always
 	// returns a Weave list now, regardless of how many values the real
 	// Go function returns — at(list, i) reads one position back out.
+	// Every call is dispatched via reflection (weavert.CallGoFuncList) —
+	// gofunc(...)'s only optional second argument is a gotype(...) proto
+	// for position 0 of the returned list (weave_spec.md §15.2), not
+	// used by any of the plain-scalar functions below.
 	toUpper = gofunc("?strings.ToUpper")
 	trimSpace = gofunc("?strings.TrimSpace")
 
@@ -16,90 +20,34 @@ main = fn(args) {
 	print(at(trimSpace("  padded  "), 0))
 
 	// os.ReadFile(name string) ([]byte, error) — a real Go stdlib
-	// function returning Go's common (value, error) shape. Untyped here
-	// (no goReturns(...)): weavert.CallGoFuncList collects every actual
-	// return value into the list via reflection, normalizing []byte into
-	// a plain Weave string (weavert/goasset.go). No automatic error
-	// panic any more — raiseIfError(...) does that explicitly.
+	// function returning Go's common (value, error) shape.
+	// weavert.CallGoFuncList collects every actual return value into the
+	// list via reflection, normalizing []byte into a plain Weave string
+	// (weavert/goasset.go). raiseIfError(...) checks the position the
+	// caller expects an error at.
 	readFile = gofunc("?os.ReadFile")
 	fileResult = readFile("examples/testdata.txt")
 	raiseIfError(at(fileResult, 1))
 	print(at(fileResult, 0))
 
-	// The same os.ReadFile, this time with a typed signature declared via
-	// goReturns("?[]byte", "?error") (weave_spec.md §15.4) — lowering to
-	// a fully native call (internal/codegen/goasset.go's genGoFuncCall,
-	// no reflect) via a compiler-generated named slice type (SLTYPE
-	// ^GoBytes ^byte, since AMIVM has no literal `^[]byte` type operand
-	// at all). The raw []byte result is converted to a Weave string
-	// automatically, same as the untyped call above — the type hint
-	// changes how the call dispatches, not what value comes back.
-	readFileTyped = gofunc("?os.ReadFile", goReturns("?[]byte", "?error"), goParams("?string"))
-	typedFileResult = readFileTyped("examples/testdata.txt")
-	raiseIfError(at(typedFileResult, 1))
-	print(at(typedFileResult, 0))
-
-	// A general (non-byte) slice type hint: strings.Fields(s string)
-	// []string, typed via goReturns("?[]string"). Unlike "?[]byte"
-	// (which converts to a Weave string), any other supported element
-	// type converts to a Weave list(...) (weave_spec.md §15.4) — one
-	// native CALL to the compiler-selected weavert.StringsToList, chosen
-	// at compile time from the "?[]string" hint itself (no runtime
-	// dispatch/reflect at all).
-	fields = gofunc("?strings.Fields", goReturns("?[]string"), goParams("?string"))
-	fieldList = at(fields("  the quick brown fox  "), 0)
-	print(len(fieldList))
-	print(fieldList[0])
-	print(fieldList[3])
-
-	// The parameter-side counterpart: strings.Join(elems []string, sep
-	// string) string takes a "?[]string" parameter — the reverse
-	// conversion (weavert.ListToStrings), turning the Weave list built
-	// above back into a real Go []string before the native call.
-	join = gofunc("?strings.Join", goReturns("?string"), goParams("?[]string", "?string"))
-	print(at(join(fieldList, "-"), 0))
-
-	// sort.Ints(x []int) — a "?[]int" parameter with no return value at
-	// all (goReturns()), confirming numeric slice elements work the same
-	// way string ones do (weavert.ListToInts).
-	sortInts = gofunc("?sort.Ints", goReturns(), goParams("?[]int"))
-	sortInts(list(5, 3, 1, 4, 2))
-	print("sort.Ints ran without error")
-
-	// strconv.Atoi(s string) (int, error) — another (value, error) stdlib
-	// function, this time with a typed signature declared via
-	// goReturns(...)/goParams(...) (weave_spec.md §15.4). Unlike readFile
-	// above, this lowers to a fully native 2-target CALL
-	// (internal/codegen/goasset.go's genGoFuncCall) — ASSERT the
-	// argument, CALL raw+err directly against ?strconv.Atoi, box both
-	// into a 2-element list. No reflect anywhere in this call.
-	atoi = gofunc("?strconv.Atoi", goReturns("?int", "?error"), goParams("?string"))
-	atoiResult = atoi("42")
-	raiseIfError(at(atoiResult, 1))
-	print(at(atoiResult, 0) + 1)
-
-	// strings.Repeat(s string, count int) string — a typed *numeric
-	// parameter* hint ("?int" in goParams(...), as opposed to every
-	// numeric hint above, which only ever appeared in goReturns(...)).
-	// The Weave value passed for count is always a float64 underneath
-	// (weave_spec.md §2) — genAssertNumericParam (internal/codegen/
-	// goasset.go) first ASSERTs it down to the ^float64 it actually is,
-	// then a native `int(f)` conversion produces the concrete int the
-	// real Go call needs. Fully native, no reflect, same as every other
-	// typed Go-asset call.
-	repeat = gofunc("?strings.Repeat", goReturns("?string"), goParams("?string", "?int"))
-	print(at(repeat("ab", 3), 0))
-
-	// govar(...) (weave_spec.md §15.5) reads a Go package-level variable
-	// live — os.Stdout here, passed straight into another gofunc call
-	// (io.WriteString(w io.Writer, s string) (int, error), non-variadic
-	// so it's untyped-CallGoFuncList-friendly). Every reference to Stdout
-	// re-reads the real os.Stdout at that point, not a one-time snapshot.
+	// os.ReadFile again, this time via a Go package-level variable read
+	// through govar(...) (weave_spec.md §15.4): Stdout is re-read live
+	// on every reference, not snapshotted once at declaration.
+	// io.WriteString(w io.Writer, s string) (int, error) is
+	// non-variadic, so it's a plain reflect-friendly gofunc call.
 	Stdout = govar("?os.Stdout")
 	writeString = gofunc("?io.WriteString")
 	writeResult = writeString(Stdout, "written straight to os.Stdout via govar\n")
 	raiseIfError(at(writeResult, 1))
 	print(at(writeResult, 0))
+
+	// strconv.Atoi(s string) (int, error) — another (value, error)
+	// stdlib function; the int comes back normalized to a Weave number
+	// (weavert.NormalizeGoValue), so ordinary arithmetic works on it.
+	atoi = gofunc("?strconv.Atoi")
+	atoiResult = atoi("42")
+	raiseIfError(at(atoiResult, 1))
+	print(at(atoiResult, 0) + 1)
 
 	return 0
 }

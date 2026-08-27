@@ -535,19 +535,16 @@ func (p *parser) parseCallArgs(callee ast.Expr) (ast.Expr, error) {
 	}
 	// f() (weave_spec.md §5's zero-argument call sugar) is deliberately
 	// NOT desugared into f(nil) here at parse time — the parser stays
-	// name-agnostic (its own doc comment), but `goReturns()`/`goParams()`
-	// (weave_spec.md §15.4's own "no return values"/"no parameters"
-	// forms) and `list()` (§3's empty list) are *also* just ordinary
-	// zero-arg CallExprs at this point, and synthesizing a nil into
-	// their Args here would corrupt the exact shape sema/codegen later
-	// pattern-match them by (goasset.go's goReturnsArgValue/
-	// goParamsArgValue type-assert every arg as a string literal; a
-	// stray NilLit breaks that). Left as empty Args, those are
-	// recognized and consumed intact by their own dedicated code paths
-	// before ever reaching "ordinary Weave function value" territory —
-	// see genGeneralCall (internal/codegen/codegen.go), which is where
-	// f() actually becomes f(nil), *after* every reserved/builtin name
-	// has already had first claim on this call's shape.
+	// name-agnostic (its own doc comment), but `list()` (§3's empty
+	// list) is *also* just an ordinary zero-arg CallExpr at this point,
+	// and synthesizing a nil into its Args here would corrupt the exact
+	// shape codegen later expects (an empty list, not a 1-element one).
+	// Left as empty Args, it's recognized and consumed intact by its own
+	// dedicated code path before ever reaching "ordinary Weave function
+	// value" territory — see genGeneralCall (internal/codegen/codegen.go),
+	// which is where f() actually becomes f(nil), *after* every
+	// reserved/builtin name has already had first claim on this call's
+	// shape.
 	return &ast.CallExpr{Callee: callee, Args: args, Line: lp.Line}, nil
 }
 
