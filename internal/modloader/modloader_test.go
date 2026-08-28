@@ -268,13 +268,18 @@ main = fn(args) {
 	}
 }
 
-// TestLoad_ReassigningQualifierToADifferentPackageUsesTheLastOne checks
-// the same graceful-degradation rule from the qualifier's own
-// perspective: assigning it twice, both times via package(...), simply
-// makes the second one win — there is no separate "duplicate qualifier"
-// error anymore (dropped along with the old import/pub design's
-// checkNoQualifierShadow; see CLAUDE.md).
-func TestLoad_ReassigningQualifierToADifferentPackageUsesTheLastOne(t *testing.T) {
+// TestLoad_ReassigningBindingNameToADifferentPackageIsAnError checks the
+// flip side of the internal renaming prefix now coming from the binding
+// name (weave_spec.md §17.4) rather than the directory name: reusing the
+// same binding name for two genuinely different packages — even within
+// one file, via reassignment — would make both packages' own renamed
+// bindings collide on the very same prefix (both would emit `shared_X`).
+// This used to be silently allowed ("the second one wins", back when the
+// prefix came from the directory name and "a"/"b" never collided) but is
+// now a compile-time error instead, per CLAUDE.md's "検討中の今後の対応"
+// §1 — the same collision this whole feature was redesigned to catch,
+// just reached via reassignment instead of two same-named directories.
+func TestLoad_ReassigningBindingNameToADifferentPackageIsAnError(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"a/a.weave": "X = 1\n",
 		"b/b.weave": "X = 2\n",
@@ -285,28 +290,105 @@ main = fn(args) {
 }
 `,
 	})
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected an error: reusing binding name \"shared\" for a second, different package would collide with the first package's own internal renaming prefix")
+	}
+}
+
+// TestLoad_DirectoryNameNeedNotBeIdentifierShaped verifies that a
+// package's internal renaming prefix now comes entirely from the
+// importer's own chosen binding name (weave_spec.md §17.4), not from the
+// directory name — so a directory name that wouldn't itself be a valid
+// Weave identifier (hyphens, here) is no longer rejected, since it is
+// never used as a prefix at all. This replaces the old
+// TestLoad_InvalidPackageNameIsAnError, which enforced identifier-shaped
+// directory names purely because the directory name used to be the
+// prefix source; that constraint no longer serves any purpose.
+func TestLoad_DirectoryNameNeedNotBeIdentifierShaped(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"my-utils/x.weave": "Y = 1\n",
+		"main.weave": `u = package("./my-utils")
+main = fn(args) {
+	return u.Y
+}
+`,
+	})
 	file, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	ret := file.Main.Body[0].(*ast.ReturnStmt)
-	callee := ret.Value.(*ast.Ident)
-	if callee.Name != "b_X" {
-		t.Errorf("Callee.Name = %q, want %q (the second package(...) assignment wins)", callee.Name, "b_X")
+	if got := assignNames(file.TopLevel); len(got) != 1 || got[0] != "u_Y" {
+		t.Errorf("TopLevel names = %v, want [u_Y] (the internal prefix comes from the binding name %q, not the directory name)", got, "u")
 	}
 }
 
-func TestLoad_InvalidPackageNameIsAnError(t *testing.T) {
+// TestLoad_SameDirectoryNameDifferentPackagesNoLongerCollide is the
+// direct regression test for the bug CLAUDE.md's "検討中の今後の対応" §1
+// (and weave_spec.md's former §17.4/§19.8 "known undetected bug") set out
+// to fix: two unrelated packages that happen to share a directory
+// basename ("utils") used to have their renamed bindings silently
+// collide, because the old renaming prefix was the directory basename.
+// Now that the prefix comes from the importer's own chosen binding name
+// instead, importing both under different names produces no collision at
+// all.
+func TestLoad_SameDirectoryNameDifferentPackagesNoLongerCollide(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
-		"my-utils/x.weave": "Y = 1\n",
-		"main.weave": `u = package("./my-utils")
+		"foo/utils/x.weave": `Helper = fn(x) { return "A:" + string(x) }`,
+		"bar/utils/x.weave": `Helper = fn(x) { return "B:" + string(x) }`,
+		"main.weave": `utilsA = package("./foo/utils")
+utilsB = package("./bar/utils")
+main = fn(args) {
+	return 0
+}
+`,
+	})
+	file, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := assignNames(file.TopLevel)
+	hasA, hasB := false, false
+	for _, name := range got {
+		if name == "utilsA_Helper" {
+			hasA = true
+		}
+		if name == "utilsB_Helper" {
+			hasB = true
+		}
+	}
+	if !hasA || !hasB {
+		t.Errorf("TopLevel names = %v, want both utilsA_Helper and utilsB_Helper present (no collision despite both directories being named \"utils\")", got)
+	}
+}
+
+// TestLoad_SameBindingNameForDifferentPackagesAcrossFilesIsAnError checks
+// the cross-file shape of the same new rule verified by
+// TestLoad_ReassigningBindingNameToADifferentPackageIsAnError: two
+// different *packages* (here, x and y, each imported by the root) that
+// each independently chose the same binding name ("utils") for two
+// genuinely different target packages must be rejected — left unchecked,
+// x's own `utils_Value` and y's own `utils_Value` would collide in the
+// final merged program exactly like same-named directories used to
+// (weave_spec.md §17.4).
+func TestLoad_SameBindingNameForDifferentPackagesAcrossFilesIsAnError(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"utilsA/a.weave": "Value = 1\n",
+		"utilsB/b.weave": "Value = 2\n",
+		"x/x.weave": `utils = package("../utilsA")
+FromX = utils.Value
+`,
+		"y/y.weave": `utils = package("../utilsB")
+FromY = utils.Value
+`,
+		"main.weave": `x = package("./x")
+y = package("./y")
 main = fn(args) {
 	return 0
 }
 `,
 	})
 	if _, err := Load(dir); err == nil {
-		t.Fatal("expected an error for a package directory name that isn't identifier-shaped")
+		t.Fatal("expected an error: package x and package y both used binding name \"utils\" for two different target packages")
 	}
 }
 

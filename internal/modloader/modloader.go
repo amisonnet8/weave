@@ -59,7 +59,7 @@ import (
 // table any OTHER package importing this one needs (rewrite.go's
 // tryResolveQualified).
 type loadedPackage struct {
-	Name string // package identifier prefix (weave_spec.md §17.4) — a directory's basename, or a .wvz file's basename with the extension stripped; meaningless for the root, which is never prefixed
+	Name string // display name only (a directory's basename, or a .wvz file's basename with the extension stripped), used in error messages — the internal renaming prefix is a separate thing entirely (the binding name the importer chose for `package(...)`, weave_spec.md §17.4); meaningless for the root, which is never prefixed
 	Key  string // absolute path (directory or .wvz file) — the cycle-detection/cache key
 
 	TopLevel []ast.Stmt    // this package's own (already renamed/resolved) top-level statements
@@ -82,6 +82,25 @@ type loader struct {
 	loaded   map[string]*loadedPackage
 	order    []*loadedPackage
 	closers  []io.Closer
+
+	// prefixOwners records, across this whole Load() call, which absolute
+	// package path (a loadedPackage's Key) first claimed a given
+	// binding-name prefix (weave_spec.md §17.4 — the internal renaming
+	// prefix is the binding name the importer chose for
+	// `name = package("<path>")`, not the directory name). The vast
+	// majority of programs use one name per package throughout, so a
+	// second, *different* absolute path claiming an already-owned prefix
+	// means the same name was reused for a genuinely different package —
+	// left unchecked, that would silently produce colliding renamed
+	// bindings (two unrelated packages both emitting e.g. `utils_Helper`)
+	// with no compile-time warning at all, which is exactly the bug this
+	// whole prefix-source change exists to close (CLAUDE.md's "検討中の
+	// 今後の対応" §1). A second `package(...)` for the *same* absolute
+	// path never reaches this check at all — loadPackage's own cache
+	// check (ld.loaded) returns before prefix is ever consulted, so
+	// whichever binding name first loaded a package silently wins for
+	// every later import of that same path (also §17.4).
+	prefixOwners map[string]string
 }
 
 // Load resolves root (a directory, a single .weave file, or a .wvz
@@ -146,11 +165,11 @@ func loadMerged(root string) (*ast.File, error) {
 		return nil, err
 	}
 
-	ld := &loader{visiting: map[string]bool{}, loaded: map[string]*loadedPackage{}}
+	ld := &loader{visiting: map[string]bool{}, loaded: map[string]*loadedPackage{}, prefixOwners: map[string]string{}}
 	defer ld.closeAll()
 	ld.trackCloser(loc.closer)
 
-	if _, err := ld.loadPackage(loc, onlyFile, true); err != nil {
+	if _, err := ld.loadPackage(loc, onlyFile, true, ""); err != nil {
 		return nil, err
 	}
 
@@ -247,8 +266,15 @@ func resolvePkgLocation(baseDir, relPath string) (*pkgLocation, error) {
 // entry point (§17.3) and whether this package's own top-level bindings
 // get a name prefix at all (§17.4 — root's own names are never
 // rewritten, since there is exactly one root and no risk of collision
-// with itself).
-func (ld *loader) loadPackage(loc *pkgLocation, onlyFile string, isRoot bool) (*loadedPackage, error) {
+// with itself). prefix is the internal renaming prefix to use if this
+// package turns out to need loading at all (ignored for the root, and
+// also ignored — see the ld.loaded cache check just below — whenever loc
+// was already loaded by an earlier `package(...)` under some other
+// binding name: the prefix that earlier call used wins, §17.4). It is the
+// binding name the *caller's own* `name = package("<path>")` assigned
+// this package to — extractPackageDecls passes its own AssignStmt's Name,
+// the only place loadPackage is ever called for a non-root package.
+func (ld *loader) loadPackage(loc *pkgLocation, onlyFile string, isRoot bool, prefix string) (*loadedPackage, error) {
 	if pkg, ok := ld.loaded[loc.key]; ok {
 		return pkg, nil
 	}
@@ -283,9 +309,18 @@ func (ld *loader) loadPackage(loc *pkgLocation, onlyFile string, isRoot bool) (*
 			})
 			file.Main = nil
 		}
-		if !isValidPackageName(loc.name) {
-			return nil, fmt.Errorf("package %q can't be used as an import prefix — must look like a Weave identifier (letters, digits, underscore; not starting with a digit)", loc.name)
+		// prefix is always a lexer-validated Weave identifier already (it
+		// is some AssignStmt's own Name) — unlike the old directory-name-
+		// derived prefix, there is no separate "is this identifier-shaped"
+		// check to run here. What *does* need checking is whether some
+		// other, different package already claimed this exact prefix (see
+		// ld.prefixOwners' own doc for why this matters and why it's safe
+		// to register the claim before recursing into this package's own
+		// nested imports below).
+		if owner, ok := ld.prefixOwners[prefix]; ok && owner != loc.key {
+			return nil, fmt.Errorf("binding name %q is already used to import %q — package(...) can't reuse it for %q too; give one of them a different name (weave_spec.md §17.4)", prefix, owner, loc.key)
 		}
+		ld.prefixOwners[prefix] = loc.key
 	}
 
 	// package(...) declarations are extracted (and, transitively, their
@@ -300,7 +335,7 @@ func (ld *loader) loadPackage(loc *pkgLocation, onlyFile string, isRoot bool) (*
 
 	var renames map[string]string
 	if !isRoot {
-		renames = collectRenames(file.TopLevel, loc.name)
+		renames = collectRenames(file.TopLevel, prefix)
 		applySelfRename(file.TopLevel, renames)
 	}
 
@@ -372,7 +407,7 @@ func (ld *loader) extractPackageDecls(topLevel []ast.Stmt, loc *pkgLocation) (ma
 			return nil, nil, fmt.Errorf("line %d: %w", a.Line, err)
 		}
 		ld.trackCloser(targetLoc.closer)
-		target, err := ld.loadPackage(targetLoc, "", false)
+		target, err := ld.loadPackage(targetLoc, "", false, a.Name)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -468,7 +503,11 @@ func loadPackageFiles(loc *pkgLocation, onlyFile string) (*mergedFile, error) {
 // (struct/func/let), Weave has exactly one kind of top-level binding, so
 // every *ast.AssignStmt in topLevel needs an entry, exported or not (a
 // private binding can still be referenced by an exported one in the same
-// package, so it still needs a collision-free flat name).
+// package, so it still needs a collision-free flat name). prefix is the
+// binding name the importer used for this package's own `package(...)`
+// call (loadPackage's own prefix parameter) — not the package's directory
+// name; see loadPackage's doc and CLAUDE.md's "検討中の今後の対応" §1 for
+// why the prefix source moved away from the directory name.
 func collectRenames(topLevel []ast.Stmt, prefix string) map[string]string {
 	renames := map[string]string{}
 	for _, stmt := range topLevel {
@@ -490,23 +529,6 @@ func applySelfRename(topLevel []ast.Stmt, renames map[string]string) {
 			a.Name = renames[a.Name]
 		}
 	}
-}
-
-func isValidPackageName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i, r := range name {
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
-		isDigit := r >= '0' && r <= '9'
-		if i == 0 && !isLetter {
-			return false
-		}
-		if !isLetter && !isDigit {
-			return false
-		}
-	}
-	return true
 }
 
 // isExported reports whether name is visible outside its own package
