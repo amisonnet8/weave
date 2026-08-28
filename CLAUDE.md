@@ -33,7 +33,7 @@ Goコード (.go)
 | ファイル/ディレクトリ | 役割 |
 |---|---|
 | `weave_spec.md` | **Weave言語仕様。唯一の正確な仕様。** 字句規則・値と型・プロトタイプ・カリー化・アクターモデル・制御構文・Go資産利用などを定義。実装と齟齬が出たら、まず`weave_spec.md`の記述を疑い、仕様として確定してからコードを直すこと。特に14節・16節(AMIVM-IRへの対応方針)は実装方針の出発点だが、**あくまで仮説**であり実地検証で覆る可能性がある(下記「Weave特有の設計課題」参照) |
-| `ignored/amivm/docs/amivm_spec.md` | AMIVM-IRの唯一の正確な仕様(下記「AMIVM-IRの書き方」節に要点を転記)。amivm本体のバージョンを上げた際は齟齬がないか確認すること |
+| `ignored/amivm/amivm_spec.md` | AMIVM-IRの唯一の正確な仕様(下記「AMIVM-IRの書き方」節に要点を転記)。amivm本体のバージョンを上げた際は齟齬がないか確認すること(旧`docs/`配下から移動済み) |
 | `ignored/seed_implementation_notes.md` | **[[Seed]]の実装で踏んだ地雷・確立したパターンのまとめ。実装前に必読。** goto/VAR巻き上げ問題(§1)は最重要。ポインタ・構造体・map・クロージャー・チャネル・ビット演算への「未実証命令への手がかり」(§5)は仮説段階の内容 |
 | `ignored/cascade_implementation_notes.md` | **[[Cascade]]の実装で上記仮説を検証した結果のまとめ。実装前に必読。** Seedの推測がどこまで当たり、どこで外れたかが記録されている(特に§1のADDR、§3のmap走査、§4のクロージャー捕捉)。Weaveが新規に踏み込む領域(動的型・プロトタイプ検索・アクター)はCascadeにも無かった検証範囲のため、このnotesを読んでも解決しない論点が残る点に注意 |
 | `ignored/seed/` | Seedの実装済みリポジトリ(参考実装)。ディレクトリ構成・レイヤー分割(`lexer`/`parser`/`ast`/`sema`/`codegen`)・CLIの作り・テスト戦略の実例として参照してよい。**Weaveリポジトリの一部ではない** |
@@ -67,7 +67,7 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 
 ## AMIVM-IRの書き方(唯一の正確な仕様)
 
-以下は`ignored/amivm/docs/amivm_spec.md`からの要点転記。**Weaveのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。**
+以下は`ignored/amivm/amivm_spec.md`からの要点転記。**Weaveのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。**
 
 ### 制約・前提条件
 
@@ -85,7 +85,7 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | `@` | 関数外変数名(グローバル変数) |
 | `^` | 型名 |
 | `>` | 構造体フィールド名 |
-| `<` | メソッド名(`METHOD`用) |
+| `<` | メソッド名(`METHVAL`用、および`INTYPE`内の`METHOD`シグネチャ宣言用) |
 | `!` | amivm定義関数名(`!xxx`→`<関数名>_amivm_function`、`!main`→`main`) |
 | `?` | Go関数名(標準ライブラリ・Weave独自ランタイム問わず) |
 | `#` | ラベル名 |
@@ -106,9 +106,12 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | 条件分岐(ブロック形) | `IF boolean1` `ELIF boolean1` `ELSE` `ENDIF` |
 | ループ(ブロック形) | `LOOP` `BREAK` `CONTINUE` `ENDLOOP` |
 | 型アサーション | `ASSERT multi1 (multi2) variable type1` |
-| メソッド値の取得 | `METHOD local variable method`(`local := variable.method`。`local`は`VAR`で事前宣言しない`%xxx`のみ、`:=`で型推論しながら新規宣言する) |
-| 関数定義 | `FUNC defname type1 ... : type3 ...` / `RET` / `ENDFUNC` |
-| 関数呼び出し | `CALL multi1 ... : callname value1 ...` / `DEFER` / `SPAWN` |
+| メソッド値・関数値の取得 | `METHVAL local variable method`(`local := variable.method`。旧命令名`METHOD`——amivm改修で改称され、無関係な新命令`INTYPE`内の`METHOD`と紛らわしいため注意。`local`は`VAR`で事前宣言しない`%xxx`のみ、`:=`で型推論しながら新規宣言する) / `FUNCVAL local callname`(`local := callname`。レシーバー無しの関数値取得、同じく`:=`) |
+| 関数定義 | `FUNC defname (<<typename1 constraint1 ... :>>) type1 ... : type3 ...` / `RET` / `ENDFUNC`(`<<>>`はジェネリクスの型パラメータ宣言。省略可) |
+| メソッド定義 | `FUNCM defname receiver (<<typename1 ... :>>) type1 ... : type3 ...` / `RET` / `ENDFUNCM`(`STTYPE`の構造体にGoネイティブなレシーバー付きメソッドを定義する。本体内でレシーバーは`$0`) |
+| インターフェース型定義 | `INTYPE typename1 (<<typename2 constraint1 ...>>)` / `METHOD method type1 ... : type3 ...`(シグネチャのみ、`STTYPE`の`FIELD`に相当) / `ENDINTYPE` |
+| ジェネリクス型の実体化 | `GETYPE typename1 typename2 type1 type2 ...`(`type typename1 = typename2[type1, type2, ...]`という別名宣言) |
+| 関数呼び出し | `CALL multi1 ... : callname (<<type1 ... :>>) value1 ...` / `DEFER` / `SPAWN`(`<<>>`は明示的な型引数。省略可) |
 | チャネル | `CHTYPE` `CHMAKE` `CHSEND` `CHRECV` |
 | select | `SEL` `CASESEND` `CASERECV` `DEFAULT` `ENDSEL`(ケース本体はブロック形、`label`は取らない) |
 | スライス | `SLTYPE` `SLMAKE` `SLICE` |
@@ -116,11 +119,13 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | map | `MPTYPE` `MPMAKE` `MSET` `MGET` `MPKEYS` |
 | クロージャー・関数型 | `FNTYPE` `CLOS` `ENDCLOS` |
 
-`IF`/`LOOP`/`CLOS`/`SEL`はいずれもネストできる(`FUNC`/`STTYPE`はネスト不可のまま)。`IF`〜`ENDIF`は`ELIF`(0個以上)・`ELSE`(0個または1個、あれば最後)を伴うブロックで、Goの`if`/`else if`/`else`にそのまま対応する。`LOOP`〜`ENDLOOP`はGoの無限`for {}`に対応し、条件付きループ(`while`相当)は`LOOP`の中で`IF`と`BREAK`を組み合わせて表現する(`amivm_spec.md`4.10〜4.11節)。旧仕様の単一行`IF boolean1 label`(`if boolean1 { goto label }`という条件付き`goto`)は**廃止され、後方互換は無い**——Weave側の対応は下記「制御構文をamivmのブロック形IF/LOOPへ全面移行」節を参照。
+`IF`/`LOOP`/`CLOS`/`SEL`はいずれもネストできる(`FUNC`/`FUNCM`/`STTYPE`/`INTYPE`はネスト不可のまま)。`IF`〜`ENDIF`は`ELIF`(0個以上)・`ELSE`(0個または1個、あれば最後)を伴うブロックで、Goの`if`/`else if`/`else`にそのまま対応する。`LOOP`〜`ENDLOOP`はGoの無限`for {}`に対応し、条件付きループ(`while`相当)は`LOOP`の中で`IF`と`BREAK`を組み合わせて表現する(`amivm_spec.md`4.10〜4.11節)。旧仕様の単一行`IF boolean1 label`(`if boolean1 { goto label }`という条件付き`goto`)は**廃止され、後方互換は無い**——Weave側の対応は下記「制御構文をamivmのブロック形IF/LOOPへ全面移行」節を参照。
 
 `type1`等の「型」オペランドは`^xxx_123`のようなGo型名トークンなら何でも許容される(5節オペランドカテゴリ)。**`^any`はGoの組み込み型`any`としてそのまま通る**ため、`MPTYPE ^string ^any`という宣言自体は構文上問題なく成立する(実地検証済み)。ただしWeaveのオブジェクト表現(14節の当初案)としては、結局`MPTYPE`ではなく`weavert.Object`(`map[string]any`)へ完全に一元化することになった——構文が通ることと、Weaveの`^any`変数からネイティブにmapアクセスできることは別問題だったため(詳細は下記「オブジェクトもAMIVMのネイティブ命令を使わずweavertへ一元化」Step 6の節)。
 
-各命令の生成Goコード・オペランドカテゴリ(`whole`/`integer`/`value`/`single`/`multi`/`callname`等)・Kind分類は`ignored/amivm/docs/amivm_spec.md`の4〜6節を参照。**キャスト・組み込み関数は専用命令を持たず`CALL`に統合されている。**
+各命令の生成Goコード・オペランドカテゴリ(`whole`/`integer`/`value`/`single`/`multi`/`callname`等)・Kind分類は`ignored/amivm/amivm_spec.md`の4〜6節を参照。**キャスト・組み込み関数は専用命令を持たず`CALL`に統合されている。**
+
+**`FUNCM`/`INTYPE`/`GETYPE`/`FUNCVAL`、および`FUNC`/`CALL`/`DEFER`/`SPAWN`/`STTYPE`のジェネリクス対応(`<<>>`)は、amivm本体への大規模な改修(2026年8月)で追加されたが、Weaveは現時点でいずれも使っていない。** 理由: これらはGoのレシーバー付きメソッド・インターフェース・ジェネリクスという「静的型付け言語」向けの機能であり、Weaveの値は全て`^any`(動的型付け、上記「Weave特有の設計課題」1)のため、素直に活用できる場面が無い——`gotype`/`gomethod`(15節)のGo資産呼び出しも、名前解決だけが静的でGo呼び出し自体は依然reflect経由(16節)という設計を維持しており、これらの新命令に乗り換える動機が無いと実装後に確認済み(詳細は下記「確定した設計判断」の該当節)。旧`METHOD`(メソッド値取得、`local := variable.method`)は`METHVAL`へ改称された——Weaveはこの機能自体を「型ヒント」削除時に使わなくなっているため実害は無いが、**命令名`METHOD`は現在`INTYPE`内のメソッドシグネチャ宣言という全く別の意味で再利用されている**ため、過去の設計判断ログ(下記)を読む際は文脈(いつの時点の記述か)に注意すること。
 
 ## Weave特有の設計課題(実装前に確定すべき論点として列挙。全て解決済み——番号は下記の随所から参照されるため、解決後も維持している)
 
@@ -877,6 +882,21 @@ sema側の静的追跡(`goStaticVars`/`goListShapes`)は、複数戻り値位置
 
 `examples/shapes.weave`は削除。`examples/gomethods.weave`・`examples/goassets.weave`・`examples/integration.weave`を新しい`protoOrNil`構文へ書き換え、`amivm`→`go build`→実行まで再検証した(出力は型ヒント時代と概ね一致——`gomethods.weave`は`12`/`20`/`true`/`104`/`9`/終了コード`11`、`goassets.weave`は`HELLO, WEAVE`/`padded`/ファイル内容/govar書き込み/`40`/`43`、`integration.weave`は`12`/終了コード`12`)。`weave_spec.md`は4.3節を削除し、15節を15.1〜15.5(旧15.5`govar`→15.4、旧15.6制約→15.5)へ繰り上げ、16節(AMIVM-IR対応)を「常にreflect経由、静的なのは名前解決だけ」という実装の実態に合わせて全面的に書き直した。19節(できないことリスト)にも、型ヒントが無いことに伴う新しい制約(Go資産呼び出しの引数・戻り値型はWeave側で検証されない、`self.file = goOpen(...)`のようなオブジェクトプロパティ経由のプロトタイプ結びつけは追跡されない、という既存の制約の明文化)を追加した。`tour/03-objects.md`(shape/checkShapeの節と演習を削除)・`tour/06-go-interop.md`(型ヒントの節を削除し、「プロトタイプの結びつけ」の節に置き換え)・`tour/08-wrapup.md`(統合サンプルの構文更新)・`README.md`/`README_ja.md`(機能一覧の記述更新)も合わせて更新した。単体テスト(sema/codegen/weavert)を新しい`protoOrNil`構文・削除された機能に合わせて全面的に書き換え、全て green。既存の全18サンプル+`examples/modules`+`examples/multifile`の回帰も(3つの意図的な書き換えを除き)無変更で動作継続することを確認した。
 
+### amivm仕様の大規模更新(METHVAL/FUNCVAL/INTYPE/FUNCM/GETYPE+ジェネリクス)を確認——Weave側の実装変更は不要と判明
+
+ユーザーから「AMIVMの仕様が大幅に変更された(ドキュメントは`ignored/amivm/amivm_spec.md`参照。既にインストール済み)」と伝えられ、変更を精査した。amivmのコミット履歴を確認したところ、Weave未追従の新しいコミットは実質2つだった。
+
+- `c07f9f5`: 旧`METHOD`(`local := variable.method`)を`METHVAL`へ改称し、レシーバー無し版の`FUNCVAL local callname`(`local := callname`)、インターフェース型宣言`INTYPE`/`METHOD`(新しい意味——シグネチャのみ)/`ENDINTYPE`、レシーバー付きメソッド定義`FUNCM`/`ENDFUNCM`、ジェネリクス型の実体化`GETYPE`を追加。`FUNC`/`CALL`/`DEFER`/`SPAWN`/`STTYPE`にジェネリクス(`<<typename constraint ...:>>`/`<<type1 type2...:>>`)対応を追加
+- `020e6bc`: `docs/`配下のドキュメント(`amivm_spec.md`/`amivm_instruction_spec.md`)をリポジトリ直下へ移動
+
+**影響範囲の調査方法**: 実装を読む前に、まず`internal/codegen/*.go`(非テストファイル)が実際に生成しているAMIVM命令を`grep`で洗い出した。結果、Weaveが生成する命令は`VAR`/`SET`/`CALL`/`IF`/`ELSE`/`ENDIF`/`LOOP`/`ENDLOOP`/`BREAK`/`CONTINUE`/`NOT`/`RET`/`FUNC`/`ENDFUNC`/`CLOS`/`ENDCLOS`の16個だけだった(直前の「型ヒント削除」で`ASSERT`/`FNTYPE`/`SLTYPE`等も既に不使用と判明済み)。この16命令はいずれも今回の改修で構文が変わっておらず(`FUNC`/`CALL`/`DEFER`/`SPAWN`へのジェネリクス対応は既存の`:`区切りセグメント数による分岐に新しい分岐が追加されただけで、非ジェネリクスの既存の書き方は無変更)、新設された`METHVAL`/`FUNCVAL`/`INTYPE`/`FUNCM`/`GETYPE`はWeaveが一つも生成していないため、**コード生成ロジックの変更は一切不要**と判断した。
+
+**実地検証で裏付けた。** `go build ./... && go vet ./... && go test ./... -count=1`(全パッケージgreen)に加え、`weave`バイナリをビルドして`examples/`直下の全18サンプル+`examples/modules`+`examples/multifile`+`weave wvz`(内部で`go build`まで検証する経路)を実際に新しい`amivm`バイナリで`run`し、既存の出力・終了コードと完全一致することを確認した(パニック・エラー出力ゼロ)。
+
+**なぜ`METHVAL`/`FUNCVAL`/`INTYPE`/`FUNCM`/`GETYPE`を採用しないか**: これらはGoのレシーバー付きメソッド・インターフェース・ジェネリクスという「静的型付け言語」向けの機能だが、Weaveの値は全て`^any`(動的型付け、design question 1)であり、Go資産呼び出し(`gotype`/`gofunc`/`gomethod`)も「名前解決だけが静的、呼び出し自体は常にreflect経由」という設計(16節)を直前の「型ヒント削除」でむしろ強化したばかりだった。これらの新命令を使うには「静的に確定したGo型に対するネイティブな型付き呼び出し」という前提が要るが、Weaveはこの前提を持たない設計へ回帰したところなので、活用する動機が無い。旧`METHOD`(メソッド値取得)は改称されて`METHVAL`になったが、Weaveはこの機能自体(型ヒントの型付き経路)を既に使わなくなっているため実害は無い——ただし**命令名`METHOD`が現在は全く別の意味(`INTYPE`内のシグネチャ宣言)で再利用されている**点は、過去の設計判断ログ(「型ヒント削除」節等)を読む際に混同しないよう、上記「AMIVM-IRの書き方」節に注記した。
+
+**実施した修正はドキュメントのみ**: 本ファイルの「ドキュメント構成」表・「AMIVM-IRの書き方」節にある`ignored/amivm/docs/amivm_spec.md`という古いパスを`ignored/amivm/amivm_spec.md`へ全箇所修正し、「AMIVM-IRの書き方」節の命令一覧表に`METHVAL`/`FUNCVAL`/`FUNCM`/`ENDFUNCM`/`INTYPE`/`ENDINTYPE`/`GETYPE`と`FUNC`/`CALL`/`DEFER`/`SPAWN`のジェネリクス対応を追記した(Weave未使用である旨も明記)。`weave_spec.md`・`weave_implementation_notes.md`にはこのパスへの参照が無く、影響なし(`weave_implementation_notes.md`が使う旧`METHOD`という表記は、その節が書かれた時点のamivm仕様を正確に反映した歴史的記録であり、意図的に書き換えていない——本ファイル冒頭の運用方針通り「確定した設計判断」は事後に正しく見えるよう書き換えない)。
+
 ## 検討中の今後の対応(未着手)
 
 ユーザーとの協議で挙がった今後の対応候補をここに記録する。**この節は検討のみで、まだ実装に着手していない**——「確定した設計判断」とは違い、いつでも覆りうる、挙がった時点の分析・方向性のメモという位置づけ。実装に着手する際は、通常通りこの節を「確定した設計判断」へ昇格・書き換えること。
@@ -940,7 +960,7 @@ main = fn(args) {
 3. 設計上の未確定事項(上記「Weave特有の設計課題」)は、着手時に方針を確定させ、確定内容を本ファイルに新設する「確定した設計判断」節(または実装コード側のdocコメント)に書き残す。仮説のまま放置しない
 4. Weaveの意味検査(スコープ解決・構文検査)は、amivmに渡す前にWeave側で完了させる。amivmの`go/types`エラーをユーザー向けエラーとしてそのまま出さない。ただし動的型に起因する実行時エラーはこの限りではない(上記「意味検証の責任分担」参照)
 5. 新しい構文・組み込み関数を実装したら、対応するサンプルWeaveプログラムを`examples/`に追加し、生成されたIR・Goコード・実行結果まで確認する
-6. amivm本体の仕様が更新された場合(`ignored/amivm/docs/amivm_spec.md`を再確認)、本ファイルの「AMIVM-IRの書き方」節が古くなっていないか照合し、必要なら更新する
+6. amivm本体の仕様が更新された場合(`ignored/amivm/amivm_spec.md`を再確認)、本ファイルの「AMIVM-IRの書き方」節が古くなっていないか照合し、必要なら更新する
 7. **後方互換性は現時点では意識しなくてよい**(2026年時点でWeaveの利用者はこのコンテナ内のみ)。既存の構文・API・戻り値の意味論との整合性よりも、いちから設計し直すような「フラットな視点」で良い設計を優先してよい——過去の実装を出発点にした差分思考ではなく、まっさらな前提で考え直すこと
 8. **大きな変更(既存の構文・意味論を作り直す規模の変更)は、いきなり実装を始めない。** まず設計方針(新しい構文・意味論・既存コードへの影響)をユーザーに提示し、明示的なOKを得てから実装に着手する。小さな変更(バグ修正・既存パターンの延長)はこの限りではない
 9. **作業内容のSummary(要約)は常に日本語で書く。** タスク完了時にユーザーへ提示する変更内容のまとめは、英語ではなく日本語で書くこと
