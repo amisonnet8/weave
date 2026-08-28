@@ -61,6 +61,33 @@ main = fn(args) {
 }
 ```
 
+## 文字列操作・数学関数・`exit`(`weave_spec.md` §11)
+
+`+`による文字列結合と`string(...)`変換だけでは足りない場面向けに、文字列・数値それぞれの組み込み関数もそろっています(全一覧は`weave_spec.md` §11)。
+
+```weave
+main = fn(args) {
+	s = "Hello, Weave!"
+	print(contains(s, "Weave"))        // true
+	print(indexOf(s, "Weave"))         // 7(見つからなければ-1。at(...)と違いエラーにはならない)
+	print(substring(s, 7, 12))         // "Weave"
+	print(upper(s))                      // "HELLO, WEAVE!"
+	print(replace(s, "Weave", "World"))  // "Hello, World!"
+
+	parts = split("a,b,c", ",")
+	print(join(parts, " | "))   // "a | b | c"
+
+	print(floor(1.7))    // 1
+	print(round(2.4))     // 2
+	print(sqrt(9))         // 3
+	return 0
+}
+```
+
+`indexOf`/`substring`は`len(...)`と同じく文字(Unicode)単位でインデックスを扱います——UTF-8のバイト単位ではありません。
+
+`exit(code)`は`main`の`return`以外でプログラムを即座に終了させる組み込み関数です。呼び出した場所がどこであっても構わず、その場でプロセス全体が終わります——ただし`return`と違い、パニックの捕捉手段`recover(...)`(`weave_spec.md` §20)による捕捉は一切効きません(`os.Exit`自身の挙動そのままで、Goの`defer`機構を経由しないため)。
+
 ## `for k, v in obj`によるオブジェクトの列挙(`weave_spec.md` §7)
 
 ```weave

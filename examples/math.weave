@@ -1,0 +1,43 @@
+// weave_spec.md §11: math builtins. §8's arithmetic operators (+ - * /
+// %) cover the basics; these round out the rest (rounding, absolute
+// value, min/max, powers/roots) that Weave doesn't distinguish integers
+// from floats for (§2 — every number is float64-shaped internally, so
+// e.g. floor/ceil/round genuinely change the value, not just its
+// display).
+main = fn(args) {
+	print(floor(1.7))    // 1
+	print(ceil(1.2))       // 2
+	print(round(1.5))      // 2
+	print(round(2.4))      // 2
+	print(abs(-3.5))       // 3.5
+	print(abs(3.5))         // 3.5
+
+	print(min(3, 7))    // 3
+	print(max(3, 7))     // 7
+
+	print(sqrt(9))       // 3
+	print(pow(2, 10))    // 1024
+
+	// A negative sqrt(...) is a runtime domain error (weave_spec.md
+	// §11), not a silently-propagating NaN — Weave has no way to
+	// represent NaN as a value, so this is treated the same as any
+	// other operator type mismatch (§8).
+	ok = true
+	msg = nil
+	guarded = fn() {
+		recover(fn(err) {
+			ok = false
+			msg = err
+		})
+		return sqrt(-1)
+	}
+	guarded()
+	if ok {
+		print("sqrt(-1): succeeded (unexpected)")
+	} else {
+		print("sqrt(-1): recovered — " + msg)
+	}
+
+	total = floor(1.7) + ceil(1.2) + round(1.5)
+	return total   // 1 + 2 + 2 = 5
+}

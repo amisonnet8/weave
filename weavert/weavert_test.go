@@ -2,6 +2,7 @@ package weavert
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -67,4 +68,36 @@ func TestArgs_MatchesOSArgsIncludingProgramName(t *testing.T) {
 			t.Errorf("Args()[%d] = %v, want %q", i, v, want)
 		}
 	}
+}
+
+// TestExit_TerminatesProcessWithGivenCode can't call Exit directly — it
+// would kill the test binary itself. Instead it re-invokes this same
+// test binary as a subprocess (the standard Go idiom for testing an
+// os.Exit call), asking only that one subprocess to actually call Exit,
+// and checks the *parent* process observes the expected exit code.
+func TestExit_TerminatesProcessWithGivenCode(t *testing.T) {
+	if os.Getenv("WEAVERT_EXIT_TEST_SUBPROCESS") == "1" {
+		Exit(7.0)
+		t.Fatal("Exit(7) returned instead of terminating the process")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestExit_TerminatesProcessWithGivenCode")
+	cmd.Env = append(os.Environ(), "WEAVERT_EXIT_TEST_SUBPROCESS=1")
+	err := cmd.Run()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("subprocess ended with %v (%T), want a non-zero *exec.ExitError", err, err)
+	}
+	if got := exitErr.ExitCode(); got != 7 {
+		t.Errorf("subprocess exit code = %d, want 7", got)
+	}
+}
+
+func TestExit_NonNumberPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal(`expected Exit("x") to panic`)
+		}
+	}()
+	Exit("x")
 }

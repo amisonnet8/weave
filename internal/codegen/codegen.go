@@ -44,6 +44,26 @@ var builtinNames = map[string]bool{
 	"at":           true,
 	"raiseIfError": true,
 	"recover":      true,
+	"exit":         true,
+	"contains":     true,
+	"indexOf":      true,
+	"substring":    true,
+	"upper":        true,
+	"lower":        true,
+	"trim":         true,
+	"replace":      true,
+	"split":        true,
+	"join":         true,
+	"repeat":       true,
+	"toNumber":     true,
+	"floor":        true,
+	"ceil":         true,
+	"round":        true,
+	"abs":          true,
+	"sqrt":         true,
+	"min":          true,
+	"max":          true,
+	"pow":          true,
 }
 
 // codegenCtx is shared by every funcGen created during one Generate()
@@ -467,6 +487,46 @@ func genBuiltinCall(fg *funcGen, name string, call *ast.CallExpr) (string, error
 		return genOneArgBuiltin(fg, call, "weavert.RaiseIfError")
 	case "recover":
 		return genRecoverCall(fg, call)
+	case "exit":
+		return genOneArgBuiltin(fg, call, "weavert.Exit")
+	case "contains":
+		return genTwoArgBuiltin(fg, call, "weavert.Contains")
+	case "indexOf":
+		return genTwoArgBuiltin(fg, call, "weavert.IndexOf")
+	case "substring":
+		return genThreeArgBuiltin(fg, call, "weavert.Substring")
+	case "upper":
+		return genOneArgBuiltin(fg, call, "weavert.Upper")
+	case "lower":
+		return genOneArgBuiltin(fg, call, "weavert.Lower")
+	case "trim":
+		return genOneArgBuiltin(fg, call, "weavert.Trim")
+	case "replace":
+		return genThreeArgBuiltin(fg, call, "weavert.Replace")
+	case "split":
+		return genTwoArgBuiltin(fg, call, "weavert.Split")
+	case "join":
+		return genTwoArgBuiltin(fg, call, "weavert.Join")
+	case "repeat":
+		return genTwoArgBuiltin(fg, call, "weavert.Repeat")
+	case "toNumber":
+		return genOneArgBuiltin(fg, call, "weavert.ToNumber")
+	case "floor":
+		return genOneArgBuiltin(fg, call, "weavert.Floor")
+	case "ceil":
+		return genOneArgBuiltin(fg, call, "weavert.Ceil")
+	case "round":
+		return genOneArgBuiltin(fg, call, "weavert.Round")
+	case "abs":
+		return genOneArgBuiltin(fg, call, "weavert.Abs")
+	case "sqrt":
+		return genOneArgBuiltin(fg, call, "weavert.Sqrt")
+	case "min":
+		return genTwoArgBuiltin(fg, call, "weavert.Min")
+	case "max":
+		return genTwoArgBuiltin(fg, call, "weavert.Max")
+	case "pow":
+		return genTwoArgBuiltin(fg, call, "weavert.Pow")
 	default:
 		return "", fmt.Errorf("line %d: builtin %q not yet implemented", call.Line, name)
 	}
@@ -550,6 +610,31 @@ func genTwoArgBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error
 	}
 	tmp := fg.newTemp("^any")
 	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?%s\t%s\t%s\n", tmp, fn, obj, key)
+	return tmp, nil
+}
+
+// genThreeArgBuiltin lowers substring(s, start, end)/replace(s, old, new)
+// (weave_spec.md §11) to the given weavert function — the same fixed-arity
+// shape as genOneArgBuiltin/genTwoArgBuiltin above, just with three
+// positional arguments instead of one or two.
+func genThreeArgBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error) {
+	if len(call.Args) != 3 {
+		return "", fmt.Errorf("line %d: %s(...) takes exactly three arguments, got %d", call.Line, fn, len(call.Args))
+	}
+	a, err := genExpr(fg, call.Args[0])
+	if err != nil {
+		return "", err
+	}
+	b, err := genExpr(fg, call.Args[1])
+	if err != nil {
+		return "", err
+	}
+	c, err := genExpr(fg, call.Args[2])
+	if err != nil {
+		return "", err
+	}
+	tmp := fg.newTemp("^any")
+	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?%s\t%s\t%s\t%s\n", tmp, fn, a, b, c)
 	return tmp, nil
 }
 

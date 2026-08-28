@@ -1,0 +1,40 @@
+// weave_spec.md §11: string-manipulation builtins. `+` (string
+// concatenation, §8) and `string(...)` (any value -> string, §11) are
+// the only string operations Weave had for a long time (§19.9 used to
+// flag this as a real gap) — the builtins below round that out with
+// search/transform/split-join/parse operations, all indices measured in
+// runes (characters), never raw UTF-8 bytes, matching len(...)'s own
+// contract.
+main = fn(args) {
+	s = "Hello, Weave!"
+
+	print(contains(s, "Weave"))    // true
+	print(contains(s, "xyz"))      // false
+	print(indexOf(s, "Weave"))     // 7
+	print(indexOf(s, "xyz"))       // -1 (not found — unlike at(...), this is not an error)
+
+	print(substring(s, 7, 12))     // "Weave"
+	print(upper(s))                  // "HELLO, WEAVE!"
+	print(lower(s))                  // "hello, weave!"
+	print(trim("   padded   "))       // "padded"
+	print(replace(s, "Weave", "World")) // "Hello, World!"
+
+	// indexOf/substring count runes, not bytes — "日本語" is 3
+	// characters but 9 UTF-8 bytes, and both agree with len(...) here.
+	greeting = "日本語, Weave!"
+	print(indexOf(greeting, "Weave"))     // 5
+	print(substring(greeting, 0, 3))      // "日本語"
+
+	csv = split("apple,banana,cherry", ",")
+	print(len(csv))                          // 3
+	print(at(csv, 1))                          // "banana"
+	print(join(csv, " | "))                     // "apple | banana | cherry"
+
+	print(repeat("ab", 3))          // "ababab"
+	print(repeat("x", 0))            // ""
+
+	print(toNumber("42") + 1)         // 43
+	print(toNumber("3.5") * 2)         // 7
+
+	return len(s)   // 13
+}

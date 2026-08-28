@@ -1323,3 +1323,96 @@ func TestGenerate_RecoverWrongArityIsAnError(t *testing.T) {
 		t.Fatal("expected an error: recover(...) takes exactly one argument")
 	}
 }
+
+func TestGenerate_ThreeArgBuiltinsLowerToThreeArgCalls(t *testing.T) {
+	// substring(s, start, end) and replace(s, old, new) (weave_spec.md
+	// §11) are the only two builtins with three fixed arguments —
+	// genThreeArgBuiltin's own dispatch wiring.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "substring"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "hello"}, &ast.NumberLit{Value: 1}, &ast.NumberLit{Value: 3}},
+			}},
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "replace"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "a-b"}, &ast.StringLit{Value: "-"}, &ast.StringLit{Value: "+"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "?weavert.Substring\t\"hello\"\t1.0\t3.0\n") {
+		t.Errorf("expected substring(...) to lower to a three-argument weavert.Substring call, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?weavert.Replace\t\"a-b\"\t\"-\"\t\"+\"\n") {
+		t.Errorf("expected replace(...) to lower to a three-argument weavert.Replace call, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_ThreeArgBuiltinWrongArityIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "substring"},
+				Args:   []ast.Expr{&ast.StringLit{Value: "hello"}, &ast.NumberLit{Value: 1}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if _, err := Generate(file); err == nil {
+		t.Fatal("expected an error: substring(...) takes exactly three arguments")
+	}
+}
+
+func TestGenerate_NewOneAndTwoArgBuiltinsDispatchToWeavert(t *testing.T) {
+	// A spot check that every newly added builtin name (weave_spec.md
+	// §11's string/math/exit additions) actually reaches genBuiltinCall's
+	// dispatch table and lowers to its own weavert function, rather than
+	// falling through to genGeneralCall (which would instead try to
+	// resolve the name as an ordinary Weave variable holding a function
+	// value) — genOneArgBuiltin/genTwoArgBuiltin's own mechanics are
+	// already covered by existing tests like
+	// TestGenerate_HasAndRemoveBuiltins, so this only needs to confirm
+	// each name is wired to the right target.
+	cases := []struct {
+		name string
+		args []ast.Expr
+		want string
+	}{
+		{"exit", []ast.Expr{&ast.NumberLit{Value: 1}}, "?weavert.Exit\t1.0\n"},
+		{"contains", []ast.Expr{&ast.StringLit{Value: "ab"}, &ast.StringLit{Value: "a"}}, "?weavert.Contains\t\"ab\"\t\"a\"\n"},
+		{"indexOf", []ast.Expr{&ast.StringLit{Value: "ab"}, &ast.StringLit{Value: "a"}}, "?weavert.IndexOf\t\"ab\"\t\"a\"\n"},
+		{"upper", []ast.Expr{&ast.StringLit{Value: "a"}}, "?weavert.Upper\t\"a\"\n"},
+		{"lower", []ast.Expr{&ast.StringLit{Value: "A"}}, "?weavert.Lower\t\"A\"\n"},
+		{"trim", []ast.Expr{&ast.StringLit{Value: " a "}}, "?weavert.Trim\t\" a \"\n"},
+		{"split", []ast.Expr{&ast.StringLit{Value: "a,b"}, &ast.StringLit{Value: ","}}, "?weavert.Split\t\"a,b\"\t\",\"\n"},
+		{"join", []ast.Expr{&ast.Ident{Name: "l"}, &ast.StringLit{Value: ","}}, "?weavert.Join\t%l\t\",\"\n"},
+		{"repeat", []ast.Expr{&ast.StringLit{Value: "a"}, &ast.NumberLit{Value: 3}}, "?weavert.Repeat\t\"a\"\t3.0\n"},
+		{"toNumber", []ast.Expr{&ast.StringLit{Value: "1"}}, "?weavert.ToNumber\t\"1\"\n"},
+		{"floor", []ast.Expr{&ast.NumberLit{Value: 1.5}}, "?weavert.Floor\t1.5\n"},
+		{"ceil", []ast.Expr{&ast.NumberLit{Value: 1.5}}, "?weavert.Ceil\t1.5\n"},
+		{"round", []ast.Expr{&ast.NumberLit{Value: 1.5}}, "?weavert.Round\t1.5\n"},
+		{"abs", []ast.Expr{&ast.NumberLit{Value: 1.5}}, "?weavert.Abs\t1.5\n"},
+		{"sqrt", []ast.Expr{&ast.NumberLit{Value: 4}}, "?weavert.Sqrt\t4.0\n"},
+		{"min", []ast.Expr{&ast.NumberLit{Value: 1}, &ast.NumberLit{Value: 2}}, "?weavert.Min\t1.0\t2.0\n"},
+		{"max", []ast.Expr{&ast.NumberLit{Value: 1}, &ast.NumberLit{Value: 2}}, "?weavert.Max\t1.0\t2.0\n"},
+		{"pow", []ast.Expr{&ast.NumberLit{Value: 2}, &ast.NumberLit{Value: 3}}, "?weavert.Pow\t2.0\t3.0\n"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			fg := newFuncGen(&codegenCtx{})
+			if _, err := genCallExpr(fg, &ast.CallExpr{Callee: &ast.Ident{Name: tt.name}, Args: tt.args}); err != nil {
+				t.Fatalf("genCallExpr(%s): %v", tt.name, err)
+			}
+			if !strings.Contains(fg.body.String(), tt.want) {
+				t.Errorf("%s(...) did not lower to %q, got:\n%s", tt.name, tt.want, fg.body.String())
+			}
+		})
+	}
+}

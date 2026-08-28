@@ -98,3 +98,30 @@ func ExitCode(v any) int {
 	}
 	return int(n)
 }
+
+// Exit implements the `exit` builtin (weave_spec.md §11): terminate the
+// process immediately with the given code, from anywhere — not just
+// main's own `return` (weave_spec.md §12, via ExitCode above). Unlike
+// ExitCode, which only converts a value and leaves the actual os.Exit
+// call to !main's generated Go wrapper, Exit calls os.Exit directly
+// itself, since it can be reached from arbitrary Weave code, not just
+// the one fixed spot !main's wrapper occupies.
+//
+// os.Exit's own documented behavior — terminate right now, running no
+// deferred calls — means any recover(...) handler (§20) currently in
+// scope does NOT get a chance to intercept this, unlike an actual panic.
+// This is deliberate, not an oversight: exit(...) always tears down the
+// entire process unconditionally, so — unlike recover(...), which is
+// barred from actor message handlers specifically because it would
+// otherwise let one actor shield itself from a crash (§6.5's "no partial
+// fault isolation" principle) — there's no comparable escape-hatch
+// concern here, and exit(...) needs no restriction on where it may be
+// called.
+func Exit(v any) any {
+	n, ok := v.(float64)
+	if !ok {
+		panic(fmt.Sprintf("weave: exit(...) requires a number exit code, got %T", v))
+	}
+	os.Exit(int(n))
+	return nil // unreachable: os.Exit never returns.
+}
