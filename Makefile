@@ -4,7 +4,7 @@ BINARY := weave
 PKG    := ./cmd/weave
 GO     := go
 
-.PHONY: all build install test fmt vet tidy clean help
+.PHONY: all build install test test-examples fmt vet tidy clean help
 
 all: build ## デフォルトターゲット(ビルドのみ)
 
@@ -16,6 +16,20 @@ install: ## weaveバイナリをGOBIN($GOPATH/bin)へインストールする
 
 test: ## go testで全パッケージのユニットテストを実行する
 	$(GO) test ./...
+
+test-examples: build ## examples/配下を全てweave buildで一括検証する(PATHにamivmが必要)
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	for f in examples/*.weave; do \
+		echo "build $$f"; \
+		./$(BINARY) build -o "$$tmp/$$(basename "$$f" .weave)" "$$f"; \
+	done; \
+	for d in examples/*/; do \
+		d=$${d%/}; \
+		echo "build $$d"; \
+		./$(BINARY) build -o "$$tmp/$$(basename "$$d")" "$$d"; \
+	done
 
 fmt: ## *.goをgoimportsで整形する
 	goimports -w .

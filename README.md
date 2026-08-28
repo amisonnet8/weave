@@ -1,5 +1,7 @@
 # Weave
 
+[![test](https://github.com/amisonnet8/weave/actions/workflows/test.yml/badge.svg)](https://github.com/amisonnet8/weave/actions/workflows/test.yml)
+
 A dynamically-typed programming language, implemented in Go, that unifies property lookup, method dispatch, and actor message passing behind a single mechanism (name-based property search over a prototype chain) — compiling to Go source via AMIVM-IR.
 
 > [日本語版 README はこちら](README_ja.md)

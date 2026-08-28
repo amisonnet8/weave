@@ -188,7 +188,11 @@ Seed/Cascadeは静的型付け言語だったため、この防波堤として�
   LICENSE                       MIT
   README.md / README_ja.md      導入ドキュメント
   go.mod                        module github.com/amisonnet8/weave
-  Makefile                      build/install/test/fmt/vet/tidy/clean タスク
+  Makefile                      build/install/test/test-examples/fmt/vet/tidy/clean タスク。
+                                 test-examplesはexamples/配下を全てweave buildで一括検証する
+                                 (PATHにamivmが必要。amivm本体のmake test相当)
+  .github/workflows/test.yml    GitHub Actions。push/PR時にgofmt・go vet・go test・
+                                 test-examples(amivmをgo installしてから実行)を自動実行する
   cmd/weave/
     main.go                     CLIエントリポイント(build/run/emit-ir/emit-go/wvz/help のディスパッチ)
     build.go                    modloader.Load → sema.Check → codegen.Generate(compileToIR)
@@ -897,6 +901,18 @@ sema側の静的追跡(`goStaticVars`/`goListShapes`)は、複数戻り値位置
 
 **実施した修正はドキュメントのみ**: 本ファイルの「ドキュメント構成」表・「AMIVM-IRの書き方」節にある`ignored/amivm/docs/amivm_spec.md`という古いパスを`ignored/amivm/amivm_spec.md`へ全箇所修正し、「AMIVM-IRの書き方」節の命令一覧表に`METHVAL`/`FUNCVAL`/`FUNCM`/`ENDFUNCM`/`INTYPE`/`ENDINTYPE`/`GETYPE`と`FUNC`/`CALL`/`DEFER`/`SPAWN`のジェネリクス対応を追記した(Weave未使用である旨も明記)。`weave_spec.md`・`weave_implementation_notes.md`にはこのパスへの参照が無く、影響なし(`weave_implementation_notes.md`が使う旧`METHOD`という表記は、その節が書かれた時点のamivm仕様を正確に反映した歴史的記録であり、意図的に書き換えていない——本ファイル冒頭の運用方針通り「確定した設計判断」は事後に正しく見えるよう書き換えない)。
 
+### GitHub Actions(CI)を追加——amivmリポジトリのPublic化を受けて
+
+ユーザーから「AMIVMのGitHubリポジトリをPublicにしたので、CIが可能になったはず」と伝えられ、`.github/workflows/test.yml`を新設した。amivm自身が既に持っているCI(`ignored/amivm/.github/workflows/test.yml`)と同じ構成——`checkout`→`setup-go`(`go-version-file: go.mod`)→`gofmt`→`go vet`→`go test`——を踏襲した上で、Weave固有のステップとして`go install github.com/amisonnet8/amivm/cmd/amivm@latest`(amivmリポジトリがPrivateだった間はCIから到達できなかった手順——今回のPublic化で初めて可能になった)と、それに続く`make test-examples`を追加した。
+
+**`test-examples`という新しいMakeターゲットを新設した。** amivm自身の`make test`(`examples/`配下のIRファイルを全て`go build`まで通す)に相当するものがWeave側に存在しなかったため、`examples/*.weave`の各ファイルと`examples/*/`の各パッケージディレクトリ(`modules`・`multifile`——非ルートパッケージメンバー`examples/modules/mathutil`は`examples/*/`という非再帰globの対象外になるため、意図せず巻き込まれない)を`weave build -o <一時ディレクトリ>/<名前> <path>`で一括ビルドするシェルループとして実装した。
+
+**`weave run`ではなく`weave build`を選んだ理由**: `examples/`の各サンプルは(仕様検証を兼ねて)意図的に多様な終了コードを返す設計になっている(`actors.weave`は`10`、`closures.weave`は`8`等——CLAUDE.mdの随所に実行結果として記録されている値と同じ)。`weave run`は子プロセスの終了コードをそのまま`weave`自身の終了コードとして伝播する実装のため、`weave run`で一括チェックしようとすると「正常終了(0)」以外を全て失敗と誤判定してしまう。`weave build`は実行せずコンパイル(sema→codegen→amivm→go build)の成功だけを見るため、この問題が構造的に起こらない——CIでの継続的な回帰検知という目的には、個々のサンプルの終了コードを1つずつハードコードして追随させるより適切と判断した(実際の実行結果の確認は、既存どおり新機能追加のたびに手動またはこのセッション内で`weave run`を使って行う運用を継続する)。
+
+**実装前に`go install github.com/amisonnet8/amivm/cmd/amivm@latest`を素の`GOBIN`(何もインストールされていない一時ディレクトリ)へ向けて実地検証し、Public化によって本当にCIから到達可能になったことを確認してから着手した。** `git config`や`.netrc`のような認証設定を一切使わずに解決できたことから、`go install`ステップに追加の認証設定(`GOPRIVATE`解除やトークン設定等)は不要と判断した。
+
+`README.md`/`README_ja.md`に、amivm自身のREADMEに倣ったCIバッジ(`https://github.com/amisonnet8/weave/actions/workflows/test.yml/badge.svg`)を追加した。
+
 ## 検討中の今後の対応(未着手)
 
 ユーザーとの協議で挙がった今後の対応候補をここに記録する。**この節は検討のみで、まだ実装に着手していない**——「確定した設計判断」とは違い、いつでも覆りうる、挙がった時点の分析・方向性のメモという位置づけ。実装に着手する際は、通常通りこの節を「確定した設計判断」へ昇格・書き換えること。
@@ -969,3 +985,4 @@ main = fn(args) {
 12. **`examples/`は多様なパターンを揃える。** 「少し過剰だ」と感じるくらいまで書いてよい。ただし同じパターンの重複は避けること——1つのパターンにつき決定版のサンプル1つを保守し、新しいサンプルを追加するのは新しいパターンを実証する時だけにする
 13. **`weave_spec.md`・`examples/`を読んで「難しい」と感じるのは構わないが、「いくら読んでも答えが無い」という状態は極力避けること。** 未定義・未回答のまま放置された疑問点を残さない
 14. **`weave_spec.md`に、現状の仕様でできないこと(既知の制限・未実装の機能)のリストを明記して残すこと。** 何が仕様の対象外か分からないと、読者は「書いていないだけで実はできるのでは」と際限なく仕様書を読み返すことになる——「できない」と書いてあること自体が読者への回答になる
+15. `.github/workflows/test.yml`によりpush/PR時に`gofmt`・`go vet`・`go test`・`make test-examples`(`amivm`を`go install`してから、`examples/`配下を全て`weave build`で一括検証)がGitHub Actionsで自動実行される。ローカルでこれらを一通り確認してからpushすること(CIで初めて失敗に気づくのは避ける、amivm自身の同名ルールと同じ)

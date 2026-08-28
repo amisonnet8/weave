@@ -1,5 +1,7 @@
 # Weave
 
+[![test](https://github.com/amisonnet8/weave/actions/workflows/test.yml/badge.svg)](https://github.com/amisonnet8/weave/actions/workflows/test.yml)
+
 プロパティ読み取り・メソッド呼び出し・アクターへのメッセージ送信を「名前によるプロパティ検索・プロトタイプチェーン」という1つの仕組みに統一した、動的型付けのプログラミング言語です。AMIVM-IRを経由してGoソースコードへコンパイルします(Go実装)。
 
 > [English README is here](README.md)
