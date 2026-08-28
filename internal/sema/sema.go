@@ -27,6 +27,7 @@ var builtinNames = map[string]bool{
 	"reply":        true,
 	"at":           true,
 	"raiseIfError": true,
+	"recover":      true,
 }
 
 // reservedName reports whether name is off-limits for a user assignment
@@ -130,6 +131,25 @@ type checker struct {
 	goTypes   map[string]*GoTypeInfo
 	goFuncs   map[string]*GoFuncInfo
 	goVars    map[string]*GoVarInfo // govar(...) declarations (goasset.go)
+
+	// inHandlerLiteral is true while checking the body of a function
+	// literal that is — or is lexically nested inside — an object
+	// literal's own field value (weave_spec.md §20's own restriction):
+	// such a closure could be dispatched as an actor message handler if
+	// its enclosing object is later spawn(...)ed (weave_spec.md §6.2's
+	// ObjGet-based dispatch doesn't care where the object came from), and
+	// recover(...) is deliberately not supported there — see §6.5's
+	// "no partial fault isolation" principle and checkFuncLit's own doc
+	// comment for why this is a syntactic (not exhaustive) check, and
+	// §20 for the full reasoning kept in CLAUDE.md's "確定した設計判断".
+	// It is never reset back to false when entering an *ordinary* nested
+	// literal (checkFuncLit only ever forces it to true, never to
+	// false) — a closure defined and called synchronously from within a
+	// handler-shaped one is still, transitively, part of that handler's
+	// own dynamic extent, so a recover() inside it would shield the actor
+	// from a crash exactly as effectively as one placed directly in the
+	// handler's own body.
+	inHandlerLiteral bool
 
 	// goStaticVars/goListProto track static Go-asset typing —
 	// goStaticVars maps a variable directly holding a single Go
@@ -355,6 +375,9 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 			if why, ok := goAssetReservedName(callee.Name); ok {
 				return fmt.Errorf("line %d: %q is a reserved name (%s); it may only appear as `name = %s(...)`", callee.Line, callee.Name, why, callee.Name)
 			}
+			if callee.Name == "recover" && c.inHandlerLiteral {
+				return fmt.Errorf("line %d: recover(...) cannot be used inside a closure that is (or is nested inside) an object literal's own field value — such a closure could be dispatched as an actor message handler if the object is spawned, and recover() doesn't support that (weave_spec.md §6.5, §20)", callee.Line)
+			}
 			if !builtinNames[callee.Name] && c.goFuncs[callee.Name] == nil {
 				// Neither a builtin nor a gofunc(...)-declared reference
 				// (goasset.go) — it must be an ordinary variable.
@@ -385,9 +408,19 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 	case *ast.UnaryExpr:
 		return c.checkExpr(e.X, sc)
 	case *ast.FuncLit:
-		return c.checkFuncLit(e, sc)
+		return c.checkFuncLit(e, sc, false)
 	case *ast.ObjectLit:
 		for _, field := range e.Fields {
+			// A field's own FuncLit value is checked directly (not via
+			// the generic recursive checkExpr call below) so it can be
+			// marked handler-shaped — see checker.inHandlerLiteral's own
+			// doc comment.
+			if lit, ok := field.Value.(*ast.FuncLit); ok {
+				if err := c.checkFuncLit(lit, sc, true); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := c.checkExpr(field.Value, sc); err != nil {
 				return err
 			}
@@ -408,8 +441,16 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 // checkFuncLit checks a function literal's body in a fresh scope
 // (parented at sc, enabling closure capture — see scope's doc comment)
 // with its parameter declared and loop-control state reset (see
-// checker.loopDepth's doc comment).
-func (c *checker) checkFuncLit(lit *ast.FuncLit, sc *scope) error {
+// checker.loopDepth's doc comment). isHandlerShaped is true only when lit
+// is directly an object literal's own field value (set by the
+// *ast.ObjectLit case above) — checker.inHandlerLiteral is forced to true
+// for the duration of this literal's own body (and anything nested inside
+// it) in that case, and otherwise simply carries through whatever value
+// it already had (never reset to false here), so the taint propagates
+// into arbitrarily deep nested closures without needing to re-detect
+// "handler-shaped" at every level — see inHandlerLiteral's own doc
+// comment for why that's the right (if conservative) rule.
+func (c *checker) checkFuncLit(lit *ast.FuncLit, sc *scope, isHandlerShaped bool) error {
 	if why, ok := reservedName(lit.Param); ok {
 		return fmt.Errorf("line %d: %q is a reserved name (%s)", lit.Line, lit.Param, why)
 	}
@@ -418,13 +459,19 @@ func (c *checker) checkFuncLit(lit *ast.FuncLit, sc *scope) error {
 
 	savedLoopDepth := c.loopDepth
 	c.loopDepth = 0
+	savedInHandlerLiteral := c.inHandlerLiteral
+	if isHandlerShaped {
+		c.inHandlerLiteral = true
+	}
 	for _, stmt := range lit.Body {
 		if err := c.checkStmt(stmt, inner); err != nil {
 			c.loopDepth = savedLoopDepth
+			c.inHandlerLiteral = savedInHandlerLiteral
 			return err
 		}
 	}
 	c.loopDepth = savedLoopDepth
+	c.inHandlerLiteral = savedInHandlerLiteral
 	return nil
 }
 

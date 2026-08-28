@@ -43,6 +43,7 @@ var builtinNames = map[string]bool{
 	"reply":        true,
 	"at":           true,
 	"raiseIfError": true,
+	"recover":      true,
 }
 
 // codegenCtx is shared by every funcGen created during one Generate()
@@ -464,6 +465,8 @@ func genBuiltinCall(fg *funcGen, name string, call *ast.CallExpr) (string, error
 		return genTwoArgBuiltin(fg, call, "weavert.ObjAt")
 	case "raiseIfError":
 		return genOneArgBuiltin(fg, call, "weavert.RaiseIfError")
+	case "recover":
+		return genRecoverCall(fg, call)
 	default:
 		return "", fmt.Errorf("line %d: builtin %q not yet implemented", call.Line, name)
 	}
@@ -482,6 +485,35 @@ func genOneArgBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error
 	tmp := fg.newTemp("^any")
 	fmt.Fprintf(&fg.body, "\tCALL\t%s\t:\t?%s\t%s\n", tmp, fn, val)
 	return tmp, nil
+}
+
+// genRecoverCall lowers `recover(handler)` (weave_spec.md §20) to a
+// single native AMIVM DEFER of weavert.RecoverPanic — matching Go's own
+// defer+recover idiom directly rather than routing through an ordinary
+// weavert.Call+CALL like every other builtin here: handler is evaluated
+// right now (DEFER's own arguments are evaluated immediately, exactly
+// like Go's own `defer f(x)` — only the call itself is deferred), and the
+// resulting DEFER instruction takes effect for any panic occurring later
+// in the *enclosing* Go function's remaining execution — which is
+// whichever funcGen's own fg.body this ends up appended to (weave_main's
+// own top-level body, or a nested CLOS's own body — see genFuncLit's doc
+// comment: AMIVM's DEFER, like every other instruction, is scoped to
+// whichever Go func literal its funcGen represents, purely by where in
+// the source it's written, no extra plumbing required). recover(...)'s
+// own call expression carries no useful value of its own (the enclosing
+// function's return, if a panic is actually recovered, is dictated
+// entirely by Go's own zero-value-on-recover semantics — see §20) — "nil"
+// is returned only so this composes like any other call expression.
+func genRecoverCall(fg *funcGen, call *ast.CallExpr) (string, error) {
+	if len(call.Args) != 1 {
+		return "", fmt.Errorf("line %d: recover(...) takes exactly one argument (a handler function), got %d", call.Line, len(call.Args))
+	}
+	handler, err := genExpr(fg, call.Args[0])
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(&fg.body, "\tDEFER\t?weavert.RecoverPanic\t%s\n", handler)
+	return "nil", nil
 }
 
 // genListCall lowers `list(a, b, c)` (weave_spec.md §3, §11) to an

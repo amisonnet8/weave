@@ -1270,3 +1270,56 @@ func TestGenerate_SelfRecursiveFuncLitReferencesOwnHoistedVar(t *testing.T) {
 		t.Errorf("expected the closure value to still be assigned to %%fact after compiling it, got:\n%s", ir)
 	}
 }
+
+func TestGenerate_RecoverLowersToNativeDefer(t *testing.T) {
+	// recover(handler) (weave_spec.md §20) is the one builtin that lowers
+	// to a native AMIVM DEFER rather than an ordinary weavert.Call+CALL —
+	// see genRecoverCall's own doc comment for why (Go's recover() only
+	// has an effect when called directly by a deferred function).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "recover"},
+				Args: []ast.Expr{&ast.FuncLit{
+					Param: "err",
+					Body:  []ast.Stmt{&ast.ReturnStmt{Value: &ast.Ident{Name: "err"}}},
+				}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	ir, err := Generate(file)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(ir, "DEFER\t?weavert.RecoverPanic\t") {
+		t.Errorf("expected recover(...) to lower to a native DEFER of weavert.RecoverPanic, got:\n%s", ir)
+	}
+	// The handler argument is a closure literal, so it must be compiled
+	// (a CLOS block) before the DEFER references its result temp.
+	closIdx := strings.Index(ir, "CLOS\t%__t")
+	deferIdx := strings.Index(ir, "DEFER\t?weavert.RecoverPanic")
+	if closIdx == -1 || deferIdx == -1 || closIdx > deferIdx {
+		t.Errorf("expected the handler's CLOS block to be compiled before the DEFER instruction, got:\n%s", ir)
+	}
+	if strings.Contains(ir, "?weavert.Call\t:") || strings.Contains(ir, "CALL\t%__t1\t:\t?weavert.RecoverPanic") {
+		t.Errorf("recover(...) must not also route through an ordinary CALL to weavert.RecoverPanic, got:\n%s", ir)
+	}
+}
+
+func TestGenerate_RecoverWrongArityIsAnError(t *testing.T) {
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{
+				Callee: &ast.Ident{Name: "recover"},
+				Args:   []ast.Expr{&ast.Ident{Name: "a"}, &ast.Ident{Name: "b"}},
+			}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if _, err := Generate(file); err == nil {
+		t.Fatal("expected an error: recover(...) takes exactly one argument")
+	}
+}

@@ -1123,3 +1123,87 @@ func TestCheck_NonRecursiveFuncLitStillReservedNameChecked(t *testing.T) {
 		t.Fatal("expected an error assigning a FuncLit to a reserved name")
 	}
 }
+
+// recoverCall builds a bare `recover(fn(_) {...})` call, standing in for
+// whatever handler the test doesn't care about the contents of.
+func recoverCall() *ast.CallExpr {
+	return &ast.CallExpr{
+		Callee: &ast.Ident{Name: "recover"},
+		Args:   []ast.Expr{&ast.FuncLit{Param: "err", Body: nil}},
+	}
+}
+
+func TestCheck_RecoverInsideObjectLiteralFieldIsAnError(t *testing.T) {
+	// weave_spec.md §6.5/§20: a closure that's an object literal's own
+	// field value could be dispatched as an actor message handler if the
+	// object is later spawn(...)ed — recover(...) deliberately doesn't
+	// support that, and this is caught at compile time (checker.
+	// inHandlerLiteral's own doc comment).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "proto", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+				{Name: "boom", Value: &ast.FuncLit{
+					Param: "self",
+					Body:  []ast.Stmt{&ast.ExprStmt{X: recoverCall()}},
+				}},
+			}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: recover(...) inside an object literal field's own closure")
+	}
+}
+
+func TestCheck_RecoverInsideNestedClosureInsideHandlerIsAnError(t *testing.T) {
+	// The restriction propagates into closures lexically nested (however
+	// deeply) inside a handler-shaped one, not just its own immediate
+	// body — a nested closure called synchronously from within the
+	// handler would shield the actor from a crash just as effectively
+	// (checker.inHandlerLiteral's own doc comment).
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "proto", Value: &ast.ObjectLit{Fields: []ast.ObjectField{
+				{Name: "boom", Value: &ast.FuncLit{
+					Param: "self",
+					Body: []ast.Stmt{
+						&ast.AssignStmt{Name: "inner", Value: &ast.FuncLit{
+							Param: "y",
+							Body:  []ast.Stmt{&ast.ExprStmt{X: recoverCall()}},
+						}},
+					},
+				}},
+			}}},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err == nil {
+		t.Fatal("expected an error: recover(...) inside a closure nested inside a handler-shaped one")
+	}
+}
+
+func TestCheck_RecoverInsideOrdinaryClosureIsValid(t *testing.T) {
+	// A closure that's never placed as an object literal field (an
+	// ordinary named helper, here) is unaffected by the handler-shaped
+	// restriction — it can never be reached by actor message dispatch
+	// (weave_spec.md §6.2's ObjGet-based lookup only ever finds object
+	// properties), so recover(...) is allowed freely inside it, and
+	// sibling code after it (main's own trailing return) is unaffected
+	// too — checker.inHandlerLiteral must not leak past where it was set.
+	file := &ast.File{Main: &ast.FuncDecl{
+		Name: "main", Param: "args",
+		Body: []ast.Stmt{
+			&ast.AssignStmt{Name: "helper", Value: &ast.FuncLit{
+				Param: "x",
+				Body:  []ast.Stmt{&ast.ExprStmt{X: recoverCall()}},
+			}},
+			&ast.ExprStmt{X: recoverCall()},
+			&ast.ReturnStmt{Value: &ast.NumberLit{Value: 0}},
+		},
+	}}
+	if err := Check(file); err != nil {
+		t.Fatalf("Check: %v (recover(...) should be allowed outside any handler-shaped closure)", err)
+	}
+}

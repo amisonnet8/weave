@@ -1,0 +1,71 @@
+// weave_spec.md §20: recover(handler) is Weave's narrow, defer-style
+// panic-recovery builtin — not try/catch, and not general exception
+// handling syntax. recover(handler) installs handler for the rest of
+// the *current* function's execution (matching Go's own defer+recover
+// idiom directly), and doesn't distinguish where a later panic came
+// from: Weave's own runtime errors (ASSERT-style type mismatches,
+// weavert's operators, raiseIfError) and Go asset panics (15節) are
+// both recovered identically.
+main = fn(args) {
+	// Pattern: guard risky code inside its own dedicated helper closure,
+	// with recover(...) as that closure's own first statement. If a
+	// panic is recovered, this *helper* returns immediately (with its
+	// own zero value, nil — discarded here anyway) — but control then
+	// returns to main normally, exactly as if the call had simply
+	// finished. The handler closure captures ok1/msg1 by reference
+	// (weave_spec.md §10) to smuggle a result back out, since recover's
+	// own handler return value is always discarded (§20) — this is how
+	// you get a fallback *value* out of a recovered panic, not by
+	// returning one from the handler itself.
+	ok1 = true
+	msg1 = nil
+	guarded1 = fn() {
+		recover(fn(err) {
+			ok1 = false
+			msg1 = err
+		})
+		return 1 + "not a number"   // weavert.Add panics: number + string
+	}
+	guarded1()
+	if ok1 {
+		print("guarded1: succeeded (unexpected)")
+	} else {
+		print("guarded1: recovered — " + msg1)
+	}
+
+	// The same pattern recovers a Go-asset-originated panic (15節) just
+	// as well — recover() doesn't care that this one crossed a reflect
+	// call into strconv.Atoi rather than originating in weavert itself.
+	atoi = gofunc("?strconv.Atoi")
+	ok2 = true
+	msg2 = nil
+	guarded2 = fn() {
+		recover(fn(err) {
+			ok2 = false
+			msg2 = err
+		})
+		result = atoi("not-a-number")
+		raiseIfError(at(result, 1))
+		return at(result, 0)
+	}
+	guarded2()
+	if ok2 {
+		print("guarded2: succeeded (unexpected)")
+	} else {
+		print("guarded2: recovered — " + msg2)
+	}
+
+	// recover(...) can also be called directly in main's own body, not
+	// just inside a helper closure — but since a recovered panic makes
+	// the *enclosing* function return immediately with its own zero
+	// value (weave_spec.md §20 — for main specifically, that's exit code
+	// 0, via the same Go defer/recover semantics that give an ordinary
+	// closure `nil`), nothing after this point in main would run if the
+	// call below actually panicked. It doesn't, so execution reaches the
+	// final `return 0` normally.
+	recover(fn(err) {
+		print("this only runs if the line below panics")
+	})
+	print("all recoveries handled; exiting normally")
+	return 0
+}
