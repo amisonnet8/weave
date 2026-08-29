@@ -95,7 +95,7 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | 分類 | 命令 |
 |---|---|
 | 変数宣言 | `VAR local type1` / `GVAR global type1` |
-| 代入・ポインタ・配列 | `SET` `ASET` `AGET` `PSET` `PGET` `ADDR` |
+| 代入・ポインタ・配列 | `SET` `ASET` `AGET` `PSET` `PGET` `ADDR` / `ARTYPE typename1 type1 imm`(名前付き固定長配列型`type typename1 [imm]type1`の宣言。関数外。配列自体は本命令を使わず`^[n]type1`という複合形でインラインに宣言することもでき、`ARTYPE`は名前を付けて再利用したい場合の選択肢) |
 | 算術 | `ADD` `SUB` `MUL` `DIV` `MOD` |
 | ビット演算 | `BAND` `BOR` `BXOR` `BCLEAR` `BNOT` |
 | シフト | `SHL` `SHR` |
@@ -124,6 +124,8 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 `type1`等の「型」オペランドは`^xxx_123`のようなGo型名トークンなら何でも許容される(5節オペランドカテゴリ)。**`^any`はGoの組み込み型`any`としてそのまま通る**ため、`MPTYPE ^string ^any`という宣言自体は構文上問題なく成立する(実地検証済み)。ただしWeaveのオブジェクト表現(14節の当初案)としては、結局`MPTYPE`ではなく`weavert.Object`(`map[string]any`)へ完全に一元化することになった——構文が通ることと、Weaveの`^any`変数からネイティブにmapアクセスできることは別問題だったため(詳細は下記「オブジェクトもAMIVMのネイティブ命令を使わずweavertへ一元化」Step 6の節)。
 
 各命令の生成Goコード・オペランドカテゴリ(`whole`/`integer`/`value`/`single`/`multi`/`callname`等)・Kind分類は`ignored/amivm/amivm_spec.md`の4〜6節を参照。**キャスト・組み込み関数は専用命令を持たず`CALL`に統合されている。**
+
+`imm`は`ARTYPE`の配列長専用に追加されたオペランドカテゴリで、識別子を許さないコンパイル時定数リテラル(`0`,`1234`,`'A'`)のみを受け付ける——Goの配列長が定数式である必要があることに対応する。
 
 **`FUNCM`/`INTYPE`/`GETYPE`/`FUNCVAL`、および`FUNC`/`CALL`/`DEFER`/`SPAWN`/`STTYPE`のジェネリクス対応(`<<>>`)は、amivm本体への大規模な改修(2026年8月)で追加されたが、Weaveは現時点でいずれも使っていない。** 理由: これらはGoのレシーバー付きメソッド・インターフェース・ジェネリクスという「静的型付け言語」向けの機能であり、Weaveの値は全て`^any`(動的型付け、上記「Weave特有の設計課題」1)のため、素直に活用できる場面が無い——`gotype`/`gomethod`(15節)のGo資産呼び出しも、名前解決だけが静的でGo呼び出し自体は依然reflect経由(16節)という設計を維持しており、これらの新命令に乗り換える動機が無いと実装後に確認済み(詳細は下記「確定した設計判断」の該当節)。旧`METHOD`(メソッド値取得、`local := variable.method`)は`METHVAL`へ改称された——Weaveはこの機能自体を「型ヒント」削除時に使わなくなっているため実害は無いが、**命令名`METHOD`は現在`INTYPE`内のメソッドシグネチャ宣言という全く別の意味で再利用されている**ため、過去の設計判断ログ(下記)を読む際は文脈(いつの時点の記述か)に注意すること。
 
@@ -973,6 +975,16 @@ sema側の静的追跡(`goStaticVars`/`goListShapes`)は、複数戻り値位置
 `weavert.Exit`(`os.Exit`を直接呼ぶ)は、呼び出すとテストプロセス自体を終了させてしまうため、Goの標準的な「自分自身をサブプロセスとして再実行し、環境変数でどちらの実行かを切り替える」パターンで単体テストした(`weavert/weavert_test.go`の`TestExit_TerminatesProcessWithGivenCode`)——このプロジェクトで初めて、`os.Exit`を直接呼ぶ関数をテストする必要が生じた場面。
 
 `examples/strings.weave`(全11個の文字列組み込み関数。日本語を含む非ASCII文字列でのインデックス一貫性も検証)・`examples/math.weave`(全8個の数学関数+`sqrt`の負数エラーを`recover(...)`と組み合わせて検証)・`examples/exit.weave`(`exit(...)`が`recover(...)`ハンドラを経由せずプロセスを終了させ、呼び出し以降のコードが一切実行されないことを検証)を新設し、`amivm`→`go build`→実行まで実地検証した。単体テスト(codegen/weavert)を新規追加、全て green(sema側は`builtinNames`への追加のみで新しいロジックが無く、既存の汎用的な引数検査テストで既にカバーされているため追加テストは不要と判断した)。既存の全21サンプル+`examples/modules`+`examples/multifile`の回帰(`make test-examples`)も無変更で動作継続することを確認した。weave_spec.md §11(新規20行)・§12(`exit`への言及)・§13(キーワード一覧)・§19.9(不採用項目の明記)、`tour/04-lists.md`(新規セクション)を更新した。
+
+### amivmへの`ARTYPE`(名前付き固定長配列型)追加を確認——Weave側の実装変更は不要と判明
+
+ユーザーから「amivmに`ARTYPE`(名前付き固定長配列型)が追加された」と伝えられ、`ignored/amivm/amivm_spec.md`(新設4.16節)とamivmリポジトリのコミット(`ac108e9`)を確認した。**純粋な追加のみで、既存命令の挙動変更・後方互換の破壊は無い**——`ARTYPE typename1 type1 imm`(`type typename1 [imm]type1`)は、元々存在した`^[n]type1`という配列のインライン型記法(構文自体は既存)に、名前を付けて再利用したい場合の選択肢を追加しただけ。新設された`imm`オペランドカテゴリ(識別子を許さないコンパイル時定数リテラル専用、Goの配列長が定数式である必要があることに対応)も、Kind自体は既存の`KZero`/`KPosInt`/`KRune`を再利用しており、amivm側でも新設のKindは無い。
+
+**調査方法はamivm仕様の大規模更新(前節)を確認した際と同じ——まず`internal/codegen/*.go`(非テストファイル)を`grep`し、Weaveが実際にAMIVM配列命令(`ASET`/`AGET`/`ARTYPE`)を一つも生成していないことを確認した。** Weaveの「配列」相当の値(3節の`list(...)`)は、実装当初から`weavert.Object`(連番の数値キーを持つ`map[string]any`)へ一元化されており、AMIVMのネイティブな配列・スライス命令(`ASET`/`AGET`/`SLTYPE`/`SLMAKE`/`SLICE`)は一度も使われていない——理由はオブジェクト(2節)・スライス型ヒント(15.4節、後日削除)と全く同じ「Weaveの値は常に`^any`で、Go自身がネイティブ配列型を持つ変数に対してしか配列アクセス命令を使えない」という壁(CLAUDE.md「Weave特有の設計課題」1)。
+
+**`ARTYPE`はこの壁を越える助けにならないと判断した理由は、既存のコンテナ系命令(`MPTYPE`/`STTYPE`/`SLTYPE`)よりもさらに一段狭い。** `ARTYPE`が宣言する固定長配列は、**配列長がコンパイル時定数(`imm`、識別子不可)でなければならない**——Weaveの`list(...)`は実行時に決まる可変長の値であり、そもそもコンパイル時に長さが確定するという言語レベルの概念自体が存在しない。スライス型ヒント(§16「コンテナ系の型ヒント」)で採用した「名前付き代役型を1つだけ発行してGoの代入可能性規則に委ねる」という迂回策も、今回は迂回する対象(可変長スライスと固定長配列という、そもそも異なる種類の型)が違うため転用できない。実地検証(`go build ./... && go vet ./... && go test ./... -count=1`、`make test-examples`)でも、新しいamivmバイナリに対して既存の全出力が無変更で動作継続することを確認し、Weave側の実装に一切影響が無いことを裏付けた。
+
+**修正はドキュメントのみ**:本ファイルの「AMIVM-IRの書き方」節の命令一覧表に`ARTYPE`(Weave未使用である旨も明記)・`imm`オペランドカテゴリの説明を追記した。`weave_spec.md`・`weave_implementation_notes.md`への影響は無し(どちらも配列命令への言及が元々無いため、追記すべき既存記述が無い)。
 
 ## 検討中の今後の対応(未着手)
 
