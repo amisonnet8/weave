@@ -13,8 +13,8 @@ import (
 // a runtime-dispatching function rather than a native AMIVM instruction
 // (ADD/SUB/...), which only accepts concretely-typed operands. The
 // "compile a static fast path when both operand types are known"
-// optimization §14 sketches is deliberately deferred — see CLAUDE.md's
-// Step 3 "確定した設計判断".
+// optimization an early design sketch considered is deliberately
+// deferred — see CLAUDE.md's Step 3 "確定した設計判断".
 
 // Add implements `+`: numeric addition if both operands are numbers,
 // string concatenation if both are strings. Any other combination is a

@@ -881,7 +881,7 @@ func TestGenerate_GoFuncCallRoutesThroughCallGoFuncList(t *testing.T) {
 	// weavert.CallGoFuncList, not a literal native CALL, is what makes an
 	// `any`-typed argument (not just a literal) legal — see genGoFuncCall's
 	// doc comment. It always returns a Weave list now (weave_spec.md
-	// §15.2), so `print` here prints a one-element list, not the bare
+	// §14.2), so `print` here prints a one-element list, not the bare
 	// string — this test only cares about the CALL shape, not the runtime
 	// value.
 	if !strings.Contains(ir, "?weavert.CallGoFuncList\t?strings.ToUpper\t\"hi\"\n") {
@@ -913,7 +913,7 @@ func TestGenerate_GovarDeclEmitsNoIR(t *testing.T) {
 }
 
 func TestGenerate_GovarReadEmitsLiveNativeCallPerReference(t *testing.T) {
-	// weave_spec.md §15.5: each read of a govar(...)-declared name is its
+	// weave_spec.md §14.5: each read of a govar(...)-declared name is its
 	// own fresh CALL — not a cached snapshot — so referencing it twice
 	// must emit the CALL twice (see genGoVarRead's doc comment on why
 	// this is what "live" means here).
@@ -973,10 +973,10 @@ func atExpr(list ast.Expr, index float64) *ast.CallExpr {
 
 // goReaderDeclStmts declares an entirely unbound GoReader/newReader pair
 // (gofunc with no second/proto argument) — every call through these
-// always returns a Weave list via reflection (weave_spec.md §15.2), and
+// always returns a Weave list via reflection (weave_spec.md §14.2), and
 // `r` itself is never statically Go-typed (proto-binding requires the
 // gofunc(...)/gomethod(...) declaration's own optional second argument —
-// weave_spec.md §15.1/§15.2 — contrast protoGoReaderDeclStmts below).
+// weave_spec.md §14.1/§14.2 — contrast protoGoReaderDeclStmts below).
 func goReaderDeclStmts() []ast.Stmt {
 	return []ast.Stmt{
 		&ast.AssignStmt{Name: "GoReader", Value: &ast.CallExpr{
@@ -1022,12 +1022,12 @@ func TestGenerate_GoFuncCallAlwaysBuildsListViaReflect(t *testing.T) {
 
 // protoGoReaderDeclStmts declares a gotype with an untyped `len` method
 // (gomethod("Len"), no proto of its own) but a proto-bound newReader
-// gofunc (gofunc(name, GoReader) — weave_spec.md §15.2's optional second
+// gofunc (gofunc(name, GoReader) — weave_spec.md §14.2's optional second
 // argument), then extracts the returned list's position 0 into `r` via
 // at(...). The method name is resolved statically (genGoMethodCall), but
 // the Go call itself still always dispatches via reflection
 // (weavert.CallGoMethodList) — there is no separate "fully native" tier
-// any more (weave_spec.md §15.4's type hints were removed).
+// any more (weave_spec.md §14.4's type hints were removed).
 func protoGoReaderDeclStmts() []ast.Stmt {
 	return []ast.Stmt{
 		&ast.AssignStmt{Name: "GoReader", Value: &ast.CallExpr{
@@ -1272,7 +1272,7 @@ func TestGenerate_SelfRecursiveFuncLitReferencesOwnHoistedVar(t *testing.T) {
 }
 
 func TestGenerate_RecoverLowersToNativeDefer(t *testing.T) {
-	// recover(handler) (weave_spec.md §20) is the one builtin that lowers
+	// recover(handler) (weave_spec.md §17) is the one builtin that lowers
 	// to a native AMIVM DEFER rather than an ordinary weavert.Call+CALL —
 	// see genRecoverCall's own doc comment for why (Go's recover() only
 	// has an effect when called directly by a deferred function).

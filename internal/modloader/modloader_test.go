@@ -184,7 +184,7 @@ main = fn(args) {
 }
 
 // TestLoad_MainInNonRootPackageIsDemotedToOrdinaryBinding verifies
-// weave_spec.md §17.3's option (a) resolution: a non-root package's own
+// weave_spec.md §15.3's option (a) resolution: a non-root package's own
 // `main = fn(args) {...}` is never an error — it is silently demoted
 // into an ordinary top-level binding (renamed like any other, here
 // `sub_main`), never treated as an entry point. Only the root package's
@@ -270,7 +270,7 @@ main = fn(args) {
 
 // TestLoad_ReassigningBindingNameToADifferentPackageIsAnError checks the
 // flip side of the internal renaming prefix now coming from the binding
-// name (weave_spec.md §17.4) rather than the directory name: reusing the
+// name (weave_spec.md §15.4) rather than the directory name: reusing the
 // same binding name for two genuinely different packages — even within
 // one file, via reassignment — would make both packages' own renamed
 // bindings collide on the very same prefix (both would emit `shared_X`).
@@ -297,7 +297,7 @@ main = fn(args) {
 
 // TestLoad_DirectoryNameNeedNotBeIdentifierShaped verifies that a
 // package's internal renaming prefix now comes entirely from the
-// importer's own chosen binding name (weave_spec.md §17.4), not from the
+// importer's own chosen binding name (weave_spec.md §15.4), not from the
 // directory name — so a directory name that wouldn't itself be a valid
 // Weave identifier (hyphens, here) is no longer rejected, since it is
 // never used as a prefix at all. This replaces the old
@@ -324,7 +324,7 @@ main = fn(args) {
 
 // TestLoad_SameDirectoryNameDifferentPackagesNoLongerCollide is the
 // direct regression test for the bug CLAUDE.md's "検討中の今後の対応" §1
-// (and weave_spec.md's former §17.4/§19.8 "known undetected bug") set out
+// (and weave_spec.md's former §15.4/§18.8 "known undetected bug") set out
 // to fix: two unrelated packages that happen to share a directory
 // basename ("utils") used to have their renamed bindings silently
 // collide, because the old renaming prefix was the directory basename.
@@ -369,7 +369,7 @@ main = fn(args) {
 // genuinely different target packages must be rejected — left unchecked,
 // x's own `utils_Value` and y's own `utils_Value` would collide in the
 // final merged program exactly like same-named directories used to
-// (weave_spec.md §17.4).
+// (weave_spec.md §15.4).
 func TestLoad_SameBindingNameForDifferentPackagesAcrossFilesIsAnError(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"utilsA/a.weave": "Value = 1\n",

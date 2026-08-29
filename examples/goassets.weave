@@ -1,17 +1,17 @@
 main = fn(args) {
-	// weave_spec.md §15.3 shows gotype/gofunc declared at true top
-	// level (module scope), but Weave's grammar only supports general
-	// top-level statements once Step 5 (functions) and Step 6 (objects)
-	// existed to produce them — general top-level bindings are still
-	// not implemented as of this step, so declarations live inside
-	// main() for now (see CLAUDE.md's 後半 Step 3 "確定した設計判断").
+	// weave_spec.md §14.3: gotype/gofunc declarations are normally made
+	// once at the top of a module (or, since top-level statements exist
+	// now, truly at module scope — see examples/integration.weave for
+	// that style). This example keeps them local to main() instead,
+	// just because none of these functions is reused elsewhere in the
+	// file.
 	//
-	// weave_spec.md §15.2: every gofunc(...)/gomethod(...) call always
+	// weave_spec.md §14.2: every gofunc(...)/gomethod(...) call always
 	// returns a Weave list now, regardless of how many values the real
 	// Go function returns — at(list, i) reads one position back out.
 	// Every call is dispatched via reflection (weavert.CallGoFuncList) —
 	// gofunc(...)'s only optional second argument is a gotype(...) proto
-	// for position 0 of the returned list (weave_spec.md §15.2), not
+	// for position 0 of the returned list (weave_spec.md §14.2), not
 	// used by any of the plain-scalar functions below.
 	toUpper = gofunc("?strings.ToUpper")
 	trimSpace = gofunc("?strings.TrimSpace")
@@ -31,7 +31,7 @@ main = fn(args) {
 	print(at(fileResult, 0))
 
 	// os.ReadFile again, this time via a Go package-level variable read
-	// through govar(...) (weave_spec.md §15.4): Stdout is re-read live
+	// through govar(...) (weave_spec.md §14.4): Stdout is re-read live
 	// on every reference, not snapshotted once at declaration.
 	// io.WriteString(w io.Writer, s string) (int, error) is
 	// non-variadic, so it's a plain reflect-friendly gofunc call.

@@ -54,7 +54,7 @@ Usage:
 
 	weave <command> [flags] <file.weave | package-dir | package.wvz>
 
-A package-dir (or a .wvz archive of one, weave_spec.md §17.6) compiles
+A package-dir (or a .wvz archive of one, weave_spec.md §15.6) compiles
 every .weave file in that package as one program; a single file compiles
 only that file, ignoring any siblings in the same directory.
 
@@ -201,7 +201,7 @@ func runEmitGo(args []string) error {
 // a build's bare executable name).
 //
 // srcPath may name a package directory or a .wvz archive rather than a
-// single file (weave_spec.md §17.1, §17.6) — TrimSuffix(".weave") would
+// single file (weave_spec.md §15.1, §15.6) — TrimSuffix(".weave") would
 // then be a no-op, which for a directory would otherwise leave the
 // output path identical to the source directory itself (`go build -o
 // <existing dir>` writes *into* that directory instead of naming a new

@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// String operations (weave_spec.md §11/§19.9) route through weavert for
+// String operations (weave_spec.md §11/§18.9) route through weavert for
 // the same reason every other operator/builtin does (weavert/ops.go's
 // package doc comment): every Weave value is a Go `any`, and Go doesn't
 // let you call a string method on an `any`-typed variable without first
@@ -158,7 +158,7 @@ func Repeat(s any, n any) any {
 // ToNumber implements the `toNumber` builtin: parse a string into a
 // Weave number (weave_spec.md §11) — the inverse of the `string`
 // builtin's number→string direction (ToString above), which weave_spec.md
-// §19.9 used to flag as a real, if undocumented, gap (nothing converted
+// §18.9 used to flag as a real, if undocumented, gap (nothing converted
 // the other way natively). No leading/trailing whitespace is trimmed
 // first — strconv.ParseFloat's own strictness is kept as-is, matching
 // the same raw-Go-function behavior a direct `gofunc("?strconv.ParseFloat", ...)`

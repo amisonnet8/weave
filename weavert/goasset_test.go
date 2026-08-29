@@ -59,7 +59,7 @@ func TestCallGoFuncList_NormalizesNumericResult(t *testing.T) {
 // TestCallGoFuncList_ValueErrorIdiom exercises the real motivating case
 // (Go's `os.ReadFile(name string) ([]byte, error)`): every return value
 // comes back as its own list element now — no automatic error-panicking,
-// no dropping of the trailing error — weave_spec.md §15.2's "常にlist"
+// no dropping of the trailing error — weave_spec.md §14.2's "常にlist"
 // rule means the caller decides what to do with each position via
 // `at(...)`/`raiseIfError(...)`.
 func TestCallGoFuncList_ValueErrorIdiom_Success(t *testing.T) {

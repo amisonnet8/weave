@@ -15,7 +15,7 @@ import (
 // every .weave file directly inside the given directory into a single
 // .wvz (ZIP) archive, at the archive's own root (no directory prefix
 // inside the ZIP), so that internal/modloader's package(...) resolution
-// (weave_spec.md §17.6) can read a .wvz exactly as it would read the
+// (weave_spec.md §15.6) can read a .wvz exactly as it would read the
 // original directory — via fs.Glob(fsys, "*.weave") against whichever
 // fs.FS backs it. Deliberately non-recursive: it only zips the files
 // directly in the given directory, matching how loadPackageFiles itself
@@ -25,7 +25,7 @@ import (
 //
 // dir must be a *package member* directory — something meant to be
 // reached via another file's `package("./dir")`, with no `func main` of
-// its own (weave_spec.md §17.2/§17.3: an importable package may never
+// its own (weave_spec.md §15.2/§15.3: an importable package may never
 // declare one). A directory that already has `func main` is rejected:
 // packaging a standalone, directly-runnable program is already `weave
 // build`'s job, so `weave wvz` stays scoped to its one purpose —
@@ -70,7 +70,7 @@ func runWvz(args []string) error {
 		return err
 	}
 	if file.Main != nil {
-		return fmt.Errorf("%q declares its own `main = fn(args) {...}` — weave wvz only packages *importable* packages (weave_spec.md §17.2/§17.3, which may never declare their own entry point); to build or run it as a standalone program instead, use `weave build`/`weave run`", dir)
+		return fmt.Errorf("%q declares its own `main = fn(args) {...}` — weave wvz only packages *importable* packages (weave_spec.md §15.2/§15.3, which may never declare their own entry point); to build or run it as a standalone program instead, use `weave build`/`weave run`", dir)
 	}
 	// A synthetic entry point, so the pipeline below (which always needs
 	// a real Go func main() to reach `go build`) has something to

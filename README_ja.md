@@ -8,7 +8,7 @@
 
 ## ステータス
 
-Weaveのフロントエンド(字句解析・構文解析・意味検査・AMIVM-IRコード生成)は、[`weave_spec.md`](weave_spec.md)に記載された言語仕様を全て実装済みです: 動的な値(数値・文字列・真偽値・`nil`)、演算子、制御構文、関数・クロージャー・カリー化(自己再帰含む)、プロトタイプベースのオブジェクトとメソッド呼び出し、`[index]`による読み書き糖衣構文付きのlist(3.1節)、組み込み関数、`for`-`in`、アクターモデル(`spawn`/`send`/`ask`/`reply`)、reflectionベースの静的なGo資産連携(`gotype`/`gofunc`/`gomethod`/`govar`、15〜16節)、複数ファイル・複数パッケージのモジュール機構(`package(...)`、17節。`.wvz`圧縮パッケージ含む)。
+Weaveのフロントエンド(字句解析・構文解析・意味検査・AMIVM-IRコード生成)は、[`weave_spec.md`](weave_spec.md)に記載された言語仕様を全て実装済みです: 動的な値(数値・文字列・真偽値・`nil`)、演算子、制御構文、関数・クロージャー・カリー化(自己再帰含む)、プロトタイプベースのオブジェクトとメソッド呼び出し、`[index]`による読み書き糖衣構文付きのlist(3.1節)、組み込み関数、`for`-`in`、アクターモデル(`spawn`/`send`/`ask`/`reply`)、reflectionベースの静的なGo資産連携(`gotype`/`gofunc`/`gomethod`/`govar`、14節)、複数ファイル・複数パッケージのモジュール機構(`package(...)`、15節。`.wvz`圧縮パッケージ含む)。
 
 ## パイプライン
 
@@ -44,7 +44,7 @@ go install github.com/amisonnet8/weave/cmd/weave@latest
 weave <コマンド> [フラグ] <file.weave | package-dir | package.wvz>
 ```
 
-ディレクトリ(またはそれを圧縮した`.wvz`アーカイブ、仕様17.6節)を指定した場合、その中の全`.weave`ファイルを1つのパッケージとしてコンパイルします(`package(...)`、仕様17.2節)。単一ファイルを指定した場合はそのファイルだけをコンパイルし、同じディレクトリの他のファイルは無視します。
+ディレクトリ(またはそれを圧縮した`.wvz`アーカイブ、仕様15.6節)を指定した場合、その中の全`.weave`ファイルを1つのパッケージとしてコンパイルします(`package(...)`、仕様15.2節)。単一ファイルを指定した場合はそのファイルだけをコンパイルし、同じディレクトリの他のファイルは無視します。
 
 | コマンド | 出力 |
 |---|---|
@@ -102,7 +102,7 @@ cmd/weave/            CLIエントリポイント(本READMEの`weave`コマン�
 internal/lexer/       字句解析
 internal/parser/      構文解析 → AST
 internal/ast/         AST定義
-internal/modloader/   複数ファイル・複数パッケージのpackage(...)宣言(17節、ディレクトリまたは
+internal/modloader/   複数ファイル・複数パッケージのpackage(...)宣言(15節、ディレクトリまたは
                        .wvzアーカイブ)をsema/codegenの前に1つのフラットなASTへ解決する。
                        詳細はCLAUDE.md参照
 internal/sema/        意味検査(スコープ解決・構文レベルの検査。Weaveは動的型付けのため、

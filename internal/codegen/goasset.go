@@ -41,7 +41,7 @@ type GoVarInfo struct {
 // checkGoDecl) — codegen has already been told by sema.Check that the
 // file is valid, so this just re-derives the same symbol tables to know
 // how to lower later references. None of the three declaration forms
-// emits any IR itself (weave_spec.md §16: these are compile-time-only,
+// emits any IR itself (weave_spec.md §14.6: these are compile-time-only,
 // never a runtime value) — genAssignStmt calls this before its ordinary
 // dynamic-value handling and, if it reports true, skips VAR/SET entirely
 // for this statement.
@@ -66,7 +66,7 @@ func genGoDecl(fg *funcGen, name string, call *ast.CallExpr) (bool, error) {
 }
 
 // genGoVarDecl re-derives one `X = govar("?pkg.Var")` declaration
-// (weave_spec.md §15.4) already validated by sema (checkGoVarDecl) —
+// (weave_spec.md §14.4) already validated by sema (checkGoVarDecl) —
 // just records GoName for genExpr's *ast.Ident case (below) to read live
 // on every later reference to X.
 func genGoVarDecl(fg *funcGen, name string, call *ast.CallExpr) {
@@ -78,7 +78,7 @@ func genGoVarDecl(fg *funcGen, name string, call *ast.CallExpr) {
 }
 
 // genGoVarRead lowers a read of a govar(...)-declared name (weave_spec.md
-// §15.4) to a single native CALL: info.GoName ("?pkg.Var") is already a
+// §14.4) to a single native CALL: info.GoName ("?pkg.Var") is already a
 // valid AMIVM `value` operand — the exact same "a bare ?pkg.xxx token is
 // just a raw Go expression, embeddable as a first-class value" trick
 // genGoFuncCall's own doc comment established for passing a *function*
@@ -86,7 +86,7 @@ func genGoVarDecl(fg *funcGen, name string, call *ast.CallExpr) {
 // the whole read: no reflect is needed at all (there's no method-name
 // string to resolve dynamically the way CallGoMethodList needs — the
 // identifier itself is fully static). Every reference re-emits its own
-// CALL rather than caching a result anywhere (weave_spec.md §15.4's
+// CALL rather than caching a result anywhere (weave_spec.md §14.4's
 // "live" semantics: each read reflects pkg.Var's actual value at the
 // moment this line executes, not a value snapshotted once at
 // declaration — see CLAUDE.md's design-decision note on why this was
@@ -142,7 +142,7 @@ func genGoFuncDecl(fg *funcGen, name string, call *ast.CallExpr) {
 // weavert/goasset.go for why reflect is unavoidable (an arbitrary `any`
 // argument can't be passed to a specific concrete Go parameter type
 // without either a type assertion or reflect.Convert). Always returns a
-// Weave list of every actual Go return value (weave_spec.md §15.2's
+// Weave list of every actual Go return value (weave_spec.md §14.2's
 // "常にlist" rule) — info.GoName ("?pkg.Func") is itself a valid AMIVM
 // `value` operand (a raw Go function reference), passed straight through
 // as CallGoFuncList's first argument.
@@ -238,13 +238,13 @@ func trackAtResult(fg *funcGen, name string, call *ast.CallExpr) {
 // genGoMethodCall lowers `f.Method(args...)` when f is a statically
 // Go-typed variable (trackGoAssetResult) — bypassing the dynamic
 // prototype-chain dispatch genMethodCall otherwise uses (weave_spec.md
-// §16). The method name itself is resolved here, at compile time, from
+// §14.6). The method name itself is resolved here, at compile time, from
 // gotype(...)'s own declared table (never looked up dynamically), but
 // the Go call itself always goes through weavert.CallGoMethodList
 // (reflect): f's *generated* Go code only ever sees it as `any`, so
 // "static resolution" here means the method *name* is known at compile
 // time, not that the Go call itself can skip reflect. Always returns a
-// Weave list (weave_spec.md §15.2).
+// Weave list (weave_spec.md §14.2).
 //
 // The bool result tells genGeneralCall whether this applied at all —
 // prop.Obj not being a tracked static variable is the ordinary case (an

@@ -18,7 +18,7 @@ main = fn(args) {
 	// __proto__ is an ordinary property (weave_spec.md §4.2): it can be
 	// read directly, and reassigned after the object already exists —
 	// prototype-swapping is not limited to object-literal construction.
-	// (Objects can't be compared with == — weave_spec.md §8/§19 — so
+	// (Objects can't be compared with == — weave_spec.md §8/§18 — so
 	// this just stashes the old prototype to restore later, rather than
 	// comparing it against `base`.)
 	oldProto = alice.__proto__

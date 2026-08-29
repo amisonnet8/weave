@@ -7,7 +7,7 @@ import (
 	"github.com/amisonnet8/weave/internal/ast"
 )
 
-// weave_spec.md §15's Go asset declarations (`gotype`/`gofunc`, §15.1's
+// weave_spec.md §14's Go asset declarations (`gotype`/`gofunc`, §14.1's
 // `gomethod`) are evaluated entirely at compile time — the declared
 // names (`GoFile`, `goOpen`) are never ordinary dynamic Weave values,
 // so unlike every other assignment `X = gotype(...)` and `Y =
@@ -27,13 +27,13 @@ import (
 // reserved-word check would give.
 //
 // Every Go function/method call always returns a Weave list
-// (weave_spec.md §15.2's "常にlist" rule, a deliberate from-scratch
+// (weave_spec.md §14.2's "常にlist" rule, a deliberate from-scratch
 // redesign, not an incremental patch: this project's users are entirely
 // internal, so there was no reason to preserve the older "scalar for 1
 // return value" behavior once it stopped being the best available
 // design — see CLAUDE.md's 開発の進め方 7). Every call is dispatched via
 // reflection (weavert.CallGoFuncList/CallGoMethodList) — there is no
-// separate typed/native dispatch path any more (weave_spec.md §15.4's
+// separate typed/native dispatch path any more (weave_spec.md §14.4's
 // `goReturns(...)`/`goParams(...)` type hints, and §4.3's `shape`/
 // `checkShape`, were both removed as half-baked; see CLAUDE.md's
 // design-decision note on the removal). The only thing declared ahead
@@ -45,7 +45,7 @@ import (
 // GoTypeInfo is what `X = gotype("?pkg.Type", { weaveName:
 // gomethod("GoName"), ... })` declares. GoName is the "?pkg.Type"
 // string exactly as written (optionally "?*pkg.Type" for a pointer
-// receiver, weave_spec.md §15.1) — already shaped like an AMIVM
+// receiver, weave_spec.md §14.1) — already shaped like an AMIVM
 // callname token (see internal/codegen/goasset.go, which is what
 // actually emits IR). Methods maps each Weave-visible member name to
 // its GoMethodInfo.
@@ -55,10 +55,10 @@ type GoTypeInfo struct {
 }
 
 // GoMethodInfo is one `gomethod("GoName")` or `gomethod("GoName",
-// ProtoIdent)` declaration (weave_spec.md §15.1) — always dispatched at
+// ProtoIdent)` declaration (weave_spec.md §14.1) — always dispatched at
 // the call site via weavert.CallGoMethodList (reflection-based),
 // returning a Weave list of every actual Go return value
-// (weave_spec.md §15.2). Proto is "" ordinarily; when non-empty, it
+// (weave_spec.md §14.2). Proto is "" ordinarily; when non-empty, it
 // names an earlier gotype(...) declaration that position 0 of the
 // returned list is statically bound to (see trackGoAssetResult) — the
 // only piece of static information Weave tracks about a Go asset call's
@@ -71,9 +71,9 @@ type GoMethodInfo struct {
 }
 
 // GoFuncInfo is what `Y = gofunc("?pkg.Func")` or `Y = gofunc("?pkg.Func",
-// ProtoIdent)` declares (weave_spec.md §15.2) — GoName is the "?pkg.Func"
+// ProtoIdent)` declares (weave_spec.md §14.2) — GoName is the "?pkg.Func"
 // string exactly as written, already the exact AMIVM callname/value
-// shape a call to Y compiles straight to (weave_spec.md §16: the
+// shape a call to Y compiles straight to (weave_spec.md §14.6: the
 // function reference itself is resolved statically, though the call
 // still goes through reflection — see weavert.CallGoFuncList's own doc
 // comment). Proto has the same meaning as GoMethodInfo.Proto.
@@ -83,7 +83,7 @@ type GoFuncInfo struct {
 }
 
 // GoVarInfo is what `X = govar("?pkg.Var")` declares (weave_spec.md
-// §15.4) — read-only, live access to a Go package-level variable (or
+// §14.4) — read-only, live access to a Go package-level variable (or
 // constant; nothing at this string-token level distinguishes the two,
 // and read access behaves identically either way). GoName is the
 // "?pkg.Var" string exactly as written — already a valid AMIVM `value`
@@ -99,13 +99,13 @@ type GoVarInfo struct {
 func goAssetReservedName(name string) (string, bool) {
 	switch name {
 	case "gotype":
-		return "reserved for Go type declarations (weave_spec.md §15.1)", true
+		return "reserved for Go type declarations (weave_spec.md §14.1)", true
 	case "gofunc":
-		return "reserved for Go function declarations (weave_spec.md §15.2)", true
+		return "reserved for Go function declarations (weave_spec.md §14.2)", true
 	case "gomethod":
-		return "reserved for use inside a gotype(...) member list (weave_spec.md §15.1)", true
+		return "reserved for use inside a gotype(...) member list (weave_spec.md §14.1)", true
 	case "govar":
-		return "reserved for Go package-level variable declarations (weave_spec.md §15.4)", true
+		return "reserved for Go package-level variable declarations (weave_spec.md §14.4)", true
 	}
 	return "", false
 }
@@ -132,7 +132,7 @@ func (c *checker) checkGoDecl(name string, call *ast.CallExpr, line int) (bool, 
 }
 
 // checkGoTypeDecl checks `X = gotype("?pkg.Type", { weaveName:
-// gomethod("GoName"), ... })` (weave_spec.md §15.1).
+// gomethod("GoName"), ... })` (weave_spec.md §14.1).
 func (c *checker) checkGoTypeDecl(name string, call *ast.CallExpr, line int) error {
 	if why, ok := reservedName(name); ok {
 		return fmt.Errorf("line %d: %q is a reserved name (%s)", line, name, why)
@@ -145,7 +145,7 @@ func (c *checker) checkGoTypeDecl(name string, call *ast.CallExpr, line int) err
 		return fmt.Errorf("line %d: gotype(...)'s first argument must be a string literal like \"?pkg.Type\"", call.Line)
 	}
 	if !strings.HasPrefix(goName.Value, "?") {
-		return fmt.Errorf("line %d: gotype(...)'s Go type name must start with '?' (weave_spec.md §15.1's own \"?os.File\" shape), got %q", call.Line, goName.Value)
+		return fmt.Errorf("line %d: gotype(...)'s Go type name must start with '?' (weave_spec.md §14.1's own \"?os.File\" shape), got %q", call.Line, goName.Value)
 	}
 	members, ok := call.Args[1].(*ast.ObjectLit)
 	if !ok {
@@ -177,7 +177,7 @@ func (c *checker) checkGoTypeDecl(name string, call *ast.CallExpr, line int) err
 }
 
 // checkGoMethodArgs validates `gomethod("GoName")` or `gomethod("GoName",
-// ProtoIdent)` (weave_spec.md §15.1) — see GoMethodInfo's own doc
+// ProtoIdent)` (weave_spec.md §14.1) — see GoMethodInfo's own doc
 // comment for what each shape means.
 func (c *checker) checkGoMethodArgs(mcall *ast.CallExpr) (*GoMethodInfo, error) {
 	if len(mcall.Args) == 0 || len(mcall.Args) > 2 {
@@ -200,7 +200,7 @@ func (c *checker) checkGoMethodArgs(mcall *ast.CallExpr) (*GoMethodInfo, error) 
 // protoArg validates a gofunc(...)/gomethod(...) declaration's optional
 // second argument — an Ident naming an earlier gotype(...) declaration,
 // binding position 0 of the call's returned list to that prototype
-// (weave_spec.md §15.1/§15.2). line is the enclosing gofunc(...)/
+// (weave_spec.md §14.1/§14.2). line is the enclosing gofunc(...)/
 // gomethod(...) call's own line, used when expr itself isn't even an
 // Ident (so there's no line of its own to report).
 func (c *checker) protoArg(expr ast.Expr, line int) (string, error) {
@@ -215,7 +215,7 @@ func (c *checker) protoArg(expr ast.Expr, line int) (string, error) {
 }
 
 // checkGoFuncDecl checks `Y = gofunc("?pkg.Func")` or `Y =
-// gofunc("?pkg.Func", ProtoIdent)` (weave_spec.md §15.2). See
+// gofunc("?pkg.Func", ProtoIdent)` (weave_spec.md §14.2). See
 // GoFuncInfo's own doc comment for what each shape means.
 func (c *checker) checkGoFuncDecl(name string, call *ast.CallExpr, line int) error {
 	if why, ok := reservedName(name); ok {
@@ -229,7 +229,7 @@ func (c *checker) checkGoFuncDecl(name string, call *ast.CallExpr, line int) err
 		return fmt.Errorf("line %d: gofunc(...)'s first argument must be a string literal like \"?pkg.Func\"", call.Line)
 	}
 	if !strings.HasPrefix(goName.Value, "?") {
-		return fmt.Errorf("line %d: gofunc(...)'s Go function name must start with '?' (weave_spec.md §15.2's own \"?os.Open\" shape), got %q", call.Line, goName.Value)
+		return fmt.Errorf("line %d: gofunc(...)'s Go function name must start with '?' (weave_spec.md §14.2's own \"?os.Open\" shape), got %q", call.Line, goName.Value)
 	}
 
 	if c.goFuncs == nil {
@@ -247,7 +247,7 @@ func (c *checker) checkGoFuncDecl(name string, call *ast.CallExpr, line int) err
 	return nil
 }
 
-// checkGoVarDecl checks `X = govar("?pkg.Var")` (weave_spec.md §15.4) —
+// checkGoVarDecl checks `X = govar("?pkg.Var")` (weave_spec.md §14.4) —
 // always exactly one argument.
 func (c *checker) checkGoVarDecl(name string, call *ast.CallExpr, line int) error {
 	if why, ok := reservedName(name); ok {
@@ -261,7 +261,7 @@ func (c *checker) checkGoVarDecl(name string, call *ast.CallExpr, line int) erro
 		return fmt.Errorf("line %d: govar(...)'s argument must be a string literal like \"?pkg.Var\"", call.Line)
 	}
 	if !strings.HasPrefix(goName.Value, "?") {
-		return fmt.Errorf("line %d: govar(...)'s Go variable name must start with '?' (weave_spec.md §15.4's own \"?os.Stdout\" shape), got %q", call.Line, goName.Value)
+		return fmt.Errorf("line %d: govar(...)'s Go variable name must start with '?' (weave_spec.md §14.4's own \"?os.Stdout\" shape), got %q", call.Line, goName.Value)
 	}
 
 	if c.goVars == nil {
@@ -335,7 +335,7 @@ func (c *checker) trackGoAssetResult(name string, value ast.Expr) {
 // tracked, proto-bound list and the index is the literal 0, name becomes
 // statically Go-typed to that proto — see trackGoAssetResult's own doc
 // comment. Position 0 is the only position ever tracked (weave_spec.md
-// §15.2's Go convention of "primary value first" — a proto binding only
+// §14.2's Go convention of "primary value first" — a proto binding only
 // ever applies to the function/method's own single struct/pointer return
 // value). Any other index, or a non-literal index expression (a
 // variable, an arithmetic expression, ...), simply isn't tracked — this

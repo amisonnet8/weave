@@ -1,4 +1,4 @@
-// weave_spec.md §17.1: files placed in the SAME directory are merged
+// weave_spec.md §15.1: files placed in the SAME directory are merged
 // into one implicit package — no package(...) call is needed between
 // them at all (contrast examples/modules/, which demonstrates the
 // cross-directory package(...) form instead). greet is defined in the

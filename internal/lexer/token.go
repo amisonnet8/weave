@@ -15,7 +15,7 @@ const (
 	// gotype, gofunc, gomethod, package) are reserved words but not
 	// syntax keywords: they lex as plain Ident and are resolved as
 	// ordinary calls, matching Seed/Cascade's convention. This
-	// includes package(...) (weave_spec.md §17.2) — there is
+	// includes package(...) (weave_spec.md §15.2) — there is
 	// deliberately no `import`/`pub` syntax; see modloader's package
 	// doc comment. `main` (the entry point, weave_spec.md §12) follows
 	// this same pattern now too — `main = fn(args) {...}` is an

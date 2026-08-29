@@ -154,14 +154,14 @@ type checker struct {
 
 	// inHandlerLiteral is true while checking the body of a function
 	// literal that is — or is lexically nested inside — an object
-	// literal's own field value (weave_spec.md §20's own restriction):
+	// literal's own field value (weave_spec.md §17's own restriction):
 	// such a closure could be dispatched as an actor message handler if
 	// its enclosing object is later spawn(...)ed (weave_spec.md §6.2's
 	// ObjGet-based dispatch doesn't care where the object came from), and
 	// recover(...) is deliberately not supported there — see §6.5's
 	// "no partial fault isolation" principle and checkFuncLit's own doc
 	// comment for why this is a syntactic (not exhaustive) check, and
-	// §20 for the full reasoning kept in CLAUDE.md's "確定した設計判断".
+	// §17 for the full reasoning kept in CLAUDE.md's "確定した設計判断".
 	// It is never reset back to false when entering an *ordinary* nested
 	// literal (checkFuncLit only ever forces it to true, never to
 	// false) — a closure defined and called synchronously from within a
@@ -377,7 +377,7 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 			return fmt.Errorf("line %d: \"_\" cannot be read (weave_spec.md §10) — it is write-only", e.Line)
 		}
 		if c.goVars[e.Name] != nil {
-			// govar(...)-declared names (weave_spec.md §15.4) never go
+			// govar(...)-declared names (weave_spec.md §14.4) never go
 			// through an ordinary assignment/scope binding at all — see
 			// checkGoVarDecl's own doc comment, and goFuncs' identical
 			// treatment a few lines below in the CallExpr case.
@@ -396,7 +396,7 @@ func (c *checker) checkExpr(expr ast.Expr, sc *scope) error {
 				return fmt.Errorf("line %d: %q is a reserved name (%s); it may only appear as `name = %s(...)`", callee.Line, callee.Name, why, callee.Name)
 			}
 			if callee.Name == "recover" && c.inHandlerLiteral {
-				return fmt.Errorf("line %d: recover(...) cannot be used inside a closure that is (or is nested inside) an object literal's own field value — such a closure could be dispatched as an actor message handler if the object is spawned, and recover() doesn't support that (weave_spec.md §6.5, §20)", callee.Line)
+				return fmt.Errorf("line %d: recover(...) cannot be used inside a closure that is (or is nested inside) an object literal's own field value — such a closure could be dispatched as an actor message handler if the object is spawned, and recover() doesn't support that (weave_spec.md §6.5, §17)", callee.Line)
 			}
 			if !builtinNames[callee.Name] && c.goFuncs[callee.Name] == nil {
 				// Neither a builtin nor a gofunc(...)-declared reference

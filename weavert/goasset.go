@@ -6,7 +6,7 @@ import (
 )
 
 // CallGoFuncList implements a gofunc(...)-declared call (weave_spec.md
-// §15.2) via reflection: fn is the real Go function passed as a value
+// §14.2) via reflection: fn is the real Go function passed as a value
 // (amivm's `value` operand category accepts a bare `?pkg.Func` token
 // directly, per amivm_spec.md §5 — see internal/codegen/goasset.go's
 // genGoFuncCall), invoked with args coerced to each parameter's real
@@ -18,7 +18,7 @@ import (
 // instead of silently doing the wrong thing).
 //
 // Every Go function/method call always returns a Weave list
-// (weave_spec.md §15.2's "常にlist" rule, a from-scratch redesign of the
+// (weave_spec.md §14.2's "常にlist" rule, a from-scratch redesign of the
 // old single-scalar-or-(value,error) behavior — see CLAUDE.md's
 // design-decision note on why): this collects ALL of fn's actual return
 // values, in order, each run through NormalizeGoValue, with no special
@@ -43,11 +43,11 @@ func CallGoFuncList(fn any, args ...any) any {
 }
 
 // CallGoMethodList implements a gomethod(...)-declared method call
-// (weave_spec.md §15.1/§16) via reflection: target is a Go value
+// (weave_spec.md §14.1/§14.6) via reflection: target is a Go value
 // returned by some earlier gofunc call (an ordinary Weave `any`), and
 // methodName is the *real* Go method name gomethod(...) named, already
 // resolved at compile time (internal/codegen/goasset.go's
-// genGoMethodCall — no dynamic prototype-chain search, per §16).
+// genGoMethodCall — no dynamic prototype-chain search, per §14.6).
 // Same "always a list" landing point as CallGoFuncList above — see its
 // own doc comment for why there's no separate (value, error) handling
 // here any more.
@@ -107,7 +107,7 @@ func RaiseIfError(v any) any {
 // comparisons, main's own exit code) — caught by running
 // examples/gomethods.weave through the full pipeline (see CLAUDE.md's
 // 後半 Step 4 "確定した設計判断"). Strings, bools, float64 itself,
-// nil, and any Go struct/pointer (returned as-is per §15.2, since it
+// nil, and any Go struct/pointer (returned as-is per §14.2, since it
 // has no Weave equivalent to convert to) all pass through unchanged.
 // CallGoMethodList/CallGoFuncList (via newList, above) route their
 // per-element results through this.

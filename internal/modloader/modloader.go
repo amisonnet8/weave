@@ -1,5 +1,5 @@
 // Package modloader resolves Weave packages across multiple .weave
-// files/directories/.wvz archives (weave_spec.md §17), before sema/
+// files/directories/.wvz archives (weave_spec.md §15), before sema/
 // codegen run.
 //
 // Load is the main entry point (LoadPackage is a narrower variant used
@@ -7,14 +7,14 @@
 // given a root path (a directory, a single .weave file, or a .wvz
 // archive — see its own doc for why all three are supported), it
 // discovers every .weave file in that package and merges
-// them into one package (§17.1), recursively resolves and loads every
+// them into one package (§15.1), recursively resolves and loads every
 // package reached via a top-level `name = package("<path>")` binding
-// (§17.2, detecting import cycles per §17.5 and rejecting a non-root
-// `func main`, §17.3), renames every non-root package's own top-level
+// (§15.2, detecting import cycles per §15.5 and rejecting a non-root
+// `func main`, §15.3), renames every non-root package's own top-level
 // bindings to a globally-unique flat name and rewrites every reference to
 // them accordingly, resolves every `qualifier.name` reference into a
 // direct reference to the target package's already-renamed flat name
-// (checking that name is exported, §17.2, as it goes — see rewrite.go),
+// (checking that name is exported, §15.2, as it goes — see rewrite.go),
 // and finally hands back one fully flat, single-package-shaped *ast.File
 // — pooling the root package's own TopLevel/Main with every (already
 // renamed) imported package's TopLevel — for sema.Check and
@@ -36,7 +36,7 @@
 // any IR of its own. Visibility, in turn, follows Go's own convention
 // instead of a `pub` modifier: a top-level binding is visible to
 // importers exactly when its own name starts with an uppercase letter
-// (weave_spec.md §17.2) — there is no separate "exported" bit to track,
+// (weave_spec.md §15.2) — there is no separate "exported" bit to track,
 // since the binding's spelling *is* its own visibility.
 package modloader
 
@@ -59,23 +59,23 @@ import (
 // table any OTHER package importing this one needs (rewrite.go's
 // tryResolveQualified).
 type loadedPackage struct {
-	Name string // display name only (a directory's basename, or a .wvz file's basename with the extension stripped), used in error messages — the internal renaming prefix is a separate thing entirely (the binding name the importer chose for `package(...)`, weave_spec.md §17.4); meaningless for the root, which is never prefixed
+	Name string // display name only (a directory's basename, or a .wvz file's basename with the extension stripped), used in error messages — the internal renaming prefix is a separate thing entirely (the binding name the importer chose for `package(...)`, weave_spec.md §15.4); meaningless for the root, which is never prefixed
 	Key  string // absolute path (directory or .wvz file) — the cycle-detection/cache key
 
 	TopLevel []ast.Stmt    // this package's own (already renamed/resolved) top-level statements
-	Main     *ast.FuncDecl // only ever non-nil for the root package (§17.3)
+	Main     *ast.FuncDecl // only ever non-nil for the root package (§15.3)
 
 	Renames map[string]string // bare top-level name -> already-renamed flat name (non-root only)
 }
 
 // loader carries the state shared across one whole Load() call: which
 // packages are currently on the recursion stack (cycle detection,
-// §17.5) and which have already been fully loaded (so a diamond-shaped
+// §15.5) and which have already been fully loaded (so a diamond-shaped
 // import graph — two different packages both importing a third — loads
 // that third package exactly once), the order packages finished loading
 // in (used to merge deterministically — imports always finish before
 // the package(s) that import them, so their TopLevel side effects
-// naturally run first, matching §17.4's evaluation-order rule), and
+// naturally run first, matching §15.4's evaluation-order rule), and
 // every .wvz archive opened along the way (closed once Load returns).
 type loader struct {
 	visiting map[string]bool
@@ -85,7 +85,7 @@ type loader struct {
 
 	// prefixOwners records, across this whole Load() call, which absolute
 	// package path (a loadedPackage's Key) first claimed a given
-	// binding-name prefix (weave_spec.md §17.4 — the internal renaming
+	// binding-name prefix (weave_spec.md §15.4 — the internal renaming
 	// prefix is the binding name the importer chose for
 	// `name = package("<path>")`, not the directory name). The vast
 	// majority of programs use one name per package throughout, so a
@@ -99,7 +99,7 @@ type loader struct {
 	// path never reaches this check at all — loadPackage's own cache
 	// check (ld.loaded) returns before prefix is ever consulted, so
 	// whichever binding name first loaded a package silently wins for
-	// every later import of that same path (also §17.4).
+	// every later import of that same path (also §15.4).
 	prefixOwners map[string]string
 }
 
@@ -107,7 +107,7 @@ type loader struct {
 // archive) into one fully merged, package-resolved *ast.File.
 //
 // A single-file root is supported alongside directory/.wvz roots as a
-// deliberate CLI convenience (weave_spec.md §17.1's own carve-out):
+// deliberate CLI convenience (weave_spec.md §15.1's own carve-out):
 // passing a specific .weave file compiles *only* that file, as if it
 // were the sole file in its own implicit single-file package, ignoring
 // any other .weave files that happen to sit alongside it in the same
@@ -196,7 +196,7 @@ func (ld *loader) closeAll() {
 }
 
 // pkgLocation identifies where one package's .weave files live: either a
-// real OS directory or a .wvz (ZIP) archive (weave_spec.md §17.6),
+// real OS directory or a .wvz (ZIP) archive (weave_spec.md §15.6),
 // abstracted behind an fs.FS so loadPackageFiles doesn't need to care
 // which. key is the absolute path used for cycle detection/dedup; dir is
 // the real filesystem directory a *nested* `package("<relative path>")`
@@ -218,7 +218,7 @@ type pkgLocation struct {
 // openPkgLocation opens absPath (already absolute) as a package source —
 // a directory or a .wvz file, chosen by absPath's own shape rather than
 // a flag, so `package("./mathutil")` and `package("./mathutil.wvz")` are
-// interchangeable at every call site (weave_spec.md §17.6).
+// interchangeable at every call site (weave_spec.md §15.6).
 func openPkgLocation(absPath string) (*pkgLocation, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -263,14 +263,14 @@ func resolvePkgLocation(baseDir, relPath string) (*pkgLocation, error) {
 // qualifier-resolves the package at loc (restricted to onlyFile alone
 // when it's non-empty — see Load's doc). isRoot controls both whether
 // this package's own `main = fn(args) {...}` (if any) is treated as the
-// entry point (§17.3) and whether this package's own top-level bindings
-// get a name prefix at all (§17.4 — root's own names are never
+// entry point (§15.3) and whether this package's own top-level bindings
+// get a name prefix at all (§15.4 — root's own names are never
 // rewritten, since there is exactly one root and no risk of collision
 // with itself). prefix is the internal renaming prefix to use if this
 // package turns out to need loading at all (ignored for the root, and
 // also ignored — see the ld.loaded cache check just below — whenever loc
 // was already loaded by an earlier `package(...)` under some other
-// binding name: the prefix that earlier call used wins, §17.4). It is the
+// binding name: the prefix that earlier call used wins, §15.4). It is the
 // binding name the *caller's own* `name = package("<path>")` assigned
 // this package to — extractPackageDecls passes its own AssignStmt's Name,
 // the only place loadPackage is ever called for a non-root package.
@@ -279,7 +279,7 @@ func (ld *loader) loadPackage(loc *pkgLocation, onlyFile string, isRoot bool, pr
 		return pkg, nil
 	}
 	if ld.visiting[loc.key] {
-		return nil, fmt.Errorf("circular import: package %q (or one it imports) imports itself, directly or indirectly (weave_spec.md §17.5)", loc.name)
+		return nil, fmt.Errorf("circular import: package %q (or one it imports) imports itself, directly or indirectly (weave_spec.md §15.5)", loc.name)
 	}
 	ld.visiting[loc.key] = true
 	defer delete(ld.visiting, loc.key)
@@ -318,7 +318,7 @@ func (ld *loader) loadPackage(loc *pkgLocation, onlyFile string, isRoot bool, pr
 		// to register the claim before recursing into this package's own
 		// nested imports below).
 		if owner, ok := ld.prefixOwners[prefix]; ok && owner != loc.key {
-			return nil, fmt.Errorf("binding name %q is already used to import %q — package(...) can't reuse it for %q too; give one of them a different name (weave_spec.md §17.4)", prefix, owner, loc.key)
+			return nil, fmt.Errorf("binding name %q is already used to import %q — package(...) can't reuse it for %q too; give one of them a different name (weave_spec.md §15.4)", prefix, owner, loc.key)
 		}
 		ld.prefixOwners[prefix] = loc.key
 	}
@@ -440,7 +440,7 @@ func packageDeclArg(value ast.Expr) (path string, isPkgDecl bool, err error) {
 		return "", false, nil
 	}
 	if len(call.Args) != 1 {
-		return "", false, fmt.Errorf("`package(...)` takes exactly one argument (a path string literal), got %d (weave_spec.md §17.2)", len(call.Args))
+		return "", false, fmt.Errorf("`package(...)` takes exactly one argument (a path string literal), got %d (weave_spec.md §15.2)", len(call.Args))
 	}
 	lit, ok := call.Args[0].(*ast.StringLit)
 	if !ok {
@@ -489,7 +489,7 @@ func loadPackageFiles(loc *pkgLocation, onlyFile string) (*mergedFile, error) {
 		merged.TopLevel = append(merged.TopLevel, f.TopLevel...)
 		if f.Main != nil {
 			if merged.Main != nil {
-				return nil, fmt.Errorf("%s (in %s): only one `main = fn(...) {...}` is allowed per package (weave_spec.md §17.3)", name, loc.key)
+				return nil, fmt.Errorf("%s (in %s): only one `main = fn(...) {...}` is allowed per package (weave_spec.md §15.3)", name, loc.key)
 			}
 			merged.Main = f.Main
 		}
@@ -498,7 +498,7 @@ func loadPackageFiles(loc *pkgLocation, onlyFile string) (*mergedFile, error) {
 }
 
 // collectRenames builds this (non-root) package's own bare-name ->
-// prefixed-name table (weave_spec.md §17.4) for every top-level
+// prefixed-name table (weave_spec.md §15.4) for every top-level
 // `name = value` binding — unlike Cascade's typed declaration categories
 // (struct/func/let), Weave has exactly one kind of top-level binding, so
 // every *ast.AssignStmt in topLevel needs an entry, exported or not (a
@@ -532,7 +532,7 @@ func applySelfRename(topLevel []ast.Stmt, renames map[string]string) {
 }
 
 // isExported reports whether name is visible outside its own package
-// (weave_spec.md §17.2): Go's own convention — an uppercase first letter
+// (weave_spec.md §15.2): Go's own convention — an uppercase first letter
 // — replacing this feature's original `pub` keyword. There is no
 // separate bit to track: the binding's own spelling is its visibility.
 func isExported(name string) bool {

@@ -54,12 +54,12 @@ func (p *parser) expect(k lexer.Kind, what string) (lexer.Token, error) {
 }
 
 // parseFile parses a Weave source file: an interleaving of ordinary
-// top-level statements (weave_spec.md §17's gotype/gofunc/package(...)
+// top-level statements (weave_spec.md §15's gotype/gofunc/package(...)
 // declarations, prototype object literals) and at most one entry-point
 // declaration (`main = fn(args) {...}`, weave_spec.md §12), in any
 // order. There is no dedicated `import` syntax — a cross-package
 // reference is just an ordinary `name = package("<path>")` top-level
-// assignment (weave_spec.md §17.2), parsed here as a plain
+// assignment (weave_spec.md §15.2), parsed here as a plain
 // ast.AssignStmt like any other; the pattern is recognized and fully
 // resolved by internal/modloader, which runs before sema/codegen ever
 // see a *File (see modloader's package doc comment). See ast.File's doc
@@ -97,7 +97,7 @@ func (p *parser) parseFile() (*ast.File, error) {
 		p.skipNewlines()
 	}
 	// A single parsed file need not contain `main` at all — a package
-	// member file (weave_spec.md §17.1) legitimately has none. Requiring
+	// member file (weave_spec.md §15.1) legitimately has none. Requiring
 	// exactly one somewhere in the whole root package is internal/
 	// modloader's job, once every file in the package has been merged
 	// (see modloader.Load).

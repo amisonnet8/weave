@@ -718,7 +718,7 @@ func goTypeDeclExpr(goName string, members []ast.ObjectField) *ast.CallExpr {
 // gomethodExpr builds `gomethod("GoName")`, or `gomethod("GoName",
 // protoName)` when proto is given — the latter binds position 0 of the
 // method's returned list to an earlier gotype(...) declaration
-// (weave_spec.md §15.1).
+// (weave_spec.md §14.1).
 func gomethodExpr(goMethodName string, proto ...string) ast.Expr {
 	args := []ast.Expr{&ast.StringLit{Value: goMethodName}}
 	if len(proto) == 1 {
@@ -730,7 +730,7 @@ func gomethodExpr(goMethodName string, proto ...string) ast.Expr {
 // goFuncDeclExpr builds `gofunc("?pkg.Func")`, or `gofunc("?pkg.Func",
 // protoName)` when proto is given — the latter binds position 0 of the
 // call's returned list to an earlier gotype(...) declaration
-// (weave_spec.md §15.2).
+// (weave_spec.md §14.2).
 func goFuncDeclExpr(goName string, proto ...string) *ast.CallExpr {
 	args := []ast.Expr{&ast.StringLit{Value: goName}}
 	if len(proto) == 1 {
@@ -785,8 +785,8 @@ func TestCheck_GoFuncUnknownProtoIsAnError(t *testing.T) {
 
 func TestCheck_GoFuncTooManyArgsIsAnError(t *testing.T) {
 	// gofunc(...) takes a Go function name, and optionally a gotype(...)
-	// proto name — never more than that (weave_spec.md §15.2's own
-	// `gofunc(name, protoOrNil)`-style shape, after §15.4's goReturns/
+	// proto name — never more than that (weave_spec.md §14.2's own
+	// `gofunc(name, protoOrNil)`-style shape, after §14.4's goReturns/
 	// goParams type hints were removed).
 	file := &ast.File{Main: &ast.FuncDecl{
 		Name: "main", Param: "args",
@@ -803,7 +803,7 @@ func TestCheck_GoFuncTooManyArgsIsAnError(t *testing.T) {
 	}
 }
 
-// govarDeclExpr builds `govar("?pkg.Var")` (weave_spec.md §15.4).
+// govarDeclExpr builds `govar("?pkg.Var")` (weave_spec.md §14.4).
 func govarDeclExpr(goName string) *ast.CallExpr {
 	return &ast.CallExpr{Callee: &ast.Ident{Name: "govar"}, Args: []ast.Expr{&ast.StringLit{Value: goName}}}
 }
@@ -1134,7 +1134,7 @@ func recoverCall() *ast.CallExpr {
 }
 
 func TestCheck_RecoverInsideObjectLiteralFieldIsAnError(t *testing.T) {
-	// weave_spec.md §6.5/§20: a closure that's an object literal's own
+	// weave_spec.md §6.5/§17: a closure that's an object literal's own
 	// field value could be dispatched as an actor message handler if the
 	// object is later spawn(...)ed — recover(...) deliberately doesn't
 	// support that, and this is caught at compile time (checker.

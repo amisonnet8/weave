@@ -604,7 +604,7 @@ func TestParse_TwoMainDeclsIsAnError(t *testing.T) {
 
 func TestParse_MissingMainIsNotAParseError(t *testing.T) {
 	// A single file legitimately has no entry-point declaration — it may
-	// be a package member file (weave_spec.md §17.1). Requiring at least
+	// be a package member file (weave_spec.md §15.1). Requiring at least
 	// one across a whole package is modloader.Load's job, not Parse's —
 	// see TestLoad_MissingMainIsAnError in internal/modloader.
 	file, err := Parse("x = 1\n")
@@ -616,7 +616,7 @@ func TestParse_MissingMainIsNotAParseError(t *testing.T) {
 	}
 }
 
-// package(...) (weave_spec.md §17.2) has no dedicated parser support at
+// package(...) (weave_spec.md §15.2) has no dedicated parser support at
 // all — `mathutil = package("./mathutil")` parses as a perfectly
 // ordinary AssignStmt, exactly like `x = 1` or `f = gofunc(...)`. See
 // internal/modloader's own tests for how the pattern is recognized and

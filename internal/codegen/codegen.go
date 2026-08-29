@@ -547,7 +547,7 @@ func genOneArgBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error
 	return tmp, nil
 }
 
-// genRecoverCall lowers `recover(handler)` (weave_spec.md §20) to a
+// genRecoverCall lowers `recover(handler)` (weave_spec.md §17) to a
 // single native AMIVM DEFER of weavert.RecoverPanic — matching Go's own
 // defer+recover idiom directly rather than routing through an ordinary
 // weavert.Call+CALL like every other builtin here: handler is evaluated
@@ -562,7 +562,7 @@ func genOneArgBuiltin(fg *funcGen, call *ast.CallExpr, fn string) (string, error
 // the source it's written, no extra plumbing required). recover(...)'s
 // own call expression carries no useful value of its own (the enclosing
 // function's return, if a panic is actually recovered, is dictated
-// entirely by Go's own zero-value-on-recover semantics — see §20) — "nil"
+// entirely by Go's own zero-value-on-recover semantics — see §17) — "nil"
 // is returned only so this composes like any other call expression.
 func genRecoverCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 	if len(call.Args) != 1 {
@@ -675,7 +675,7 @@ func genGeneralCall(fg *funcGen, call *ast.CallExpr) (string, error) {
 	}
 	// A gofunc(...)-declared reference compiles straight to its real Go
 	// function, bypassing weavert.Call's dynamic dispatch (weave_spec.md
-	// §16) — see genGoFuncCall's doc comment.
+	// §14.6) — see genGoFuncCall's doc comment.
 	if callee, ok := call.Callee.(*ast.Ident); ok {
 		if info := fg.ctx.goFuncs[callee.Name]; info != nil {
 			return genGoFuncCall(fg, info, call)
@@ -813,7 +813,7 @@ func genClosureReturnStmt(fg *funcGen, s *ast.ReturnStmt) error {
 func genExpr(fg *funcGen, expr ast.Expr) (string, error) {
 	switch e := expr.(type) {
 	case *ast.Ident:
-		// A govar(...)-declared name (weave_spec.md §15.5) never went
+		// A govar(...)-declared name (weave_spec.md §14.5) never went
 		// through VAR/SET in the first place — see genGoVarDecl/
 		// genGoVarRead's own doc comments — so it must be checked before
 		// falling through to the ordinary declared-variable path below.

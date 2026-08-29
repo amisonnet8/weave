@@ -1,6 +1,6 @@
 // weave_spec.md §11: string-manipulation builtins. `+` (string
 // concatenation, §8) and `string(...)` (any value -> string, §11) are
-// the only string operations Weave had for a long time (§19.9 used to
+// the only string operations Weave had for a long time (§18.9 used to
 // flag this as a real gap) — the builtins below round that out with
 // search/transform/split-join/parse operations, all indices measured in
 // runes (characters), never raw UTF-8 bytes, matching len(...)'s own

@@ -1,15 +1,15 @@
 // 後半 Step 5: 統合サンプル — トップレベル宣言・アクター・Go資産連携を
-// 組み合わせる(weave_spec.md §17相当)。
+// 組み合わせる(weave_spec.md §16相当)。
 //
-// §17自身の例(self.file = goOpen(path)というプロパティ経由でのGo資産の
+// §16自身の例(self.file = goOpen(path)というプロパティ経由でのGo資産の
 // 永続化、os.Openの2値戻り値)は、Step4で確定した静的型追跡の範囲(プレーン
 // な変数への直接代入のみ)を超えるため、そのままは実装しない。ここでは
 // 「Go資産はメッセージハンドラ1つの中で完結して使う」形に適応させ、単一
 // 戻り値のstrings.NewReaderを使う(CLAUDE.md 後半Step5「確定した設計判断」
 // 参照)。
 //
-// weave_spec.md §15.2: gofunc(...)の任意の第2引数(gotype(...)の名前)が、
-// 戻り値list(常にlist——§15.2)の位置0をそのプロトタイプへ結びつける。結果
+// weave_spec.md §14.2: gofunc(...)の任意の第2引数(gotype(...)の名前)が、
+// 戻り値list(常にlist——§14.2)の位置0をそのプロトタイプへ結びつける。結果
 // からGoの値を取り出すのにat(...)を使う。
 
 GoReader = gotype("?*strings.Reader", {

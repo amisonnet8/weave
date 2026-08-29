@@ -10,11 +10,11 @@ import (
 // needs to resolve syntactically, before sema/codegen ever run:
 //
 //   - renames: this package's own bare top-level name -> already-renamed
-//     flat name (weave_spec.md §17.4). Empty/nil for the root package,
+//     flat name (weave_spec.md §15.4). Empty/nil for the root package,
 //     whose own bindings are never renamed.
 //   - quals: this package's own `name = package("...")` bindings,
 //     resolved to the already-loaded target package (weave_spec.md
-//     §17.2), keyed by their *original* (pre-rename) name — see
+//     §15.2), keyed by their *original* (pre-rename) name — see
 //     extractPackageDecls's doc for why.
 //
 // rewriteStmts walks a statement list (and everything reachable from it —
@@ -226,7 +226,7 @@ func (rw *rewriter) rewriteExpr(expr ast.Expr) (ast.Expr, error) {
 }
 
 // tryResolveQualified checks whether e is a `qualifier.name` reference
-// (weave_spec.md §17.2: Obj is a bare Ident matching one of this
+// (weave_spec.md §15.2: Obj is a bare Ident matching one of this
 // package's own live `package(...)` qualifiers) and, if so, resolves it
 // directly to the target package's already-renamed flat name —
 // returning it as a plain *ast.Ident, never as a PropExpr. This is what
@@ -254,7 +254,7 @@ func (rw *rewriter) tryResolveQualified(e *ast.PropExpr) (resolved ast.Expr, han
 		return nil, false, nil
 	}
 	if !isExported(e.Prop) {
-		return nil, true, fmt.Errorf("line %d: %q is not exported from package %q (only names starting with an uppercase letter are visible outside their own package, weave_spec.md §17.2)", e.Line, e.Prop, target.Name)
+		return nil, true, fmt.Errorf("line %d: %q is not exported from package %q (only names starting with an uppercase letter are visible outside their own package, weave_spec.md §15.2)", e.Line, e.Prop, target.Name)
 	}
 	flat, ok := target.Renames[e.Prop]
 	if !ok {

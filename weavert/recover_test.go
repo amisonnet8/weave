@@ -29,7 +29,7 @@ func TestRecoverPanic_RecoversAndCallsHandlerWithMessage(t *testing.T) {
 
 func TestRecoverPanic_ConvertsNonStringPanicValueToString(t *testing.T) {
 	// A Go asset call panicking with something other than a plain string
-	// (weave_spec.md §20 doesn't distinguish where the panic came from)
+	// (weave_spec.md §17 doesn't distinguish where the panic came from)
 	// must still reach the handler as a Weave string.
 	var got any
 	handler := func(msg any) any {

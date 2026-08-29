@@ -3,7 +3,7 @@ package ast
 // File is the root of a parsed Weave source file.
 //
 // TopLevel holds ordinary statements written outside `main`'s own
-// declaration (weave_spec.md §15.3, §17: gotype/gofunc declarations,
+// declaration (weave_spec.md §14.3, §15: gotype/gofunc declarations,
 // prototype object definitions, ...), in source order, regardless of
 // where `main = fn(args) {...}` itself appears among them. Main is
 // always exactly one such declaration — parser.go's parseFile
@@ -74,7 +74,7 @@ type ReturnStmt struct {
 //
 // A top-level `name = package("<path>")` is a special case internal/
 // modloader recognizes and fully resolves away before sema.Check/
-// codegen.Generate ever run (weave_spec.md §17.2) — there is no
+// codegen.Generate ever run (weave_spec.md §15.2) — there is no
 // dedicated AST node for it, exactly like gotype/gofunc (see
 // modloader's package doc comment and CLAUDE.md's 確定した設計判断 on
 // why no new syntax is needed).

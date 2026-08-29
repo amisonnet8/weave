@@ -8,8 +8,10 @@ import (
 )
 
 // Every Weave object is represented as a Go map[string]any, boxed into
-// `any` like every other Weave value (weave_spec.md §4; §14's own
-// "MPTYPE ^string ^any" sketch). Object operations route through
+// `any` like every other Weave value (weave_spec.md §4; an early design
+// sketch considered AMIVM's native "MPTYPE ^string ^any" instead — see
+// CLAUDE.md's Step 6 "確定した設計判断" for why it was dropped). Object
+// operations route through
 // weavert instead of AMIVM's native MPTYPE/MPMAKE/MSET/MGET for the
 // same reason arithmetic does (weavert/ops.go's package doc comment):
 // Go doesn't allow map indexing on an `any`-typed variable, only on one
@@ -166,7 +168,7 @@ func ObjRemove(obj any, key any) any {
 	return nil
 }
 
-// ObjAt implements the `at(...)` builtin (weave_spec.md §3/§11/§15.2):
+// ObjAt implements the `at(...)` builtin (weave_spec.md §3/§11/§14.2):
 // reads the element at a 0-based numeric index from a list-shaped
 // object (the same weavert.Object every list(...) literal and every
 // Go-asset call result now uses, keyed by sequential numeric strings —

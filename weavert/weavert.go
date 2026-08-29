@@ -108,7 +108,7 @@ func ExitCode(v any) int {
 // the one fixed spot !main's wrapper occupies.
 //
 // os.Exit's own documented behavior — terminate right now, running no
-// deferred calls — means any recover(...) handler (§20) currently in
+// deferred calls — means any recover(...) handler (§17) currently in
 // scope does NOT get a chance to intercept this, unlike an actual panic.
 // This is deliberate, not an oversight: exit(...) always tears down the
 // entire process unconditionally, so — unlike recover(...), which is

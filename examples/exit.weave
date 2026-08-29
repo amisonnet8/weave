@@ -9,7 +9,7 @@ main = fn(args) {
 	// deliberate: exit(...) always tears the whole process down
 	// unconditionally, so there is no fault-isolation concern for it to
 	// create an escape hatch around (contrast recover(...)'s restriction
-	// inside actor message handlers, §6.5/§20).
+	// inside actor message handlers, §6.5/§17).
 	recover(fn(err) {
 		print("this handler is never reached by exit(...)")
 	})

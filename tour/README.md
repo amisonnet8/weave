@@ -14,7 +14,8 @@ Weave言語の入門ガイドです。手を動かしながら、短い章を順
 5. [アクターモデル](05-actors.md) — `spawn`/`send`/`ask`/`reply`
 6. [Go資産連携](06-go-interop.md) — `gotype`/`gofunc`/`gomethod`、`govar`
 7. [モジュール](07-modules.md) — 複数ファイル・複数パッケージ
-8. [まとめ](08-wrapup.md) — 統合サンプルと、次に読むもの
+8. [パニックの捕捉](08-recover.md) — `recover(...)`、ガード用クロージャーのパターン
+9. [まとめ](09-wrapup.md) — 統合サンプルと、次に読むもの
 
 ## 実行環境
 

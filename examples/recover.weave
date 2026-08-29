@@ -1,10 +1,10 @@
-// weave_spec.md §20: recover(handler) is Weave's narrow, defer-style
+// weave_spec.md §17: recover(handler) is Weave's narrow, defer-style
 // panic-recovery builtin — not try/catch, and not general exception
 // handling syntax. recover(handler) installs handler for the rest of
 // the *current* function's execution (matching Go's own defer+recover
 // idiom directly), and doesn't distinguish where a later panic came
 // from: Weave's own runtime errors (ASSERT-style type mismatches,
-// weavert's operators, raiseIfError) and Go asset panics (15節) are
+// weavert's operators, raiseIfError) and Go asset panics (14節) are
 // both recovered identically.
 main = fn(args) {
 	// Pattern: guard risky code inside its own dedicated helper closure,
@@ -14,7 +14,7 @@ main = fn(args) {
 	// returns to main normally, exactly as if the call had simply
 	// finished. The handler closure captures ok1/msg1 by reference
 	// (weave_spec.md §10) to smuggle a result back out, since recover's
-	// own handler return value is always discarded (§20) — this is how
+	// own handler return value is always discarded (§17) — this is how
 	// you get a fallback *value* out of a recovered panic, not by
 	// returning one from the handler itself.
 	ok1 = true
@@ -33,7 +33,7 @@ main = fn(args) {
 		print("guarded1: recovered — " + msg1)
 	}
 
-	// The same pattern recovers a Go-asset-originated panic (15節) just
+	// The same pattern recovers a Go-asset-originated panic (14節) just
 	// as well — recover() doesn't care that this one crossed a reflect
 	// call into strconv.Atoi rather than originating in weavert itself.
 	atoi = gofunc("?strconv.Atoi")
@@ -58,7 +58,7 @@ main = fn(args) {
 	// recover(...) can also be called directly in main's own body, not
 	// just inside a helper closure — but since a recovered panic makes
 	// the *enclosing* function return immediately with its own zero
-	// value (weave_spec.md §20 — for main specifically, that's exit code
+	// value (weave_spec.md §17 — for main specifically, that's exit code
 	// 0, via the same Go defer/recover semantics that give an ordinary
 	// closure `nil`), nothing after this point in main would run if the
 	// call below actually panicked. It doesn't, so execution reaches the

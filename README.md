@@ -8,7 +8,7 @@ A dynamically-typed programming language, implemented in Go, that unifies proper
 
 ## Status
 
-Weave's front end (lexer, parser, semantic checker, and AMIVM-IR code generator) implements the full language described in [`weave_spec.md`](weave_spec.md): dynamic values (numbers, strings, booleans, `nil`), operators, control flow, functions/closures/currying (including self-recursion), prototype-based objects and method dispatch, list-like objects with `[index]` read/write sugar (§3.1), built-in functions, `for`-`in`, the actor model (`spawn`/`send`/`ask`/`reply`), reflection-based Go-asset integration (`gotype`/`gofunc`/`gomethod`/`govar`, §15–16), and multi-file/multi-package modules (`package(...)`, §17), including `.wvz` (zip-archived) packages.
+Weave's front end (lexer, parser, semantic checker, and AMIVM-IR code generator) implements the full language described in [`weave_spec.md`](weave_spec.md): dynamic values (numbers, strings, booleans, `nil`), operators, control flow, functions/closures/currying (including self-recursion), prototype-based objects and method dispatch, list-like objects with `[index]` read/write sugar (§3.1), built-in functions, `for`-`in`, the actor model (`spawn`/`send`/`ask`/`reply`), reflection-based Go-asset integration (`gotype`/`gofunc`/`gomethod`/`govar`, §14), and multi-file/multi-package modules (`package(...)`, §15), including `.wvz` (zip-archived) packages.
 
 ## Pipeline
 
@@ -44,7 +44,7 @@ Both land in `$GOBIN` (or `$GOPATH/bin` if unset) — make sure that directory i
 weave <command> [flags] <file.weave | package-dir | package.wvz>
 ```
 
-A package directory (or a `.wvz` archive of one, §17.6 of the spec) compiles every `.weave` file in it as one package (`package(...)`, §17.2); a single file compiles only that file, ignoring any siblings in the same directory.
+A package directory (or a `.wvz` archive of one, §15.6 of the spec) compiles every `.weave` file in it as one package (`package(...)`, §15.2); a single file compiles only that file, ignoring any siblings in the same directory.
 
 | Command | Output |
 |---|---|
@@ -102,7 +102,7 @@ cmd/weave/           CLI entry point (this README's `weave` commands)
 internal/lexer/      tokenizing
 internal/parser/     parsing → AST
 internal/ast/        AST definitions
-internal/modloader/  resolves multi-file/multi-package `package(...)` declarations (§17,
+internal/modloader/  resolves multi-file/multi-package `package(...)` declarations (§15,
                       directories or .wvz archives) into one flat AST before sema/codegen
                       ever run — see CLAUDE.md
 internal/sema/       semantic analysis (scope resolution, syntax-level checks — Weave's

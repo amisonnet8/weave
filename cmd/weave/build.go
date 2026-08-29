@@ -38,7 +38,7 @@ func generateIR(file *ast.File) (string, error) {
 }
 
 // compileToIR runs Weave's own share of the pipeline — modloader.Load
-// (parsing plus, per weave_spec.md §17, resolving multi-file packages and
+// (parsing plus, per weave_spec.md §15, resolving multi-file packages and
 // imports into one flat *ast.File) followed by generateIR. srcPath may
 // name either a single .weave file or a package directory (see
 // modloader.Load's own doc for the distinction).

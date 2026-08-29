@@ -3,7 +3,7 @@ package weavert
 import "fmt"
 
 // RecoverPanic implements the `recover(handler)` builtin (weave_spec.md
-// §20): codegen's genRecoverCall lowers `recover(handler)` to a single
+// §17): codegen's genRecoverCall lowers `recover(handler)` to a single
 // native AMIVM `DEFER ?weavert.RecoverPanic <handler>` instruction —
 // `defer weavert.RecoverPanic(handler)` in the generated Go — placed
 // exactly where the Weave source calls recover(...), so this function
@@ -29,7 +29,7 @@ import "fmt"
 // gofunc/gomethod call). handler's own return value is discarded — Go's
 // defer/recover semantics only let a *named* return value be modified
 // from within a deferred function, and Weave's compiled functions never
-// use one (see weave_spec.md §20 for the guarded-helper-closure pattern
+// use one (see weave_spec.md §17 for the guarded-helper-closure pattern
 // this implies for callers who need a fallback result, not just a
 // side effect).
 func RecoverPanic(handler any) {

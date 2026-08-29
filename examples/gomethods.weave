@@ -1,9 +1,9 @@
 main = fn(args) {
-	// weave_spec.md §15.2: every Go function/method call always returns
+	// weave_spec.md §14.2: every Go function/method call always returns
 	// a Weave list now, regardless of how many values the real Go call
 	// returns — at(list, i) reads one position back out.
 	//
-	// weave_spec.md §15.1/§15.2: gofunc(...)/gomethod(...) declarations
+	// weave_spec.md §14.1/§14.2: gofunc(...)/gomethod(...) declarations
 	// are always reflect-dispatched now (weavert.CallGoFuncList/
 	// CallGoMethodList) — the only thing that can be declared ahead of
 	// time is, optionally, a second "proto" argument binding position 0
