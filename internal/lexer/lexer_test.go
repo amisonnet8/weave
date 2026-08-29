@@ -203,3 +203,60 @@ func TestTokenize_StringEscapeErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenize_NumberLiteralForms(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string // expected Number token literal (unparsed text)
+	}{
+		{"decimal", "1234", "1234"},
+		{"decimal with separators", "1_000_000", "1_000_000"},
+		{"float", "123.4", "123.4"},
+		{"float with separators in integer part", "1_000.5", "1_000.5"},
+		{"hex lower", "0x1a", "0x1a"},
+		{"hex upper", "0X1A", "0X1A"},
+		{"hex with separator", "0x1_A", "0x1_A"},
+		{"hex with separator right after prefix", "0x_1A", "0x_1A"},
+		{"octal lower", "0o17", "0o17"},
+		{"octal upper", "0O17", "0O17"},
+		{"binary lower", "0b101", "0b101"},
+		{"binary upper", "0B101", "0B101"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toks, err := Tokenize(tt.src)
+			if err != nil {
+				t.Fatalf("Tokenize(%s): %v", tt.src, err)
+			}
+			if len(toks) < 1 || toks[0].Kind != Number {
+				t.Fatalf("Tokenize(%s): got %+v, want a single Number token", tt.src, toks)
+			}
+			if toks[0].Literal != tt.want {
+				t.Errorf("Tokenize(%s) = %q, want %q", tt.src, toks[0].Literal, tt.want)
+			}
+		})
+	}
+}
+
+func TestTokenize_NumberLiteralErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"trailing underscore", "0x1A_"},
+		{"doubled underscore", "0x__1"},
+		{"empty hex", "0x"},
+		{"empty octal", "0o"},
+		{"empty binary", "0b"},
+		{"doubled underscore in decimal", "1__000"},
+		{"trailing underscore in decimal", "1000_"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Tokenize(tt.src); err == nil {
+				t.Errorf("Tokenize(%s): expected an error", tt.src)
+			}
+		})
+	}
+}

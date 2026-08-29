@@ -11,5 +11,22 @@ main = fn(args) {
 	print(n)
 	x = 2
 	print(x)
+
+	// 数値リテラルは10進以外に16進(0x/0X)・8進(0o/0O)・2進(0b/0B)でも
+	// 書ける。桁区切りの_(基数プレフィックス直後、または数字と数字の間)も
+	// どの形にも使える。いずれもWeaveの数値表現(全てfloat64)へ変換される
+	// だけで、実行時に元の書き方による区別は残らない(weave_spec.md §1.0)。
+	hex = 0x1A
+	oct = 0o17
+	bin = 0b101
+	sep = 1_000_000
+	sepHex = 0x1_A
+	print(hex)      // 26
+	print(oct)       // 15
+	print(bin)        // 5
+	print(sep)         // 1e+06(1000000。大きな数はGoの%vと同じ指数表記で表示される)
+	print(sepHex)       // 26(0x1_Aは0x1Aと同じ値)
+	print(hex + oct + bin)   // 46
+
 	return x
 }

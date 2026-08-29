@@ -6,6 +6,7 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/amisonnet8/weave/internal/ast"
 	"github.com/amisonnet8/weave/internal/lexer"
@@ -556,7 +557,7 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 		return &ast.Ident{Name: t.Literal, Line: t.Line}, nil
 	case lexer.Number:
 		p.advance()
-		v, err := strconv.ParseFloat(t.Literal, 64)
+		v, err := parseNumberLiteral(t.Literal)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: invalid number literal %q", t.Line, t.Literal)
 		}
@@ -589,6 +590,26 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 		return x, nil
 	}
 	return nil, fmt.Errorf("line %d: unexpected token %q in expression", t.Line, t.Literal)
+}
+
+// parseNumberLiteral folds a lexer.Number token's literal text (decimal,
+// or 0x/0o/0b-prefixed, any of which may contain `_` digit separators —
+// see lexer.lexNumber) into the single float64 every Weave number is
+// (weave_spec.md §2). A radix-prefixed literal is always an integer
+// (Weave's lexer never lets a fractional part follow one), so it's parsed
+// via strconv.ParseInt with base 0 — which recognizes the "0x"/"0o"/"0b"
+// prefix itself — and converted to float64; a plain decimal literal goes
+// through strconv.ParseFloat exactly as before this feature existed.
+func parseNumberLiteral(lit string) (float64, error) {
+	clean := strings.ReplaceAll(lit, "_", "")
+	if len(clean) > 1 && clean[0] == '0' && (clean[1] == 'x' || clean[1] == 'X' || clean[1] == 'o' || clean[1] == 'O' || clean[1] == 'b' || clean[1] == 'B') {
+		n, err := strconv.ParseInt(clean, 0, 64)
+		if err != nil {
+			return 0, err
+		}
+		return float64(n), nil
+	}
+	return strconv.ParseFloat(clean, 64)
 }
 
 // parseObjectLit parses `{ }` or `{ x: 1, y: 2 }` (weave_spec.md §3,

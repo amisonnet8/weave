@@ -112,6 +112,39 @@ func TestParse_HelloWorld(t *testing.T) {
 	}
 }
 
+func TestParse_NumberLiteralForms(t *testing.T) {
+	tests := []struct {
+		src  string
+		want float64
+	}{
+		{"0x1A", 26},
+		{"0X1a", 26},
+		{"0o17", 15},
+		{"0O17", 15},
+		{"0b101", 5},
+		{"0B101", 5},
+		{"1_000_000", 1000000},
+		{"0x1_A", 26},
+		{"1_000.5", 1000.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			file, err := Parse("main = fn(args) {\n\treturn " + tt.src + "\n}\n")
+			if err != nil {
+				t.Fatalf("Parse(%s): %v", tt.src, err)
+			}
+			ret, ok := file.Main.Body[0].(*ast.ReturnStmt)
+			if !ok {
+				t.Fatalf("Parse(%s): got %#v, want *ast.ReturnStmt", tt.src, file.Main.Body[0])
+			}
+			num, ok := ret.Value.(*ast.NumberLit)
+			if !ok || num.Value != tt.want {
+				t.Fatalf("Parse(%s): got %#v, want NumberLit(%v)", tt.src, ret.Value, tt.want)
+			}
+		})
+	}
+}
+
 func TestParse_AssignStmt(t *testing.T) {
 	src := "main = fn(args) {\n\tx = 1\n\ty = \"hi\"\n\tz = true\n\tw = false\n\tn = nil\n\treturn 0\n}\n"
 	file, err := Parse(src)

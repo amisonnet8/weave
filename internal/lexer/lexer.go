@@ -81,7 +81,7 @@ func (l *Lexer) next() (Token, error) {
 	case isIdentStart(r):
 		return l.lexIdent(line), nil
 	case isDigit(r):
-		return l.lexNumber(line), nil
+		return l.lexNumber(line)
 	case r == '"':
 		return l.lexString(line)
 	}
@@ -180,14 +180,57 @@ func (l *Lexer) lexIdent(line int) Token {
 	return Token{Kind: Ident, Literal: lit, Line: line}
 }
 
-// lexNumber scans an integer or float literal (weave_spec.md §3). Weave
+// lexNumber scans an integer or float literal (weave_spec.md §1.0). Weave
 // does not distinguish integers from floats at the language level (§2),
-// but the lexer still recognizes both literal shapes; the parser folds
-// them into a single numeric literal value.
-func (l *Lexer) lexNumber(line int) Token {
+// so every literal form here — decimal, hex (0x/0X), octal (0o/0O), binary
+// (0b/0B), each with optional `_` digit separators — is folded by the
+// parser (parsePrimary) into a single float64 value. This mirrors the
+// literal forms AMIVM's own IR lexer accepts as of its 2026-08
+// integer-literal extension (ignored/amivm/amivm_spec.md §6), though that
+// parity is coincidental rather than load-bearing: Weave never emits a
+// non-decimal token into IR (codegen.formatNumberLiteral always renders a
+// plain decimal float), so nothing here depends on AMIVM's IR-level
+// support — this is purely a Weave-source-language convenience.
+func (l *Lexer) lexNumber(line int) (Token, error) {
 	start := l.pos
-	for l.pos < len(l.src) && isDigit(l.peekRune()) {
-		l.pos++
+	if l.peekRune() == '0' {
+		switch l.peekRuneAt(1) {
+		case 'x', 'X':
+			return l.lexRadixNumber(line, start, isHexDigit, "hexadecimal")
+		case 'o', 'O':
+			return l.lexRadixNumber(line, start, isOctalDigit, "octal")
+		case 'b', 'B':
+			return l.lexRadixNumber(line, start, isBinaryDigit, "binary")
+		}
+	}
+	return l.lexDecimalNumber(line, start)
+}
+
+// lexRadixNumber scans a 0x/0o/0b-prefixed integer literal; start points
+// at the already-confirmed leading "0". A `_` digit separator may appear
+// right after the two-character prefix or between two digits (see
+// scanDigitsWithSeparators) — never leading a bare literal, trailing, or
+// doubled.
+func (l *Lexer) lexRadixNumber(line, start int, digit func(rune) bool, radixName string) (Token, error) {
+	l.pos += 2 // consume "0x"/"0o"/"0b" (or its upper-case variant)
+	sawDigit, err := l.scanDigitsWithSeparators(line, digit, radixName)
+	if err != nil {
+		return Token{}, err
+	}
+	if !sawDigit {
+		return Token{}, fmt.Errorf("line %d: %s literal has no digits", line, radixName)
+	}
+	return Token{Kind: Number, Literal: string(l.src[start:l.pos]), Line: line}, nil
+}
+
+// lexDecimalNumber scans a plain base-10 integer or float literal, with
+// optional `_` digit separators in the integer part (weave_spec.md §1.0).
+// The fractional part deliberately does not accept separators — Weave has
+// no exponent notation either, and AMIVM's own extension only ever
+// documents `_` for integer literals, not floats.
+func (l *Lexer) lexDecimalNumber(line, start int) (Token, error) {
+	if _, err := l.scanDigitsWithSeparators(line, isDigit, "decimal"); err != nil {
+		return Token{}, err
 	}
 	if l.peekRune() == '.' && isDigit(l.peekRuneAt(1)) {
 		l.pos++ // consume '.'
@@ -195,7 +238,44 @@ func (l *Lexer) lexNumber(line int) Token {
 			l.pos++
 		}
 	}
-	return Token{Kind: Number, Literal: string(l.src[start:l.pos]), Line: line}
+	return Token{Kind: Number, Literal: string(l.src[start:l.pos]), Line: line}, nil
+}
+
+// scanDigitsWithSeparators consumes a run of characters accepted by digit
+// (optionally interleaved with `_`), requiring every `_` to be
+// immediately followed by another accepted digit. This is what makes a
+// leading `_` right after a radix prefix or one between two digits legal,
+// while a trailing or doubled `_` is a clear lex error rather than
+// silently splitting into a separate `_` token downstream.
+func (l *Lexer) scanDigitsWithSeparators(line int, digit func(rune) bool, radixName string) (bool, error) {
+	sawDigit := false
+	for {
+		r := l.peekRune()
+		switch {
+		case digit(r):
+			l.pos++
+			sawDigit = true
+		case r == '_':
+			if !digit(l.peekRuneAt(1)) {
+				return sawDigit, fmt.Errorf("line %d: '_' in a %s literal must sit directly between two digits", line, radixName)
+			}
+			l.pos++
+		default:
+			return sawDigit, nil
+		}
+	}
+}
+
+func isHexDigit(r rune) bool {
+	return isDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
+func isOctalDigit(r rune) bool {
+	return r >= '0' && r <= '7'
+}
+
+func isBinaryDigit(r rune) bool {
+	return r == '0' || r == '1'
 }
 
 // lexString scans a double-quoted string literal (weave_spec.md §3),
